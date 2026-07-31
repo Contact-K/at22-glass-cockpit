@@ -1,0 +1,67 @@
+<style>
+@keyframes rb5 { 0%{color:#534AB7} 20%{color:#185FA5} 40%{color:#0F6E56} 60%{color:#3B6D11} 80%{color:#993556} 100%{color:#534AB7} }
+.rb5 { animation: rb5 2.6s linear infinite }
+@media (prefers-reduced-motion: reduce) { .rb5 { animation: none } }
+</style>
+<h2 class="sr-only">量を左端の縦ティックの本数で表す修正案。ティックは固定寸法なのでファイル名の長さに影響されない。下段は虹から琥珀を抜いてフラグ色との衝突を解消した比較</h2>
+<div style="padding: 1rem 0;">
+<div style="background: var(--surface-1); border-radius: 12px; padding: 1rem 1.25rem;">
+
+  <p style="margin: 0 0 4px; font-size: 12px; font-weight: 500;">却下：下線はファイル名の長さを量として密輸する</p>
+  <div style="display: flex; gap: 12px; margin-bottom: 18px; flex-wrap: wrap;">
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px;"><span style="text-decoration:underline double; text-decoration-thickness:1px; text-underline-offset:3px;">router.ts</span> <span style="font-family:var(--font-sans); font-size:11px; color:var(--text-muted);">T3 · 620行</span></div>
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px;"><span style="text-decoration:underline solid; text-decoration-thickness:1.5px; text-underline-offset:3px;">ApplicationCoordinator.ts</span> <span style="font-family:var(--font-sans); font-size:11px; color:var(--text-muted);">T1 · 4行</span></div>
+  </div>
+
+  <p style="margin: 0 0 8px; font-size: 12px; font-weight: 500;">採用：左端の縦ティック（固定寸法・数えられる）</p>
+  <div style="display: grid; grid-template-columns: 106px repeat(3, minmax(0,1fr)); gap: 10px; margin-bottom: 8px;">
+    <span></span>
+    <span style="font-size: 11px; color: var(--text-muted);">アイドル</span>
+    <span style="font-size: 11px; color: var(--text-muted);">書き込み中</span>
+    <span style="font-size: 11px; color: var(--text-muted);">フラグ付き</span>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 106px repeat(3, minmax(0,1fr)); gap: 10px; align-items: center; margin-bottom: 6px;">
+    <div><p style="margin:0; font-size:12px;">未変更</p><p style="margin:0; font-size:11px; color:var(--text-muted);">0 本</p></div>
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:var(--text-primary); display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"></span><span>matrix.ts</span></div>
+    <div style="background:#E1F5EE; border:0.5px solid #1D9E75; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#04342C; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"></span><span>matrix.ts</span></div>
+    <div style="background:#FAEEDA; border:0.5px solid #EF9F27; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#412402; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"></span><span>matrix.ts</span></div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 106px repeat(3, minmax(0,1fr)); gap: 10px; align-items: center; margin-bottom: 6px;">
+    <div><p style="margin:0; font-size:12px;">T1 通常</p><p style="margin:0; font-size:11px; color:var(--text-muted);">1–9 行 · 1 本</p></div>
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:var(--text-primary); display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#E1F5EE; border:0.5px solid #1D9E75; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#04342C; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#FAEEDA; border:0.5px solid #EF9F27; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#412402; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 106px repeat(3, minmax(0,1fr)); gap: 10px; align-items: center; margin-bottom: 6px;">
+    <div><p style="margin:0; font-size:12px;">T2 大</p><p style="margin:0; font-size:11px; color:var(--text-muted);">10–99 行 · 2 本</p></div>
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:var(--text-primary); display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#E1F5EE; border:0.5px solid #1D9E75; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#04342C; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#FAEEDA; border:0.5px solid #EF9F27; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#412402; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 106px repeat(3, minmax(0,1fr)); gap: 10px; align-items: center;">
+    <div><p style="margin:0; font-size:12px;">T3 特大</p><p style="margin:0; font-size:11px; color:var(--text-muted);">100 行以上 · 3 本</p></div>
+    <div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:var(--text-primary); display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#E1F5EE; border:0.5px solid #1D9E75; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#04342C; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+    <div style="background:#FAEEDA; border:0.5px solid #EF9F27; border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; color:#412402; display:flex; align-items:center; gap:6px;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span>matrix.ts</span></div>
+  </div>
+
+  <div style="border-top: 0.5px solid var(--border); margin-top: 18px; padding-top: 14px;">
+    <p style="margin: 0 0 8px; font-size: 12px; font-weight: 500;">虹から琥珀・朱を抜く（フラグ色との衝突解消）</p>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px;">
+      <div>
+        <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">旧：琥珀が入っていてフラグに見える</p>
+        <div style="background:var(--surface-2); border:1.5px solid var(--border-stronger); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px;"><span style="color:#534AB7">m</span><span style="color:#185FA5">a</span><span style="color:#0F6E56">t</span><span style="color:#3B6D11">r</span><span style="color:#854F0B">i</span><span style="color:#993C1D">x</span><span style="color:#993556">.</span><span style="color:#534AB7">t</span><span style="color:#185FA5">s</span></div>
+      </div>
+      <div>
+        <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">新：寒色＋桃のみ、5色循環</p>
+        <div style="background:var(--surface-2); border:1.5px solid var(--border-stronger); border-radius:3px; padding:5px 8px; font-family:var(--font-mono); font-size:12px;"><span class="rb5" style="color:#534AB7; animation-delay:0s">m</span><span class="rb5" style="color:#185FA5; animation-delay:-.2s">a</span><span class="rb5" style="color:#0F6E56; animation-delay:-.4s">t</span><span class="rb5" style="color:#3B6D11; animation-delay:-.6s">r</span><span class="rb5" style="color:#993556; animation-delay:-.8s">i</span><span class="rb5" style="color:#534AB7; animation-delay:-1s">x</span><span class="rb5" style="color:#185FA5; animation-delay:-1.2s">.</span><span class="rb5" style="color:#0F6E56; animation-delay:-1.4s">t</span><span class="rb5" style="color:#3B6D11; animation-delay:-1.6s">s</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>

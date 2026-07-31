@@ -1,0 +1,24 @@
+<style>
+@keyframes swp { 0%{background-position:145% 0} 16%{background-position:-45% 0} 100%{background-position:-45% 0} }
+.sw { position: relative; display: inline-block; white-space: nowrap }
+.bd { position: absolute; left: 0; top: 0; color: transparent; background-image: linear-gradient(105deg, transparent 42%, var(--bandc) 50%, transparent 58%); background-size: 320% 100%; background-repeat: no-repeat; -webkit-background-clip: text; background-clip: text; animation: swp 3.6s ease-in-out infinite; pointer-events: none }
+@media (prefers-reduced-motion: reduce) { .bd { display: none } }
+</style>
+<h2 class="sr-only">白い光の帯がファイル名の上を1回だけ流れる発火通知の案。左端の縦ティックが書き込み量を静的に示し、帯は書かれた瞬間だけを伝える。明るい背景では暗い帯、暗い背景では白い帯を使う</h2>
+<div style="padding: 1rem 0;">
+<div style="background: var(--surface-1); border-radius: 12px; padding: 1rem 1.25rem;">
+
+  <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">1. 暗い箱 — iPhoneの原型。白い帯</p>
+  <div style="background:#04342C; border:0.5px solid #0F6E56; border-radius:3px; padding:6px 9px; font-family:var(--font-mono); font-size:12px; color:#9FE1CB; display:flex; align-items:center; gap:7px; margin-bottom:16px; --bandc:#FFFFFF;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span class="sw">useOrchestratorState.ts<span class="bd">useOrchestratorState.ts</span></span></div>
+
+  <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">2. 明るい箱 — 白は消えるので暗い帯に反転</p>
+  <div style="background:#E1F5EE; border:0.5px solid #1D9E75; border-radius:3px; padding:6px 9px; font-family:var(--font-mono); font-size:12px; color:#0F6E56; display:flex; align-items:center; gap:7px; margin-bottom:16px; --bandc:#04342C;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span class="sw">useOrchestratorState.ts<span class="bd">useOrchestratorState.ts</span></span></div>
+
+  <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">3. フラグ付き — 帯は琥珀に触らず明度だけ振る</p>
+  <div style="background:#FAEEDA; border:0.5px solid #EF9F27; border-radius:3px; padding:6px 9px; font-family:var(--font-mono); font-size:12px; color:#854F0B; display:flex; align-items:center; gap:7px; margin-bottom:16px; --bandc:#412402;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span class="sw">useOrchestratorState.ts<span class="bd">useOrchestratorState.ts</span></span></div>
+
+  <p style="margin: 0 0 6px; font-size: 11px; color: var(--text-muted);">4. 短い名前 — 所要時間は固定。名前長で変わらない</p>
+  <div style="background:#04342C; border:0.5px solid #0F6E56; border-radius:3px; padding:6px 9px; font-family:var(--font-mono); font-size:12px; color:#9FE1CB; display:flex; align-items:center; gap:7px; --bandc:#FFFFFF;"><span style="width:3px; display:flex; flex-direction:column; gap:2px;"><span style="width:3px; height:3px; background:currentColor; border-radius:1px;"></span></span><span class="sw">api.ts<span class="bd">api.ts</span></span></div>
+
+</div>
+</div>

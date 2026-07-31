@@ -1,0 +1,7 @@
+.build/
+dist/
+*.dmg
+.DS_Store
+
+# icon.swift + iconutil から再生成できる中間物。成果物の AT22.icns だけ追跡する
+Resources/AT22.iconset/

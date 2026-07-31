@@ -1,0 +1,64 @@
+<h2 class="sr-only">推奨キャンバスの詳細。上端にエージェントレーン、下にディレクトリごとのネストボックスマップ。稼働中のエージェントから現在触っているファイルへライブビームが1本ずつ引かれている</h2>
+<div style="padding: 1rem 0;">
+<div style="background: var(--surface-1); border-radius: 12px; padding: 12px;">
+<svg viewBox="0 0 656 430" style="width: 100%; height: auto; display: block;" role="img"><title>AT22キャンバスの推奨レイアウト</title><desc>上端の帯に5つのエージェントチップが並び、稼働中の3体からネストボックスマップ内のファイルへ線が引かれている。実線は書き込み、破線は読み取りを表す</desc>
+
+  <g class="c-purple"><rect x="4" y="6" width="120" height="30" rx="4"/><text class="t" x="14" y="25" style="font-size:12px">司令塔</text></g>
+  <g class="c-purple"><rect x="132" y="6" width="120" height="30" rx="4"/><text class="t" x="142" y="25" style="font-size:12px">実装</text></g>
+  <g class="c-purple"><rect x="260" y="6" width="120" height="30" rx="4"/><text class="t" x="270" y="25" style="font-size:12px">レビュー</text></g>
+  <g class="c-gray"><rect x="388" y="6" width="120" height="30" rx="4"/><text class="ts" x="398" y="25" style="font-size:12px">簡略化</text></g>
+  <g class="c-gray"><rect x="516" y="6" width="120" height="30" rx="4"/><text class="ts" x="526" y="25" style="font-size:12px">負債収集</text></g>
+  <circle cx="112" cy="21" r="4" fill="#1D9E75"/><circle cx="240" cy="21" r="4" fill="#1D9E75"/><circle cx="368" cy="21" r="4" fill="#1D9E75"/><circle cx="496" cy="21" r="4" fill="#B4B2A9"/><circle cx="624" cy="21" r="4" fill="#B4B2A9"/>
+
+  <path d="M4 50 L652 50" stroke="#B4B2A9" stroke-width="0.8"/>
+
+  <path id="b1" d="M64 36 L64 108" stroke="#1D9E75" stroke-width="1.6" fill="none"/>
+  <path id="b2" d="M192 36 L192 60 L578 60 L578 108" stroke="#BA7517" stroke-width="1.6" stroke-dasharray="5 4" fill="none"/>
+  <path id="b3" d="M320 36 L320 60 L60 60 L60 176" stroke="#1D9E75" stroke-width="1.6" stroke-dasharray="5 4" fill="none" opacity="0.75"/>
+  <circle r="3.5" fill="#0F6E56"><animateMotion dur="2.2s" repeatCount="indefinite"><mpath href="#b1"/></animateMotion></circle>
+  <circle r="3.5" fill="#854F0B"><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#b2"/></animateMotion></circle>
+
+  <rect x="4" y="76" width="216" height="140" rx="4" fill="none" stroke="#B4B2A9" stroke-width="0.8"/>
+  <text class="ts" x="12" y="92" style="font-size:12px">src/state</text>
+  <g class="c-teal"><rect x="14" y="100" width="196" height="26" rx="3"/><text class="t" x="22" y="118" style="font-size:12px; font-family:var(--font-mono)">memory.ts</text></g>
+  <g class="c-gray"><rect x="14" y="132" width="196" height="26" rx="3"/><text class="t" x="22" y="150" style="font-size:12px; font-family:var(--font-mono)">checkpoint.ts</text></g>
+  <g class="c-gray"><rect x="14" y="164" width="92" height="26" rx="3"/><text class="t" x="22" y="182" style="font-size:12px; font-family:var(--font-mono)">state.ts</text></g>
+  <g class="c-gray"><rect x="118" y="164" width="92" height="26" rx="3"/><text class="t" x="126" y="182" style="font-size:12px; font-family:var(--font-mono)">diff.ts</text></g>
+  <rect x="10" y="160" width="100" height="34" rx="5" fill="none" stroke="#0F6E56" stroke-width="1.5"/>
+
+  <rect x="232" y="76" width="216" height="140" rx="4" fill="none" stroke="#B4B2A9" stroke-width="0.8"/>
+  <text class="ts" x="240" y="92" style="font-size:12px">src/graph</text>
+  <g stroke="#888780" stroke-width="1" stroke-dasharray="3 2" fill="none"><path d="M340 126 L340 132"/><path d="M290 126 L290 164"/></g>
+  <g class="c-gray"><rect x="242" y="100" width="196" height="26" rx="3"/><text class="t" x="250" y="118" style="font-size:12px; font-family:var(--font-mono)">canvas.ts</text></g>
+  <g class="c-gray"><rect x="242" y="132" width="196" height="26" rx="3"/><text class="t" x="250" y="150" style="font-size:12px; font-family:var(--font-mono)">matrix.ts</text></g>
+  <g class="c-gray"><rect x="242" y="164" width="92" height="26" rx="3"/><text class="t" x="250" y="182" style="font-size:12px; font-family:var(--font-mono)">beam.ts</text></g>
+  <g class="c-gray"><rect x="346" y="164" width="92" height="26" rx="3"/><text class="t" x="354" y="182" style="font-size:12px; font-family:var(--font-mono)">layout.ts</text></g>
+
+  <rect x="460" y="76" width="192" height="140" rx="4" fill="none" stroke="#B4B2A9" stroke-width="0.8"/>
+  <text class="ts" x="468" y="92" style="font-size:12px">docs</text>
+  <g class="c-amber"><rect x="470" y="100" width="172" height="26" rx="3"/><text class="t" x="478" y="118" style="font-size:12px; font-family:var(--font-mono)">spec.md</text></g>
+  <g class="c-gray"><rect x="470" y="132" width="172" height="26" rx="3"/><text class="t" x="478" y="150" style="font-size:12px; font-family:var(--font-mono)">plan.md</text></g>
+  <g class="c-gray"><rect x="470" y="164" width="172" height="26" rx="3"/><text class="t" x="478" y="182" style="font-size:12px; font-family:var(--font-mono)">adr-004.md</text></g>
+
+  <rect x="4" y="230" width="332" height="112" rx="4" fill="none" stroke="#B4B2A9" stroke-width="0.8"/>
+  <text class="ts" x="12" y="246" style="font-size:12px">src/ui</text>
+  <g class="c-gray"><rect x="14" y="254" width="152" height="26" rx="3"/><text class="t" x="22" y="272" style="font-size:12px; font-family:var(--font-mono)">panel.tsx</text></g>
+  <g class="c-gray"><rect x="174" y="254" width="152" height="26" rx="3"/><text class="t" x="182" y="272" style="font-size:12px; font-family:var(--font-mono)">timeline.tsx</text></g>
+  <g class="c-gray"><rect x="14" y="286" width="152" height="26" rx="3"/><text class="t" x="22" y="304" style="font-size:12px; font-family:var(--font-mono)">flags.tsx</text></g>
+  <g class="c-gray"><rect x="174" y="286" width="152" height="26" rx="3"/><text class="t" x="182" y="304" style="font-size:12px; font-family:var(--font-mono)">chip.tsx</text></g>
+
+  <rect x="348" y="230" width="304" height="112" rx="4" fill="none" stroke="#B4B2A9" stroke-width="0.8"/>
+  <text class="ts" x="356" y="246" style="font-size:12px">src/sandbox</text>
+  <g class="c-gray"><rect x="358" y="254" width="138" height="26" rx="3"/><text class="t" x="366" y="272" style="font-size:12px; font-family:var(--font-mono)">e2b.ts</text></g>
+  <g class="c-gray"><rect x="504" y="254" width="138" height="26" rx="3"/><text class="t" x="512" y="272" style="font-size:12px; font-family:var(--font-mono)">mount.ts</text></g>
+  <g class="c-gray"><rect x="358" y="286" width="138" height="26" rx="3"/><text class="t" x="366" y="304" style="font-size:12px; font-family:var(--font-mono)">apply.ts</text></g>
+  <g class="c-gray"><rect x="504" y="286" width="138" height="26" rx="3"/><text class="t" x="512" y="304" style="font-size:12px; font-family:var(--font-mono)">stage.ts</text></g>
+
+  <path d="M4 362 L652 362" stroke="#B4B2A9" stroke-width="0.8"/>
+  <rect x="4" y="378" width="20" height="14" rx="3" fill="#1D9E75"/><text class="ts" x="30" y="389" style="font-size:12px">書き込み中（実線ビーム）</text>
+  <rect x="196" y="378" width="20" height="14" rx="3" fill="none" stroke="#1D9E75" stroke-width="1.5" stroke-dasharray="4 3"/><text class="ts" x="222" y="389" style="font-size:12px">読み取り中（破線ビーム）</text>
+  <rect x="396" y="378" width="20" height="14" rx="3" fill="#EF9F27"/><text class="ts" x="422" y="389" style="font-size:12px">フラグ付き</text>
+  <rect x="512" y="378" width="20" height="14" rx="3" fill="#D3D1C7"/><text class="ts" x="538" y="389" style="font-size:12px">アイドル</text>
+</svg>
+</div>
+</div>
