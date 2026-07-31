@@ -64,6 +64,8 @@ struct CockpitLayout {
     private var chipRects: [String: CGRect] = [:]      // エージェントID -> チップ
 
     func rect(forFile path: String) -> CGRect? { cellRects[path] }
+    /// 点の上にあるファイル。セルは重ならないので当たるのは高々1つ
+    func file(at point: CGPoint) -> String? { cellRects.first { $0.value.contains(point) }?.key }
     func cardRect(forFile path: String) -> CGRect? { cardRects[path] }
     func chipRect(forAgent id: String) -> CGRect? { chipRects[id] }
 
@@ -140,13 +142,11 @@ struct CockpitLayout {
         }
     }
 
-    /// セル右肩の数字。参照回数と編集行数を1つの文字列にまとめる
+    /// セル右肩の数字。参照回数だけを出す。
+    /// 書き込み量は数字ではなくティック・掃引・波・虹で表す（読み取りには対応する見た目が無い）。
+    /// 行数の内訳はセルをクリックした先で出す
     static func badge(_ cell: FileCell) -> String {
-        var parts: [String] = []
-        if cell.reads > 0 { parts.append("R\(cell.reads)") }
-        if cell.added > 0 { parts.append("+\(cell.added)") }
-        if cell.removed > 0 { parts.append("−\(cell.removed)") }
-        return parts.joined(separator: " ")
+        cell.reads > 0 ? "R\(cell.reads)" : ""
     }
 
     // MARK: 組み立て
@@ -283,6 +283,14 @@ struct CockpitLayout {
                       CGPoint(x: cell.midX, y: corridor),
                       CGPoint(x: cell.midX, y: cell.minY - 5)]
         return kind == .write ? points : points.reversed()
+    }
+
+    /// ビームが横に走る通り道の高さ。区切り線とカード上端の間に必ず収める。
+    /// 4本までは 5px 間隔、それより増えたら詰める（はみ出すとカードの背景に隠れて線ごと消える）
+    static func beamCorridor(busY: CGFloat, lane: Int, lanes: Int) -> CGFloat {
+        let band = cardTopGap - 6                       // 区切り線とカード上端それぞれの余白ぶん
+        let step = min(5, band / CGFloat(max(1, lanes)))
+        return busY + 6 + CGFloat(lane) * step
     }
 
     /// 親エージェントから子エージェントへの折れ線。指示が流れる向き

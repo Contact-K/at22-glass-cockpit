@@ -41,6 +41,10 @@ struct P0SelfCheck {
         longNamesStayInsideCards()
         tailsAppendsAcrossPartialLines()
         initialBudgetPrefersNewest()
+        showsWriteHistoryOnDemand()
+        labelsAgentWhenMetaArrivesLate()
+        beamCorridorStaysAboveCards()
+        keepsTabForEndedSession()
         replayRealTranscriptIfGiven()
         print("p0: ok")
     }
@@ -921,6 +925,130 @@ struct P0SelfCheck {
         }
         loose.poll(initial: true)
         assert(all.count == 3, "予算が足りれば全部読む (実際: \(all.count))")
+    }
+
+    /// セル右肩から行数を外したので、内訳はクリックした先でしか読めない。
+    /// 絞り込みが畳み込みとずれると、画面に出ていない書き込みまで数に入る
+    static func showsWriteHistoryOnDemand() {
+        let c = Cockpit()
+        let t0 = Date(timeIntervalSince1970: 20_000_000)
+        c.apply([.agentMeta(agent: "w1", session: "S1", role: "W1: 実装", depth: 1, parentCall: "")])
+        c.apply(write("w1", "/p/App.swift", "e1", at: t0, added: 12))
+        c.apply(write("w1", "/p/App.swift", "e2", at: t0.addingTimeInterval(10), added: 3))
+        c.apply(read("w1", "/p/App.swift", "r1", at: t0.addingTimeInterval(20)))
+        c.apply(write("w1", "/p/Other.swift", "e3", at: t0.addingTimeInterval(30), added: 99))
+
+        let h = c.writeHistory(of: "/p/App.swift")
+        assert(h.count == 2, "読み取りが履歴に混ざっている (実際: \(h.count))")
+        assert(h[0].added == 3 && h[1].added == 12, "新しい順になっていない")
+        assert(h[0].role == "W1: 実装", "実際: \(h[0].role)")
+        assert(c.writeHistory(of: "/p/nope.swift").isEmpty, "触っていないファイルに履歴が出た")
+
+        // 右肩の数字は参照回数だけ。行数は出さない
+        let cell = c.snapshot(now: t0.addingTimeInterval(40)).cards
+            .flatMap(\.files).first { $0.id == "/p/App.swift" }!
+        assert(CockpitLayout.badge(cell) == "R1", "実際: \(CockpitLayout.badge(cell))")
+
+        // 別セッションの分は混ざらない
+        c.selectedSession = "S2"
+        assert(c.writeHistory(of: "/p/App.swift").isEmpty, "選択外のセッションの書き込みが出た")
+        c.selectedSession = nil
+
+        // 「クリア」より前の分も落とす（畳み込みと同じ扱い）
+        c.clear()
+        assert(c.writeHistory(of: "/p/App.swift").isEmpty, "クリアしたはずの書き込みが残っている")
+    }
+
+    /// meta.json は .jsonl より後に書かれることがある（実測 273体中62体、遅れの中央値341秒）。
+    /// 初見の1回で諦めると、そのチップは hex の羅列のまま親子の破線も引かれない
+    static func labelsAgentWhenMetaArrivesLate() {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("at22-late-\(ProcessInfo.processInfo.processIdentifier)")
+        let dir = root.appendingPathComponent("proj/S1/subagents")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let jsonl = dir.appendingPathComponent("agent-x1.jsonl")
+        try? Data((readLine + "\n").utf8).write(to: jsonl)
+
+        var metas: [TranscriptEvent] = []
+        let watcher = TranscriptWatcher(root: root)
+        watcher.onEvents = { events in
+            metas += events.filter { if case .agentMeta = $0 { return true } else { return false } }
+        }
+
+        // 1回目：meta.json はまだ無い
+        watcher.poll(initial: true)
+        assert(metas.isEmpty, "meta.json が無いのに役割が付いた")
+
+        // 後から書かれる
+        let meta = #"{"agentType":"general-purpose","description":"W4: 統合・ビルド修正","spawnDepth":1,"toolUseId":"toolu_P"}"#
+        try? Data(meta.utf8).write(to: dir.appendingPathComponent("agent-x1.meta.json"))
+
+        // 2回目：追記が無くても読み直すこと
+        watcher.poll(initial: false)
+        guard metas.count == 1, case let .agentMeta(agent, session, role, depth, parentCall) = metas[0] else {
+            fatalError("後から来た meta.json を拾えていない（実際: \(metas.count)件）")
+        }
+        assert(agent == "x1" && session == "S1", "実際: \(agent) / \(session)")
+        assert(role == "W4: 統合・ビルド修正", "実際: \(role)")
+        assert(depth == 1 && parentCall == "toolu_P")
+
+        // 読めた後は繰り返さない
+        watcher.poll(initial: false)
+        assert(metas.count == 1, "ラベル済みを読み直している (実際: \(metas.count))")
+    }
+
+    /// 通り道がカード上端に届くと、ビームがカードの背景に隠れて丸ごと消える。
+    /// v0.1.0 はチップの並び順で 5px ずつ下げていたので5本目から見えなかった
+    static func beamCorridorStaysAboveCards() {
+        let busY: CGFloat = 200
+        let cardTop = busY + CockpitLayout.cardTopGap
+
+        for lanes in 1...Cockpit.maxChips {
+            for lane in 0..<lanes {
+                let y = CockpitLayout.beamCorridor(busY: busY, lane: lane, lanes: lanes)
+                assert(y > busY, "区切り線より上を通っている (lanes=\(lanes) lane=\(lane) y=\(y))")
+                assert(y < cardTop, "カード上端に届いている (lanes=\(lanes) lane=\(lane) y=\(y))")
+            }
+        }
+
+        // 4本までは v0.1.0 と同じ 5px 間隔（見え方を変えない）
+        for lanes in 1...4 {
+            assert(CockpitLayout.beamCorridor(busY: busY, lane: 0, lanes: lanes) == busY + 6)
+            guard lanes > 1 else { continue }
+            let step = CockpitLayout.beamCorridor(busY: busY, lane: 1, lanes: lanes)
+                     - CockpitLayout.beamCorridor(busY: busY, lane: 0, lanes: lanes)
+            assert(step == 5, "4本までは間隔が変わらないこと (lanes=\(lanes) 実際: \(step))")
+        }
+
+        // 詰めても重ならない
+        let first = CockpitLayout.beamCorridor(busY: busY, lane: 0, lanes: 12)
+        let last = CockpitLayout.beamCorridor(busY: busY, lane: 11, lanes: 12)
+        assert(last > first, "本数が増えると全部同じ高さに潰れている")
+    }
+
+    /// 選択中のセッションが終わるとタブが消え、選択だけが残って畳み込みが全件落ちる。
+    /// v0.1.0 は画面が真っ白になり、「すべて」を押すまで戻れなかった
+    static func keepsTabForEndedSession() {
+        let a = LiveSession(id: "S1", name: "alpha", cwd: "/a", busy: true)
+        let b = LiveSession(id: "S2", name: "bravo", cwd: "/b", busy: false)
+
+        // 両方生きていれば名前順にそのまま
+        assert(Cockpit.tabs(live: [b, a], selected: "S1", previous: []).map(\.id) == ["S1", "S2"])
+
+        // 見ているセッションが終わってもタブは残る
+        let kept = Cockpit.tabs(live: [b], selected: "S1", previous: [a, b])
+        assert(kept.map(\.id) == ["S1", "S2"], "見ていたタブが消えた (実際: \(kept.map(\.id)))")
+        assert(kept[0].busy == false, "終わったのに稼働中のままになっている")
+        assert(kept[0].name == "alpha", "名前を持ち越せていない")
+
+        // 見ていないものは終わったら消える
+        assert(Cockpit.tabs(live: [b], selected: "S2", previous: [a, b]).map(\.id) == ["S2"])
+        assert(Cockpit.tabs(live: [b], selected: nil, previous: [a, b]).map(\.id) == ["S2"])
+
+        // 生きているものを二重に足さない
+        assert(Cockpit.tabs(live: [a, b], selected: "S1", previous: [a, b]).count == 2)
     }
 
     // MARK: 実データのリプレイ

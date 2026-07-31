@@ -63,6 +63,15 @@ struct LiveSession: Identifiable, Hashable {
     let busy: Bool
 }
 
+/// セルをクリックした先に出す、1回ぶんの書き込み
+struct WriteEntry: Identifiable {
+    let id: Int
+    let role: String
+    let at: Date
+    let added: Int
+    let removed: Int
+}
+
 // MARK: - 状態
 
 /// transcript から起こした「触った記録」を溜め、描画時に畳み込む。
@@ -344,6 +353,24 @@ final class Cockpit {
         return chips.count > Self.maxChips ? Array(chips.prefix(Self.maxChips)) : chips
     }
 
+    /// 1つのファイルの書き込み履歴。新しい順。
+    /// セル右肩から行数を外したので、内訳はここでしか出ない。
+    /// 絞り込みは畳み込み（snapshot）と揃える。画面に出ていない記録が混ざると数が合わなくなる
+    func writeHistory(of path: String) -> [WriteEntry] {
+        var out: [WriteEntry] = []
+        for (i, touch) in touches.enumerated() where touch.path == path && touch.kind == .write {
+            if let filter = selectedSession, touch.session != filter { continue }
+            if let cleared = clearedAt, touch.started < cleared { continue }
+            out.append(WriteEntry(id: i,
+                                  role: agents[touch.agent]?.role
+                                      ?? role(of: touch.agent, session: touch.session),
+                                  at: touch.finished ?? touch.started,
+                                  added: touch.added,
+                                  removed: touch.removed))
+        }
+        return out.reversed()
+    }
+
     private struct Pair: Hashable {
         let agent: String
         let path: String
@@ -444,7 +471,19 @@ final class Cockpit {
                                      cwd: obj["cwd"] as? String ?? "",
                                      busy: (obj["status"] as? String) == "busy"))
         }
-        let sorted = found.sorted { $0.name < $1.name }
+        let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions)
         if sorted != liveSessions { liveSessions = sorted }
+    }
+
+    /// 見ていたセッションが終わってもタブは残す。消すと選択だけが残って
+    /// 畳み込みが全件落ち、画面が真っ白になる（記録自体は touches に残っている）。
+    /// 選択を「すべて」に戻す手もあるが、それだと他セッションが混ざってタブの意味が消える
+    static func tabs(live: [LiveSession], selected: String?, previous: [LiveSession]) -> [LiveSession] {
+        var out = live
+        if let id = selected, !out.contains(where: { $0.id == id }),
+           let last = previous.first(where: { $0.id == id }) {
+            out.append(LiveSession(id: last.id, name: last.name, cwd: last.cwd, busy: false))
+        }
+        return out.sorted { $0.name < $1.name }
     }
 }

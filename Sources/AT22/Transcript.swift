@@ -286,6 +286,7 @@ final class TranscriptWatcher {
     private var carry: [String: Data] = [:]       // 改行で切れなかった端数
     private var skipPartial: Set<String> = []     // 途中から読み始めた分の先頭1行は捨てる
     private var labeled: Set<String> = []         // meta.json を読み終えたサブエージェント
+    private var awaitingMeta: [String: URL] = [:] // meta.json がまだ書かれていないサブエージェント
     private var loop: Task<Void, Never>?
 
     var onEvents: (([TranscriptEvent]) -> Void)?
@@ -341,6 +342,11 @@ final class TranscriptWatcher {
     func poll(initial: Bool) {
         var events: [TranscriptEvent] = []
         var budget = initial ? initialTotalBudget : UInt64.max
+
+        // meta.json は .jsonl より後に書かれることがある（実測 273体中62体、遅れの中央値341秒）。
+        // 初見の1回で諦めると、その分のチップが hex の羅列のまま親子も繋がらない
+        // ponytail: 最後まで来ないケースは実測で0件。仮に来なくても140バイトの空振りが増えるだけ
+        for url in Array(awaitingMeta.values) { events += label(for: url) }
 
         var files = scan()
         // 起動時は新しいものから予算を使う。切り詰めるなら古い方から
@@ -405,13 +411,17 @@ final class TranscriptWatcher {
         guard name.hasPrefix("agent-") else { return [] }
         let id = String(name.dropFirst("agent-".count))
         guard !labeled.contains(id) else { return [] }
-        labeled.insert(id)
 
         let meta = url.deletingPathExtension().appendingPathExtension("meta.json")
         guard let data = try? Data(contentsOf: meta),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let type = obj["agentType"] as? String
-        else { return [] }
+        else {
+            awaitingMeta[id] = url          // まだ無い。次の走査で読み直す
+            return []
+        }
+        labeled.insert(id)
+        awaitingMeta[id] = nil
         // <project>/<sessionUUID>/subagents/agent-x.jsonl → 親セッションはディレクトリ名から取れる
         let session = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
         return [.agentMeta(agent: id,

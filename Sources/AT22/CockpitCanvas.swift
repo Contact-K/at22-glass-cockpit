@@ -5,6 +5,15 @@ import SwiftUI
 struct CockpitView: View {
     let cockpit: Cockpit
 
+    /// クリックで開いているセル。矩形は吹き出しを出す位置に使う
+    private struct Picked: Identifiable {
+        let id: String
+        let rect: CGRect
+    }
+    @State private var picked: Picked?
+
+    private static let canvasSpace = "cockpit"
+
     var body: some View {
         VStack(spacing: 0) {
             sessionTabs
@@ -83,9 +92,76 @@ struct CockpitView: View {
                     .frame(width: geo.size.width,
                            height: max(geo.size.height, layout.contentHeight))
                 }
+                .coordinateSpace(.named(Self.canvasSpace))
+                // セルをクリックすると書き込みの内訳を出す。当たり判定はその場で組み直す。
+                // 描画中の layout を @State に写すと毎フレーム更新になるので、押された時だけ計算する
+                .onTapGesture(coordinateSpace: .named(Self.canvasSpace)) { point in
+                    let layout = CockpitLayout.compute(cockpit.snapshot(now: .now), width: geo.size.width)
+                    picked = layout.file(at: point).map {
+                        Picked(id: $0, rect: layout.rect(forFile: $0) ?? .zero)
+                    }
+                }
+                .popover(item: $picked, attachmentAnchor: .rect(.rect(picked?.rect ?? .zero))) { p in
+                    FileHistory(path: p.id, entries: cockpit.writeHistory(of: p.id))
+                }
             }
             .background(CockpitCanvas.background)
         }
+    }
+}
+
+/// セルをクリックした時に出る書き込みの内訳。
+/// キャンバス側は量を見た目（ティック・掃引・波・虹）でしか出さないので、行数はここでしか読めない
+private struct FileHistory: View {
+    let path: String
+    let entries: [WriteEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text((path as NSString).lastPathComponent)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            Text(path)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(CockpitCanvas.dim)
+                .textSelection(.enabled)
+
+            Divider()
+
+            if entries.isEmpty {
+                Text("書き込みなし（読み取りだけ）")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(CockpitCanvas.dim)
+            } else {
+                Text("\(entries.count)回  +\(entries.reduce(0) { $0 + $1.added })  −\(entries.reduce(0) { $0 + $1.removed })")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(CockpitCanvas.dim)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(entries) { e in row(e) }
+                    }
+                }
+                .frame(maxHeight: 240)
+            }
+        }
+        .padding(12)
+        .frame(width: 330)
+    }
+
+    private func row(_ e: WriteEntry) -> some View {
+        HStack(spacing: 8) {
+            Text(e.at.formatted(.dateTime.hour().minute().second()))
+                .foregroundStyle(CockpitCanvas.dim)
+            Text(e.role).lineLimit(1)
+            Spacer(minLength: 6)
+            // 進行中の触りは行数がまだ来ていない
+            if e.added == 0, e.removed == 0 {
+                Text("進行中").foregroundStyle(CockpitCanvas.dim)
+            } else {
+                Text("+\(e.added)").foregroundStyle(CockpitCanvas.liveDeep)
+                Text("−\(e.removed)").foregroundStyle(CockpitCanvas.dim)
+            }
+        }
+        .font(.system(size: 11, design: .monospaced))
     }
 }
 
@@ -401,19 +477,24 @@ enum CockpitCanvas {
     /// 色は行き先の状態に合わせる（フラグ付きへ伸びる線は琥珀）
     private static func drawBeams(_ ctx: inout GraphicsContext, layout: CockpitLayout,
                                   states: [String: FileState], now: Date) {
-        for (i, box) in layout.chips.enumerated() {
+        // 通り道はチップの並び順ではなく「実際に描く本数」で割り振る。
+        // 24本目のチップだけが触っている時に、通り道まで24本ぶん下がってはいけない
+        let drawn = layout.chips.compactMap { box -> (dot: CGPoint, target: String, cell: CGRect, kind: TouchKind)? in
             guard let target = box.chip.target,
                   let cell = layout.rect(forFile: target),
-                  let kind = box.chip.kind else { continue }
+                  let kind = box.chip.kind else { return nil }
+            return (box.dot, target, cell, kind)
+        }
 
-            let corridor = layout.busY + 6 + CGFloat(i) * 5
-            let points = CockpitLayout.beamPoints(from: box.dot, to: cell,
-                                                  corridor: corridor, kind: kind)
+        for (lane, beam) in drawn.enumerated() {
+            let corridor = CockpitLayout.beamCorridor(busY: layout.busY, lane: lane, lanes: drawn.count)
+            let points = CockpitLayout.beamPoints(from: beam.dot, to: beam.cell,
+                                                  corridor: corridor, kind: beam.kind)
             var path = Path()
             path.move(to: points[0])
             for p in points.dropFirst() { path.addLine(to: p) }
 
-            let flagged = states[target] == .flagged
+            let flagged = states[beam.target] == .flagged
             // 読み書きはどちらも実線。違いは向きで表す（読み取りはファイルから流れてくる）
             ctx.stroke(path, with: .color(flagged ? flagBeam : live),
                        style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
