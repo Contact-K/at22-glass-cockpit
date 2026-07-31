@@ -7,7 +7,8 @@
 #   1. Apple Developer Program に登録
 #   2. Developer ID Application 証明書を発行
 #   3. xcrun notarytool store-credentials AT22_NOTARY \
-#        --apple-id <Apple ID> --team-id <Team ID> --password <App用パスワード>
+#        --apple-id <Apple ID> --team-id AT32Z655YX --password <App用パスワード>
+#      （Team ID は Developer ID 証明書の括弧内。App用パスワードは appleid.apple.com で作る）
 #
 # ponytail: create-dmg は入れない。hdiutil で足りるし、
 #           依存ゼロという本体の方針を配布側でも崩さない。
@@ -20,6 +21,7 @@ VERSION="${1:?$USAGE}"
 DRY_RUN="${2:-}"
 BUNDLE_ID="com.contactk.at22"
 NOTARY_PROFILE="AT22_NOTARY"
+TEAM_ID="AT32Z655YX"        # Developer ID 証明書の括弧内
 MIN_MACOS="15.0"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -57,10 +59,13 @@ if [ "$DRY_RUN" != "--dry-run" ] \
   cat >&2 <<MSG
 公証用の資格情報 '$NOTARY_PROFILE' が保存されていない。
 
-  xcrun notarytool store-credentials $NOTARY_PROFILE \\
-    --apple-id <Apple ID> --team-id <Team ID> --password <App用パスワード>
+署名だけでは Gatekeeper は通らない。Apple に送って検査を受け、券をもらう必要がある。
 
-App用パスワードは appleid.apple.com で作る。
+  xcrun notarytool store-credentials $NOTARY_PROFILE \\
+    --apple-id <Apple ID> --team-id $TEAM_ID --password <App用パスワード>
+
+App用パスワードは Apple ID のパスワードとは別物で、
+appleid.apple.com → サインインとセキュリティ → Appパスワード で作る。
 MSG
   exit 1
 fi
