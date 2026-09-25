@@ -37,10 +37,15 @@ enum CodexLauncher {
     }
 
     /// `codex exec resume <THREAD_ID> "<prompt>"` への argv を組む。
-    /// prompt は argv 経由で、stdin は使わない
+    /// prompt は argv 経由で、stdin は使わない。
+    ///
+    /// **`exec resume` は `-C` も `--sandbox` も受け付けない**（codex 0.146 で実測、
+    /// `unexpected argument '-C'` で即落ちて2ターン目以降が1度も通らなかった）。
+    /// 作業場所は `resume()` がプロセスの cwd に置き、sandbox は設定の上書き `-c` で渡す
     nonisolated static func resumeArguments(threadID: String, prompt: String, config: Config) -> [String] {
-        var out = ["exec", "resume", threadID, prompt, "--json", "-m", config.model, "-C", config.cwd]
-        out.append(contentsOf: sandboxArguments(for: config.level))
+        var out = ["exec", "resume", threadID, prompt, "--json", "-m", config.model]
+        let sandbox = sandboxArguments(for: config.level)
+        out.append(contentsOf: sandbox.first == "--sandbox" ? ["-c", "sandbox_mode=\"\(sandbox[1])\""] : sandbox)
         out.append("--skip-git-repo-check")
         return out
     }

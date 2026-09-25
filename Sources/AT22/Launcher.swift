@@ -98,11 +98,19 @@ enum Launcher {
 
         case "control_response":
             // 割り込みの受領確認。request_id を確認し、止まりきったか見る。
-            // 返事が来ないままだと司令塔は待ち続けるので、無視は許されない
-            guard let requestID = dict["request_id"] as? String else { return nil }
-            let responseDict = dict["response"] as? [String: Any] ?? [:]
-            let stillQueued = (responseDict["still_queued"] as? [Any])?.count ?? 0
-            let cancelled = (responseDict["cancelled"] as? [Any])?.count ?? 0
+            // 返事が来ないままだと司令塔は待ち続けるので、無視は許されない。
+            //
+            // 実測（v2.1.282）の形は `{"type":"control_response","response":{"subtype":"success",
+            // "request_id":"R1","response":{"still_queued":[]}}}`。**request_id も内訳も `response` の内側**で、
+            // 外側だけを見ていた間は受領を1度も拾えていなかった
+            let outer = dict["response"] as? [String: Any] ?? [:]
+            guard let requestID = outer["request_id"] as? String else { return nil }
+            if outer["subtype"] as? String == "error" {
+                return .error("割り込みが通らなかった: \(outer["error"] as? String ?? "")")
+            }
+            let body = outer["response"] as? [String: Any] ?? [:]
+            let stillQueued = (body["still_queued"] as? [Any])?.count ?? 0
+            let cancelled = (body["cancelled"] as? [Any])?.count ?? 0
             return .interruptAcknowledged(requestID: requestID, stillQueued: stillQueued, cancelled: cancelled)
 
         case "system":
@@ -202,12 +210,13 @@ enum Launcher {
 
     /// 進行中のターンを止める1行。**プロセスは殺さない**——
     /// SIGTERM で落とすとセッションごと終わってしまい、続きを送れなくなる。
-    /// 実測で Claude Code の stream-json 入力にこの形が通ることを確かめてある
+    /// 種別のキーは **`subtype`**。`type` で送ると v2.1.282 は
+    /// `Unsupported control request subtype: undefined` を返してターンを止めない（実測）
     nonisolated static func interruptLine(requestID: String = UUID().uuidString) -> Data? {
         let payload: [String: Any] = [
             "type": "control_request",
             "request_id": requestID,
-            "request": ["type": "interrupt"],
+            "request": ["subtype": "interrupt"],
         ]
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         data.append(0x0A)   // 1行1メッセージ。改行が無いと相手が読み始めない

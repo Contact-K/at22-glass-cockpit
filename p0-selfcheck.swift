@@ -190,6 +190,17 @@ struct P0SelfCheck {
         assert(events.count == 1)
         guard case let .touchFinished(_, a, r, _) = events[0] else { fatalError() }
         assert(a == 0 && r == 0)
+
+        // 完了通知は人間の発言ではない。代わりにサブエージェントを閉じる（実データの形そのまま）
+        let notice = #"{"type":"user","sessionId":"S1","timestamp":"2026-09-25T05:35:50.000Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>afb28320c3a52218f</task-id>\n<status>completed</status>\n</task-notification>"}}"#
+        let noticed = TranscriptParser.parse(Data(notice.utf8), fallbackSession: "x")
+        assert(noticed.count == 1, "実際: \(noticed)")
+        guard case let .agentEnded(agent, _) = noticed[0] else { fatalError("\(noticed)") }
+        assert(agent == "afb28320c3a52218f")
+        // 人間が打った行は今まで通り発言になる
+        let typed = #"{"type":"user","sessionId":"S1","timestamp":"2026-09-25T05:35:50.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"push して"}}"#
+        guard case .said(_, _, "push して", .human, _, _)? = TranscriptParser.parse(Data(typed.utf8), fallbackSession: "x").first
+        else { fatalError("人間の発言が落ちた") }
     }
 
     /// 同じファイルが相対パスと絶対パスの両方で記録されると、
@@ -1832,6 +1843,15 @@ struct P0SelfCheck {
             sessionID: "s1",
             config: Launcher.Config(cwd: "/p", level: .normal, prompt: "", model: "sonnet"))
         assert(picked[picked.firstIndex(of: "--model")! + 1] == "sonnet", "選んだモデルが渡らない")
+
+        // codex の続き。`exec resume` は -C / --sandbox を弾くので、sandbox は -c で渡す
+        let codex = CodexLauncher.Config(cwd: "/proj", level: .normal, prompt: "", model: "gpt-5.4")
+        let resumed = CodexLauncher.resumeArguments(threadID: "t1", prompt: "続けて", config: codex)
+        assert(!resumed.contains("-C") && !resumed.contains("--sandbox"), "resume が弾く引数を渡している: \(resumed)")
+        assert(resumed[resumed.firstIndex(of: "-c")! + 1] == #"sandbox_mode="workspace-write""#, "\(resumed)")
+        let unattended = CodexLauncher.Config(cwd: "/proj", level: .unattended, prompt: "", model: "gpt-5.4")
+        assert(CodexLauncher.resumeArguments(threadID: "t1", prompt: "x", config: unattended)
+            .contains("--dangerously-bypass-approvals-and-sandbox"), "Lv.5 の段が resume で落ちた")
     }
 
     /// 会話に出す「誰を何のために呼んだか」。**`description` は以前まで捨てていた**ので、
@@ -1914,7 +1934,7 @@ struct P0SelfCheck {
 
         // 割り込みの受領確認。request_id と内訳の両方が正しく取れること
         let ack = """
-        {"type":"control_response","request_id":"r1","response":{"still_queued":["a","b"],"cancelled":["c"]}}
+        {"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"still_queued":["a","b"],"cancelled":["c"]}}}
         """
         guard case let .interruptAcknowledged(requestID, stillQueued, cancelled) = parse(ack) else {
             fatalError("割り込み受領が取れない")
@@ -1926,13 +1946,21 @@ struct P0SelfCheck {
         // 古い版（response が空オブジェクト）。stillQueued/cancelled は0として扱い、
         // エラー扱いにしない裏取り
         let oldAck = """
-        {"type":"control_response","request_id":"r1","response":{}}
+        {"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{}}}
         """
         guard case let .interruptAcknowledged(_, stillQueuedOld, cancelledOld) = parse(oldAck) else {
             fatalError("古い版の受領確認が取れない")
         }
         assert(stillQueuedOld == 0 && cancelledOld == 0,
                "古い版なのに内訳が0でない: \(stillQueuedOld)/\(cancelledOld)")
+
+        // 弾かれた割り込み（実測の文言そのまま）。受領扱いにすると止まったと思い込む
+        let rejected = """
+        {"type":"control_response","response":{"subtype":"error","request_id":"r1","error":"Unsupported control request subtype: undefined"}}
+        """
+        guard case let .error(why) = parse(rejected), why.contains("Unsupported") else {
+            fatalError("弾かれた割り込みを受領扱いした")
+        }
 
         // API 再試行。文言に理由が残っていること
         let retry = """
@@ -1984,8 +2012,9 @@ struct P0SelfCheck {
         assert(decoded?["type"] as? String == "control_request",
                "type が control_request でない (実際: \(decoded?["type"] ?? "nil"))")
         let request = decoded?["request"] as? [String: Any]
-        assert(request?["type"] as? String == "interrupt",
-               "request.type が interrupt でない (実際: \(request?["type"] ?? "nil"))")
+        // キーは subtype。type で送ると claude が弾いてターンが止まらない（v2.1.282 実測）
+        assert(request?["subtype"] as? String == "interrupt",
+               "request.subtype が interrupt でない (実際: \(request ?? [:]))")
         let requestID = decoded?["request_id"] as? String
         assert(requestID?.isEmpty == false, "request_id が空文字")
 
