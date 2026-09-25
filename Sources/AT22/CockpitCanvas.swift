@@ -1176,13 +1176,15 @@ enum CockpitCanvas {
         let on = box.chip.busy
         let done = box.chip.done
         let fade = done && !box.summary ? 0.55 : 1.0
+        // 返事待ち。稼働（accent）とは別の色にして、「動いている」と「人を待っている」を取り違えさせない
+        let waiting = box.chip.waiting != nil
 
         // 地は明度差だけで作る。稼働中は accent の枠1本だけが色を持つ
         ctx.fill(shape, with: .color(Palette.surface))
         ctx.fill(shape, with: .color(Palette.ink.opacity(box.summary ? 0.06 : (done ? 0.02 : 0.04))))
         ctx.stroke(shape,
-                   with: .color(on ? agentOn : rule.opacity(0.45 * fade)),
-                   lineWidth: on ? Palette.Stroke.state : Palette.Stroke.hair)
+                   with: .color(waiting ? Palette.warning : (on ? agentOn : rule.opacity(0.45 * fade))),
+                   lineWidth: on || waiting ? Palette.Stroke.state : Palette.Stroke.hair)
 
         let topY = box.rect.minY + 15
         var x = box.rect.minX + CockpitLayout.chipPad
@@ -1206,7 +1208,7 @@ enum CockpitCanvas {
         if !box.doing.isEmpty {
             ctx.draw(ctx.resolve(Text(box.doing)
                 .font(.system(size: CockpitLayout.badgeFont, design: .monospaced))
-                .foregroundStyle((on ? live : dim).opacity(fade))),
+                .foregroundStyle((waiting ? Palette.warning : (on ? live : dim)).opacity(fade))),
                      at: CGPoint(x: box.rect.minX + CockpitLayout.chipPad, y: box.rect.maxY - 13),
                      anchor: .leading)
         }

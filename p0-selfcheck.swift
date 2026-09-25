@@ -1726,6 +1726,20 @@ struct P0SelfCheck {
                  .agentActivity(agent: "w0", session: "S1", model: "haiku-4.5", at: t0)])
         let worker = c.snapshot(now: later, mode: .work).chips.first { $0.id == "w0" }
         assert(worker?.busy == false, "止まっている子が親の busy を借りた")
+
+        // 承認ダイアログ中。sessions/<pid>.json の実測の形（v2.1.282）をそのまま通す
+        assert(Cockpit.waitingLabel(status: "waiting", waitingFor: "permission prompt") == "承認待ち")
+        assert(Cockpit.waitingLabel(status: "waiting", waitingFor: "input needed") == "入力待ち")
+        assert(Cockpit.waitingLabel(status: "busy", waitingFor: nil) == nil)
+        c.liveSessions = [LiveSession(id: "S1", name: "S1", cwd: "/p", busy: false,
+                                      waiting: Cockpit.waitingLabel(status: "waiting",
+                                                                    waitingFor: "permission prompt"))]
+        let chipsWaiting = c.snapshot(now: later, mode: .work).chips
+        let asking = chipsWaiting.first { $0.id == "S1" }
+        // 待っている道具（直前の作業）まで出す。止まっているので「思考中」でも内訳でもない
+        assert(asking?.waiting == "承認待ち" && asking?.doing == "承認待ち · 編集 Gate.swift",
+               "実際: \(asking?.doing ?? "無し")")
+        assert(chipsWaiting.first { $0.id == "w0" }?.waiting == nil, "セッションの待ちが子に載った")
     }
 
     // MARK: 門（人間の介入）

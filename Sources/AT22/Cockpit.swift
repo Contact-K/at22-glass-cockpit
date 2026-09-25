@@ -85,6 +85,8 @@ struct AgentChip: Identifiable {
     let spent: Double
     /// 同じセッションの合計に対する割合（0…1）。合計が0なら0
     let share: Double
+    /// 人間の返事待ち（`LiveSession.waiting`）。セッション単位の値なので司令塔にだけ載る
+    var waiting: String? = nil
 }
 
 struct CockpitSnapshot {
@@ -105,6 +107,9 @@ struct LiveSession: Identifiable, Hashable {
     let name: String
     let cwd: String
     let busy: Bool
+    /// 人間の返事を待って止まっている時だけ入る（「承認待ち」「入力待ち」）。
+    /// Claude Code 自身が `sessions/<pid>.json` に書く値なので、フックも設定も要らない
+    var waiting: String? = nil
 }
 
 /// 終了済みも含む transcript の入口。ファイル名のUUIDを選択キーにそのまま使う
@@ -1714,6 +1719,11 @@ final class Cockpit {
         var chips: [AgentChip] = []
         // Claude Code 自身が busy と言っているセッション。考えている時間もここには出る
         let busySessions = Set(liveSessions.lazy.filter(\.busy).map(\.id))
+        // 返事待ちのセッション。キーはセッションIDなので、引けるのは司令塔（ID＝セッションID）だけ。
+        // ponytail: どのサブエージェントのどの道具が待っているかまでは sessions/*.json に無い。
+        // 要るなら PermissionRequest フック（agent_id・tool_use_id が来る）だが、設定に触ることになる
+        let waitingSessions = Dictionary(liveSessions.compactMap { s in s.waiting.map { (s.id, $0) } },
+                                         uniquingKeysWith: { first, _ in first })
 
         // セッションごとの消費量合計。`share` の分母になる。
         //
@@ -1742,6 +1752,10 @@ final class Cockpit {
             let busy = Self.isBusy(record, live: running != nil || busySessions.contains(id), now: now)
             let totalInSession = sessionSpendTotal[record.session] ?? 0
             let share = totalInSession > 0 ? record.spent / totalInSession : 0
+            let waiting = waitingSessions[id]
+            // 待っている間は、止まる直前にしていたこと（＝承認を求めている道具）を添える
+            let doing = waiting.map { "\($0) · " + Self.doingText(record, working: true, now: now) }
+                ?? Self.doingText(record, working: busy, now: now)
             chips.append(AgentChip(
                 id: id,
                 role: record.role ?? role(of: id, session: record.session),
@@ -1750,7 +1764,7 @@ final class Cockpit {
                 parent: record.parentCall.flatMap { callIssuer[$0] },
                 // 終了報告が来ていればそれが確定値。来るまでは観測できたぶんで代用する
                 work: record.reportedWork ?? max(record.observedWork, touchCount[id] ?? 0),
-                doing: Self.doingText(record, working: busy, now: now),
+                doing: doing,
                 done: record.doneAt != nil,
                 busy: busy,
                 target: running?.target,
@@ -1761,7 +1775,8 @@ final class Cockpit {
                     record.counts[kind].map { (kind, $0) }
                 },
                 spent: record.spent,
-                share: share))
+                share: share,
+                waiting: waiting))
         }
 
         for (id, worker) in mcpWorkers {
@@ -2200,12 +2215,22 @@ final class Cockpit {
             found.append(LiveSession(id: id,
                                      name: obj["name"] as? String ?? String(id.prefix(8)),
                                      cwd: obj["cwd"] as? String ?? "",
-                                     busy: (obj["status"] as? String) == "busy"))
+                                     busy: (obj["status"] as? String) == "busy",
+                                     waiting: Self.waitingLabel(status: obj["status"] as? String,
+                                                                waitingFor: obj["waitingFor"] as? String)))
         }
         activeSessions = Set(found.map(\.id))
         let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions,
                                loaded: Array(loadedSessionTabs.values))
         if sorted != liveSessions { liveSessions = sorted }
+    }
+
+    /// `status` が `waiting` の時の表示名。実測（v2.1.282）で承認ダイアログ中は
+    /// `waitingFor: "permission prompt"`、質問への回答待ちは `"input needed"` が来る。
+    /// 知らない値も「人を待っている」ことに変わりはないので入力待ちに寄せる
+    nonisolated static func waitingLabel(status: String?, waitingFor: String?) -> String? {
+        guard status == "waiting" else { return nil }
+        return waitingFor == "permission prompt" ? "承認待ち" : "入力待ち"
     }
 
     /// 見ていたセッションが終わってもタブは残す。消すと選択だけが残って
