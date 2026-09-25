@@ -57,6 +57,9 @@ struct CockpitLayout {
     static let margin: CGFloat = 20
     static let font: CGFloat = 12.5
     static let badgeFont: CGFloat = 11
+    /// セルの札（`W5 書込中`）。名前の欄を札の幅だけ空けるので、測る側と描く側がこの値を共有する
+    static let tagFont: CGFloat = 9
+    static let tagTracking: CGFloat = 0.8
     /// 2行ぶん。上が役割＋モデル＋労働量、下が「今していること」
     static let chipHeight: CGFloat = 46
     static let chipGap: CGFloat = 8
@@ -784,9 +787,20 @@ struct CockpitLayout {
                 for (file, w) in row {
                     let rect = CGRect(x: cellX, y: cellY, width: w, height: rowHeight)
                     // 札が出ている間は名前の欄がその幅だけ狭まる。狭めないと札が名前の上に乗る
-                    let tag = touching[file.id] ?? ""
-                    let tagWidth = tag.isEmpty ? 0 : textWidth(tag, size: badgeFont) + 8
-                    let nameLimit = w - cellPad * 2 - markColumn - tickColumn * 2 - tagWidth
+                    var tag = touching[file.id] ?? ""
+                    // 描く時と同じ字の大きさ・字間で測る。以前は 11pt で測って 9pt で描いていたので
+                    // 札の手前に20ptほど空きが残り、`A.swift` さえ「A…ft」に削られていた
+                    func tagWidth(_ t: String) -> CGFloat {
+                        t.isEmpty ? 0 : textWidth(t, size: tagFont) + tagTracking * CGFloat(t.count) + 8
+                    }
+                    let room = w - cellPad * 2 - markColumn - tickColumn * 2
+                    // 札を付けると名前が入りきらない時は、札を W 番号だけに縮める。書込中／読取中は
+                    // セルの地（赤）と外周の輪が既に語っている。縮めないと半幅セルでは `D.swift` が
+                    // 「D.s…ft」、盤面が狭い時は「…」だけになり、どのファイルを触っているのか読めなかった
+                    if textWidth(file.name) > room - tagWidth(tag), let space = tag.firstIndex(of: " ") {
+                        tag = String(tag[..<space])
+                    }
+                    let nameLimit = room - tagWidth(tag)
                     let subLimit = w - cellPad * 2 - markColumn - tickColumn
                     boxes.append(CellBox(cell: file,
                                          display: truncateMiddle(file.name, toWidth: nameLimit),

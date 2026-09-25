@@ -1411,7 +1411,10 @@ enum CockpitCanvas {
             ctx.fill(shape, with: .color(Palette.ink.opacity(0.08)))
             // 読み取り中はセルの外側にリングを出す（HTML の state.ts と同じ表現）。
             // 書き込みと違って色は載せない——読むのは「起きている」だけで「変わった」ではない
-            let ring = box.rect.insetBy(dx: -4, dy: -4)
+            // はみ出しは上下の隙間（cellGapY）の半分未満に抑える。4pt 出していた頃は、
+            // 縦に並んだ2つを同時に読むと輪が交差して1本に見え、下の書き込み中セルの枠にも乗っていた
+            let out = CockpitLayout.cellGapY / 2 - 1
+            let ring = box.rect.insetBy(dx: -out, dy: -out)
             ctx.stroke(Path(roundedRect: ring, cornerRadius: Palette.Radius.sm),
                        with: .color(Palette.inkSecondary.opacity(pulse * 0.8)),
                        lineWidth: Palette.Stroke.hair)
@@ -1453,9 +1456,10 @@ enum CockpitCanvas {
         // 書き込み中だけ赤——読み取りは起きているだけで、変わってはいない
         if !box.tag.isEmpty {
             ctx.draw(ctx.resolve(Text(box.tag)
-                .font(.system(size: Palette.FontSize.label, design: .monospaced))
-                .tracking(Palette.Tracking.wide)
-                .foregroundStyle(box.tag.hasSuffix("書込中") ? Palette.accentText : Palette.inkSecondary)),
+                .font(.system(size: CockpitLayout.tagFont, design: .monospaced))
+                .tracking(CockpitLayout.tagTracking)
+                // 色は札の文字ではなくセルの状態で決める（細いセルでは札が「W5」だけに縮むため）
+                .foregroundStyle(box.cell.state == .writing ? Palette.accentText : Palette.inkSecondary)),
                      at: CGPoint(x: box.rect.maxX - CockpitLayout.cellPad - CockpitLayout.tickColumn,
                                  y: box.rect.midY), anchor: .trailing)
         }

@@ -110,6 +110,30 @@ struct P0SelfCheck {
         // 広ければ今まで通り全部出す
         let wide = L.fitRow(role: "claude-in-chrome", trailing: "MCP 85", meta: "navigate", rowWidth: 900)
         assert(wide == ("claude-in-chrome", "MCP 85", "navigate"), "\(wide)")
+
+        // セルの札。札を付けると名前が入りきらない時だけ「W1」に縮め、名前を削らせない
+        let now = Date()
+        let c = Cockpit()
+        c.apply([.agentActivity(agent: "w1", session: "S1", model: "opus-5", at: now),
+                 .agentActivity(agent: "w2", session: "S1", model: "opus-5", at: now),
+                 .touchStarted(id: "t1", session: "S1", agent: "w1", path: "/p/src/D.swift",
+                               kind: .write, at: now.addingTimeInterval(-1)),
+                 .touchStarted(id: "t2", session: "S1", agent: "w2", path: "/p/src/x",
+                               kind: .read, at: now.addingTimeInterval(-1))])
+        let snap = c.snapshot(now: now, mode: .work)
+        func cell(_ path: String, _ width: CGFloat) -> L.CellBox? {
+            L.compute(snap, width: width).cards.flatMap(\.cells).first { $0.cell.id == path }
+        }
+        let normal = cell("/p/src/D.swift", 1100)
+        assert(normal?.tag.hasPrefix("W") == true && normal?.tag.contains(" ") == false
+               && normal?.display == "D.swift",
+               "半幅で名前が削られた: \(normal?.tag ?? "無し") / \(normal?.display ?? "無し")")
+        let narrow = cell("/p/src/D.swift", 320)
+        assert(narrow.map { $0.display != "…" && $0.display.hasPrefix("D") } == true,
+               "狭い時に名前が消えた: \(narrow?.display ?? "無し")")
+        // 名前が短くて札ごと入るなら、札は縮めない
+        let short = cell("/p/src/x", 1100)
+        assert(short?.tag.hasSuffix("読取中") == true && short?.display == "x", "\(short?.tag ?? "無し")")
     }
 
     // MARK: パーサ
