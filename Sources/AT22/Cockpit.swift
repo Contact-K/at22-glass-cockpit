@@ -311,8 +311,10 @@ final class Cockpit {
     /// 承認の強さ。正は `memory/gate/LEVEL` の中身——司令塔も同じファイルを読むので、
     /// UserDefaults に置くと向こうから見えない
     private(set) var gateLevel = Gate.defaultLevel
-    /// AT22 が起こしたセッション。終了まで手元に置いて、落ちた理由を拾えるようにする
-    private var launched: [UUID: Process] = [:]
+    /// AT22 が起こした／繋いだプロセス。終了まで手元に置いて、落ちた理由を拾えるようにする。
+    /// キーはセッションID。`token` は起こすたびに新しくする——同じセッションへ繋ぎ直した後に
+    /// 古いプロセスが終わった時、新しい方の記録まで片付けないため
+    private var launched: [String: (token: UUID, process: Process)] = [:]
     private(set) var launchError: String?
     /// 起こした／繋いだセッションの stdin。**ここが開いている間だけ言葉が通る**
     private var inputs: [String: FileHandle] = [:]
@@ -320,11 +322,15 @@ final class Cockpit {
     /// `--resume` にモデルを渡さなければ、claude は元のセッションの設定をそのまま引き継ぐ
     private var sessionModel: [String: String] = [:]
     /// stdout から拾っている部分テキスト。確定は transcript の担当——ここは「いま書いている途中」だけ。
-    /// ターン終了で空になる。`isWorking` が更正確に判定できるように使う
-    private(set) var streaming: String = ""
-    /// 最後に送った割り込みの request_id。受領確認が来たら、その ID とこれを照合する。
+    /// ターン終了で消える。**セッションごとに持つ**——1本にまとめていた頃は、どれか1つが
+    /// 書いている間、`isWorking` が全セッションを稼働中と答えていた
+    private(set) var streaming: [String: String] = [:]
+    /// セッションごとの、受領確認を待っている割り込みの request_id。
     /// ここを持つことで、投げっぱなし（応答の見落とし）と、誤報（止まり損ない）を防ぐ
-    private var lastInterruptRequestID: String?
+    private var interruptRequests: [String: String] = [:]
+    /// 人が止めたターン。claude は止めたターンを `error_during_execution` で終えるので、
+    /// ここに無いと「自分で止めたのに失敗」と出てしまう（実機で確認）
+    private var stopping: Set<String> = []
 
     /// モデルが書いた言葉。tool_use しか見ていなかったので、これまで画面に出ていなかった分
     private(set) var messages: [Message] = []
@@ -678,13 +684,17 @@ final class Cockpit {
     /// - Parameter creating: まだ無いファイルを作ってよいか。門の答え（`gate/<id>.verdict`）と
     ///   承認モード（`gate/LEVEL`）だけがこれを使う。置き場のガードは通常の経路と同じものを通す
     @discardableResult
+    /// - Parameter project: 書き込む先のプロジェクト（`~/.claude/projects/<slug>`）。省略すると
+    ///   選択中のセッションのもの。**どちらでも置き場のガードは同じ**——`projects/` の直下で、
+    ///   その `memory/` の内側だけ
     func saveNote(path: String, text: String, expectedText: String? = nil,
-                  overwrite: Bool = false, creating: Bool = false) -> NoteSaveResult {
+                  overwrite: Bool = false, creating: Bool = false, project explicit: URL? = nil) -> NoteSaveResult {
         let manager = FileManager.default
         let projects = projectsRoot.standardizedFileURL.resolvingSymlinksInPath()
-        guard let project = memoryRoot?.standardizedFileURL.resolvingSymlinksInPath(),
-              let memory = memoryDirectory()?.standardizedFileURL.resolvingSymlinksInPath(),
-              project.path.hasPrefix(projects.path + "/"),
+        guard let root = explicit ?? memoryRoot else { return .failed }
+        let project = root.standardizedFileURL.resolvingSymlinksInPath()
+        let memory = root.appendingPathComponent("memory").standardizedFileURL.resolvingSymlinksInPath()
+        guard project.path.hasPrefix(projects.path + "/"),
               memory.lastPathComponent == "memory",
               memory.deletingLastPathComponent().path == project.path else { return .failed }
 
@@ -784,12 +794,16 @@ final class Cockpit {
     }
 
     /// 承認の強さを変える。ファイルが正なので、選んだその場で書く
+    /// - Parameter cwd: これから起こすセッションの作業ディレクトリ。渡すと**そのプロジェクト**の
+    ///   `LEVEL` に書く（まだ transcript が無くても書ける）。省略すると選択中のセッションのもの
     @discardableResult
-    func setGateLevel(_ level: Gate.Level) -> NoteSaveResult {
-        guard let dir = memoryDirectory() else { return .failed }
-        let result = saveNote(path: Gate.levelPath(memoryRoot: dir),
-                              text: level.rawValue + "\n", creating: true)
-        if result == .saved { gateLevel = level }
+    func setGateLevel(_ level: Gate.Level, cwd: String? = nil) -> NoteSaveResult {
+        let project = cwd.map { projectsRoot.appendingPathComponent(Self.projectSlug($0)) } ?? memoryRoot
+        guard let project else { return .failed }
+        let result = saveNote(path: Gate.levelPath(memoryRoot: project.appendingPathComponent("memory")),
+                              text: level.rawValue + "\n", creating: true, project: project)
+        // 表示している段は選択中のセッションのもの。別プロジェクトに書いた時は変えない
+        if result == .saved, project.standardizedFileURL == memoryRoot?.standardizedFileURL { gateLevel = level }
         return result
     }
 
@@ -864,39 +878,47 @@ final class Cockpit {
     ///   - backend: .claude または .codex（デフォルト: .claude）
     ///   - model: モデルID（例: "opus", "gpt-5.3-codex"）。空なら既定値を使用
     ///   - allowedTools: 白名簿（claude のみ）
+    ///   - level: 承認の段。省略すると選択中のセッションの段を使う
     @discardableResult
     func launch(prompt: String, cwd: String, backend: Backend = .claude, model: String = "",
-                allowedTools: [String] = []) -> UUID? {
+                allowedTools: [String] = [], level: Gate.Level? = nil) -> UUID? {
+        let level = level ?? gateLevel
         switch backend {
         case .claude:
-            return launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools)
+            return launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
+                                level: level)
         case .codex:
-            return launchCodex(prompt: prompt, cwd: cwd, model: model)
+            return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
 
     private func launchClaude(prompt: String, cwd: String, model: String,
-                              allowedTools: [String]) -> UUID? {
+                              allowedTools: [String], level: Gate.Level) -> UUID? {
         guard let claude else {
             launchError = "claude が見つからない"
             return nil
         }
-        let config = Launcher.Config(cwd: cwd, level: gateLevel,
+        // 司令塔は起きてすぐ `memory/gate/LEVEL` を読むので、起こす前に**起こす先のプロジェクトへ**書く。
+        // 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
+        setGateLevel(level, cwd: cwd)
+        let config = Launcher.Config(cwd: cwd, level: level,
                                      prompt: prompt, allowedTools: allowedTools, model: model)
-        let onStream = claudeStream()
+        let sessionID = UUID()
+        // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
+        let id = sessionID.uuidString.lowercased()
+        let token = UUID()
 
         do {
             // 末尾クロージャは使わない。`onStream:` を明示したうえで末尾に閉じ括弧を置くと、
             // Swift が末尾クロージャを最後の引数（onStream）に結ぼうとして衝突する
             let started = try Launcher.launch(
-                config, using: claude,
-                onExit: exitHandler(label: "claude"),
-                onStream: onStream)
-            launched[started.sessionID] = started.process
+                config, using: claude, sessionID: sessionID,
+                onExit: exitHandler(label: "claude", session: id, token: token),
+                onStream: claudeStream(session: id))
+            launched[id] = (token, started.process)
             launchError = nil
 
             // `.jsonl` はまだ無い。タブを先に立てておかないと、起こした直後の数秒が行方不明になる
-            let id = started.sessionID.uuidString.lowercased()
             inputs[id] = started.input
             backends[id] = .claude
             loadedSessionTabs[id] = LiveSession(id: id, name: String(id.prefix(8)),
@@ -934,12 +956,14 @@ final class Cockpit {
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
         let config = Launcher.Config(cwd: cwd, level: gateLevel, prompt: "",
                                      model: sessionModel[session] ?? "")
+        let token = UUID()
         do {
             let started = try Launcher.launch(
                 config, using: claude, resuming: session,
-                onExit: exitHandler(label: "claude"),
-                onStream: claudeStream())
-            launched[started.sessionID] = started.process
+                onExit: exitHandler(label: "claude", session: session, token: token),
+                onStream: claudeStream(session: session))
+            // `started.sessionID` は繋ぐ時には使われない乱数なので、キーには繋いだ先の ID を使う
+            launched[session] = (token, started.process)
             inputs[session] = started.input
             backends[session] = .claude
             launchError = nil
@@ -965,12 +989,22 @@ final class Cockpit {
         sessionModel[session] ?? agents[session]?.model
     }
 
-    /// 落ちた時の後始末。起こす／繋ぐで同じものを使う
-    private func exitHandler(label: String) -> @Sendable (Int32, String) -> Void {
+    /// 終わった時の後始末。起こす／繋ぐで同じものを使う。
+    /// 片付けるのは `token` が合う時だけ——モデルの切り替えで閉じた古いプロセスが、
+    /// 繋ぎ直した後に終わることがあり、そこで消すと新しい接続の stdin まで捨ててしまう
+    private func exitHandler(label: String, session: String, token: UUID) -> @Sendable (Int32, String) -> Void {
         { status, errors in
-            guard status != 0 else { return }
             Task { @MainActor [weak self] in
-                self?.launchError = errors.isEmpty
+                guard let self else { return }
+                if self.launched[session]?.token == token {
+                    self.launched[session] = nil
+                    self.inputs[session] = nil
+                    self.streaming[session] = nil
+                    self.interruptRequests[session] = nil
+                    self.stopping.remove(session)
+                }
+                guard status != 0 else { return }
+                self.launchError = errors.isEmpty
                     ? "\(label) が終了コード \(status) で終わった" : errors
             }
         }
@@ -979,78 +1013,76 @@ final class Cockpit {
     /// stdout のイベントを状態に反映するハンドラ。**起こす時と繋ぐ時で同じもの**を使う——
     /// 2本に割ると、片方だけ直して挙動が食い違う。
     /// `readabilityHandler` は別スレッドで走るので、MainActor に載せ替える
-    private func claudeStream() -> @Sendable (Launcher.StreamEvent) -> Void {
+    private func claudeStream(session: String) -> @Sendable (Launcher.StreamEvent) -> Void {
         { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .partialText(text):
-                    // 部分テキスト。ターン終了で空になる
-                    self?.streaming += text
-
-                case .turnProgressed:
-                    // ターンが進んだ。進行中として記録するだけ
-                    break
-
-                case .turnEnded:
-                    // ターンが正常に終わった。部分テキストを空にしてリセット。
-                    // 確定メッセージは transcript から来るので、ここには残さない
-                    self?.streaming = ""
-
-                case let .turnFailed(reason):
-                    // ターンが失敗。理由を launchError に載せる。
-                    // これを握り潰すと司令塔が「成功した」と誤認する。
-                    // 書きかけテキスト（streaming）は消す——失敗しても途中まで書けたと見えてはいけない
-                    self?.streaming = ""
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(reason)"
-                    } else {
-                        self?.launchError = "失敗: \(reason)"
-                    }
-
-                case let .interruptAcknowledged(requestID, stillQueued, cancelled):
-                    // 割り込みの受領確認。自分が送った ID と照合する。
-                    // stillQueued が 0 でなければ「全部は止まっていない」の誤報を防ぐため、
-                    // エラー扱いにして司令塔に報告。0 なら成功。
-                    // これを握り潰すと、止め損ないが画面に現れず、司令塔が気づけない
-                    if requestID == self?.lastInterruptRequestID {
-                        // **`cancelled` は成功の印**（取り消せた件数）。ここで警告を出すと、
-                        // 完璧に止まったときに「止まっていない」と誤報することになる。
-                        // 止まり損ないを示すのは `stillQueued` だけ
-                        if stillQueued > 0 {
-                            let msg = "割り込みが全部は通らず、\(stillQueued) 件残っている（取消 \(cancelled) 件）"
-                            if let existing = self?.launchError, !existing.isEmpty {
-                                self?.launchError = existing + "\n\(msg)"
-                            } else {
-                                self?.launchError = msg
-                            }
-                        }
-                        self?.lastInterruptRequestID = nil
-                    }
-
-                case let .error(message):
-                    // エラーを記録
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(message)"
-                    } else {
-                        self?.launchError = message
-                    }
-
-                case .initialized:
-                    // セッションが立ち上がった
-                    break
-                }
-            }
+            Task { @MainActor [weak self] in self?.applyStream(event, session: session) }
         }
     }
 
-    private func launchCodex(prompt: String, cwd: String, model: String) -> UUID? {
+    /// stdout の出来事を1件、そのセッションの状態に反映する。自己チェックが直接叩く
+    func applyStream(_ event: Launcher.StreamEvent, session: String) {
+        switch event {
+        case let .partialText(text):
+            // 部分テキスト。ターン終了で消える
+            streaming[session, default: ""] += text
+
+        case .turnProgressed, .initialized:
+            break
+
+        case .turnEnded:
+            // 確定メッセージは transcript から来るので、ここには残さない
+            streaming[session] = nil
+            stopping.remove(session)
+
+        case let .turnFailed(reason):
+            // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
+            // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
+            streaming[session] = nil
+            // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
+            // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
+            // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
+            if stopping.remove(session) != nil, reason == "error_during_execution" { break }
+            appendLaunchError("失敗: \(reason)")
+
+        case let .interruptAcknowledged(requestID, stillQueued, cancelled):
+            // 割り込みの受領確認。**そのセッションに**送った ID と照合する。
+            // 握り潰すと、止め損ないが画面に現れず、司令塔が気づけない
+            guard requestID == interruptRequests[session] else { break }
+            // **`cancelled` は成功の印**（取り消せた件数）。ここで警告を出すと、
+            // 完璧に止まったときに「止まっていない」と誤報することになる。
+            // 止まり損ないを示すのは `stillQueued` だけ
+            if stillQueued > 0 {
+                appendLaunchError("割り込みが全部は通らず、\(stillQueued) 件残っている（取消 \(cancelled) 件）")
+            }
+            interruptRequests[session] = nil
+
+        case let .error(message):
+            appendLaunchError(message)
+        }
+    }
+
+    /// 割り込みを送ったことを覚える。受領確認の照合と、止めたターンの終わり方の見分けに使う
+    func expectInterrupt(_ requestID: String, for session: String) {
+        interruptRequests[session] = requestID
+        stopping.insert(session)
+    }
+
+    private func appendLaunchError(_ message: String) {
+        if let existing = launchError, !existing.isEmpty {
+            launchError = existing + "\n" + message
+        } else {
+            launchError = message
+        }
+    }
+
+    private func launchCodex(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
         guard let codex = codexFound else {
             launchError = "codex が見つからない"
             return nil
         }
 
         let sessionID = UUID().uuidString.lowercased()
-        let config = CodexLauncher.Config(cwd: cwd, level: gateLevel, prompt: prompt, model: model)
+        let config = CodexLauncher.Config(cwd: cwd, level: level, prompt: prompt, model: model)
 
         let onStream: @Sendable (CodexLauncher.Event) -> Void = { event in
             Task { @MainActor [weak self] in
@@ -1346,7 +1378,7 @@ final class Cockpit {
             launchError = "止められなかった。セッションが終わっている"
             return false
         }
-        lastInterruptRequestID = requestID
+        expectInterrupt(requestID, for: session)
         return true
     }
 
@@ -1368,8 +1400,8 @@ final class Cockpit {
             // セッションが指定されていない場合は、稼働中のセッションが1つでもあれば true
             return liveSessions.contains { $0.busy }
         }
-        // stdout から部分テキストが流れてきている。「今書いている途中」の状態
-        if !streaming.isEmpty { return true }
+        // そのセッションの stdout から部分テキストが流れてきている。「今書いている途中」の状態
+        if streaming[wanted]?.isEmpty == false { return true }
         // codex セッション: プロセスが実行中なら稼働中
         if backend(of: wanted) == .codex && codexProcesses[wanted] != nil {
             return true

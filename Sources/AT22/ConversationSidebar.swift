@@ -579,8 +579,8 @@ struct ConversationSidebar: View {
     private func launchNew() {
         launching = true
 
-        // ゲートレベルを設定
-        cockpit.setGateLevel(selectedGateLevel)
+        // 承認の段は `launch` に渡す。ここで `setGateLevel` を呼ぶと、**選択中の別セッション**の
+        // プロジェクトに書いてしまっていた（起こす先のプロジェクトへは launch 側が書く）
 
         // モデルID の取得
         let modelID = launchModel == Self.customModel ? customModelID : launchModel
@@ -589,7 +589,7 @@ struct ConversationSidebar: View {
         let backend = Backend(rawValue: launchBackend) ?? .claude
 
         if cockpit.launch(prompt: launchPrompt, cwd: launchDirectory,
-                         backend: backend, model: modelID) != nil {
+                         backend: backend, model: modelID, level: selectedGateLevel) != nil {
             resetLaunchState()
             pane = .conversation
         } else {

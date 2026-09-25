@@ -89,9 +89,63 @@ struct P0SelfCheck {
         mcpWorkerSurvivesLongFlight()
         foldsChipsOverTheLimit()
         rowsFitWhenNarrow()
+        streamingIsPerSession()
+        launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
         print("p0: ok")
+    }
+
+    /// 書きかけはセッションごと。1本にまとめていた頃は、どれか1つが書いている間
+    /// 全セッションが稼働中に見え、別のセッションのターン終了で書きかけが消えていた
+    static func streamingIsPerSession() {
+        let c = Cockpit()
+        c.applyStream(.partialText("書いている途中"), session: "A")
+        assert(c.isWorking("A"), "書いているセッションが稼働中にならない")
+        assert(!c.isWorking("B"), "A の書きかけで B まで稼働中になった")
+        c.applyStream(.turnEnded, session: "B")
+        assert(c.streaming["A"] == "書いている途中", "B のターン終了で A の書きかけが消えた")
+        // 送っていない割り込みの受領確認は無視する（別セッション宛ての誤配を止め損ないと言わない）
+        c.applyStream(.interruptAcknowledged(requestID: "rB", stillQueued: 2, cancelled: 0), session: "A")
+        assert(c.launchError == nil, "送っていない割り込みの確認で警告が出た: \(c.launchError ?? "")")
+        c.applyStream(.turnEnded, session: "A")
+        assert(c.streaming["A"] == nil && !c.isWorking("A"), "ターン終了で書きかけが残った")
+
+        // 人が止めたターンは失敗と言わない。claude は止めたターンを error_during_execution で終える（実機で確認）
+        c.expectInterrupt("rA", for: "A")
+        c.applyStream(.partialText("1\n2\n"), session: "A")
+        c.applyStream(.interruptAcknowledged(requestID: "rA", stillQueued: 0, cancelled: 0), session: "A")
+        c.applyStream(.turnFailed("error_during_execution"), session: "A")
+        assert(c.launchError == nil, "自分で止めたのに失敗と出た: \(c.launchError ?? "")")
+        // 止めていないセッションの同じ終わり方は、今まで通り失敗として出す
+        c.applyStream(.turnFailed("error_during_execution"), session: "B")
+        assert(c.launchError?.contains("error_during_execution") == true, "本物の失敗を握り潰した")
+    }
+
+    /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。
+    /// 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
+    static func launchLevelTargetsNewProject() {
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-level-\(UUID().uuidString)")
+        defer { try? manager.removeItem(at: base) }
+        let projects = base.appendingPathComponent("projects")
+        let current = projects.appendingPathComponent("current")
+        try! manager.createDirectory(at: current.appendingPathComponent("memory"), withIntermediateDirectories: true)
+        try! Data().write(to: current.appendingPathComponent("selected.jsonl"))
+
+        let c = Cockpit(projectsRoot: projects)
+        c.selectedSession = "selected"
+        c.refreshMemory()
+        assert(c.setGateLevel(.auto) == .saved, "選択中のプロジェクトに段を書けない")
+
+        // transcript もプロジェクトのフォルダもまだ無い、これから起こす先
+        let cwd = "/tmp/brand new/app"
+        assert(c.setGateLevel(.each, cwd: cwd) == .saved, "起こす先のプロジェクトに段を書けない")
+        let fresh = projects.appendingPathComponent(Cockpit.projectSlug(cwd)).appendingPathComponent("memory")
+        assert(Gate.level(memoryRoot: fresh) == .each, "起こす先に段が書かれていない")
+        assert(Gate.level(memoryRoot: current.appendingPathComponent("memory")) == .auto,
+               "選択中の別プロジェクトの段が変わった")
+        assert(c.gateLevel == .auto, "別プロジェクトに書いたのに表示中の段が変わった")
     }
 
     /// 会話欄を出したまま窓を最小にすると盤面は320前後になる。そこで名前・モデル・バッジが重なっていた
