@@ -39,7 +39,7 @@ struct ConversationSidebar: View {
     /// セッションを起こせる状態か。**塞がっていてもボタンは消さない**——
     /// 消すと「なぜ出ないのか」が画面のどこにも無くなる
     private var launcherReady: Bool {
-        launcherEnabled && (cockpit.claude != nil || cockpit.codexFound != nil)
+        launcherEnabled && !cockpit.found.isEmpty
     }
 
     private var launcherBlocked: String {
@@ -176,7 +176,7 @@ struct ConversationSidebar: View {
                     // バックエンド/モデルバッジ
                     if let sessionID = cockpit.selectedSession {
                         if cockpit.backend(of: sessionID) != .claude {
-                            Text("Codex")
+                            Text(cockpit.backend(of: sessionID).title)
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .padding(.horizontal, 4).padding(.vertical, 2)
                                 .background(RoundedRectangle(cornerRadius: 2).fill(CockpitCanvas.dim.opacity(0.2)))
@@ -395,9 +395,9 @@ struct ConversationSidebar: View {
     private var modelMenu: some View {
         let session = cockpit.selectedSession
         let current = session.flatMap { cockpit.model(of: $0) } ?? ""
-        let codex = session.map { cockpit.backend(of: $0) == .codex } ?? false
+        let backend = session.map { cockpit.backend(of: $0) } ?? .claude
         return Menu {
-            ForEach(codex ? ModelChoice.codexModels : ModelChoice.claudeModels, id: \.id) { choice in
+            ForEach(ModelChoice.models(for: backend), id: \.id) { choice in
                 Button(choice.title) { if let session { cockpit.setModel(choice.id, for: session) } }
             }
         } label: {
@@ -435,7 +435,7 @@ struct ConversationSidebar: View {
 
     /// 起こせるモデル。**バックエンドが見つかっている側だけ**を出す
     private var models: [ModelChoice] {
-        launchBackend == Backend.codex.rawValue ? ModelChoice.codexModels : ModelChoice.claudeModels
+        ModelChoice.models(for: Backend(rawValue: launchBackend) ?? .claude)
     }
 
     /// **`ScrollView` に入れるのが要点。** 400pt 幅の欄に Picker 3つ・入力欄・120pt の
@@ -452,11 +452,10 @@ struct ConversationSidebar: View {
 
                 field("バックエンド") {
                     Picker("バックエンド", selection: $launchBackend) {
-                        Text("Claude").tag(Backend.claude.rawValue)
                         // 見つかっていない側は出さない。`Picker` の中身に `.disabled` を
                         // 付けても効かないので、以前は「CLI が見つからない」を選べてしまった
-                        if cockpit.codexFound != nil {
-                            Text("Codex (OpenAI)").tag(Backend.codex.rawValue)
+                        ForEach(Backend.allCases.filter { $0 == .claude || cockpit.found[$0] != nil }, id: \.self) { backend in
+                            Text(backend.title).tag(backend.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -625,7 +624,7 @@ struct ConversationSidebar: View {
             .padding(.vertical, 8)
             Divider()
 
-            if cockpit.liveSessions.isEmpty && cockpit.recentSessions.isEmpty && cockpit.codexRecords.isEmpty {
+            if cockpit.liveSessions.isEmpty && cockpit.recentSessions.isEmpty && cockpit.runRecords.isEmpty {
                 Spacer()
                 Text("履歴はまだない")
                     .font(.system(size: 12, design: .monospaced))
@@ -674,24 +673,24 @@ struct ConversationSidebar: View {
                             }
                         }
 
-                        // Codex セッション
-                        let liveCodexIDs = Set(cockpit.liveSessions.compactMap { session in
-                            cockpit.backend(of: session.id) == .codex ? session.id : nil
+                        // transcript を AT22 が読まない相手（Codex / Grok）のセッション
+                        let liveRecordIDs = Set(cockpit.liveSessions.compactMap { session in
+                            cockpit.backend(of: session.id) != .claude ? session.id : nil
                         })
-                        let inactiveCodexRecords = cockpit.codexRecords.filter { !liveCodexIDs.contains($0.id) }
+                        let inactiveRunRecords = cockpit.runRecords.filter { !liveRecordIDs.contains($0.id) }
 
-                        if !inactiveCodexRecords.isEmpty {
+                        if !inactiveRunRecords.isEmpty {
                             if !recentByProject.isEmpty || !cockpit.liveSessions.isEmpty {
                                 Divider().padding(.vertical, 4)
                             }
-                            Text("Codex")
+                            Text("Codex・Grok")
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(CockpitCanvas.dim)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
 
-                            ForEach(inactiveCodexRecords.sorted(by: { $0.lastUsed > $1.lastUsed })) { record in
-                                codexRecordRow(record)
+                            ForEach(inactiveRunRecords.sorted(by: { $0.lastUsed > $1.lastUsed })) { record in
+                                recordRow(record)
                             }
                         }
                     }
@@ -782,11 +781,11 @@ struct ConversationSidebar: View {
         .buttonStyle(.plain)
     }
 
-    private func codexRecordRow(_ record: Cockpit.CodexRecord) -> some View {
+    private func recordRow(_ record: Cockpit.RunRecord) -> some View {
         Button {
             Task {
                 cockpit.selectedSession = record.id
-                cockpit.resumeCodexRecord(record)
+                cockpit.resumeRunRecord(record)
                 pane = .conversation
             }
         } label: {
@@ -804,7 +803,7 @@ struct ConversationSidebar: View {
                             .font(.system(size: 11, design: .monospaced))
                             .lineLimit(1)
                     }
-                    Text(String((record.cwd as NSString).lastPathComponent))
+                    Text(record.backend.title + " · " + String((record.cwd as NSString).lastPathComponent))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(CockpitCanvas.dim)
                         .lineLimit(1)

@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -92,6 +92,7 @@ struct P0SelfCheck {
         streamingIsPerSession()
         claudePermissionRoundTrip()
         codexEventsReachBoard()
+        acpSpeaksJSONRPC()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -173,6 +174,48 @@ struct P0SelfCheck {
         assert(c.messages.contains { $0.session == "X1" && $0.text == "直しました" }, "発言が会話に出ない")
         assert(snap.chips.contains { $0.id == "X1" }, "Codex のセッションが盤面のチップに出ない")
         assert(snap.cards.flatMap(\.files).contains { $0.id == "/p/src/Fixed.swift" }, "変更したファイルが盤面に出ない")
+    }
+
+    /// ACP（grok agent stdio）の行を読み、出来事に直す。材料は実機の Grok 1.0.41 が出した形
+    static func acpSpeaksJSONRPC() {
+        func classify(_ json: String) -> RPC.Line? { RPC.classify(Data(json.utf8)) }
+        guard case let .response(id, result, error)? = classify(#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#),
+              id == 3, error == nil, result["stopReason"] as? String == "end_turn" else { fatalError("返事を読めない") }
+        guard case let .response(_, _, failed)? = classify(#"{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"boom"}}"#),
+              failed == "boom" else { fatalError("エラーの返事を読めない") }
+        guard case let .request(askID, method, _)? = classify(#"{"jsonrpc":"2.0","id":"perm-7","method":"session/request_permission","params":{}}"#),
+              method == "session/request_permission", "\(askID)" == "perm-7" else { fatalError("相手からの問いを読めない") }
+        guard case .notification("session/update", _)? = classify(#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{}}}"#)
+        else { fatalError("知らせを読めない") }
+        assert(classify("壊れた行") == nil)
+
+        // 実機の tool_call（種類は _meta 側、題は関数名）→ 完了の update（題が人向けに変わる）
+        let start = #"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"run_terminal_command","rawInput":{"command":"git status"},"_meta":{"x.ai/tool":{"kind":"execute"}}}"#
+        let startTool = ACPConnection.tool((try! JSONSerialization.jsonObject(with: Data(start.utf8))) as! [String: Any], known: nil)
+        assert(startTool.kind == .git && startTool.title.hasPrefix("git") && !startTool.done, "\(startTool)")
+        let done = ACPConnection.tool(["toolCallId": "c1", "status": "completed", "title": "Execute `git status`"], known: startTool)
+        assert(done.done && done.kind == .git, "完了で素性が消えた: \(done)")
+        let edit = ACPConnection.tool(["kind": "edit", "title": "Edit a.swift", "locations": [["path": "/p/a.swift"]]], known: nil)
+        assert(edit.kind == .edit && edit.write && edit.path == "/p/a.swift", "\(edit)")
+
+        // ターンの閉じ方。人が止めたターン（cancelled）は失敗ではない
+        assert(ACPConnection.turnEnd(["stopReason": "end_turn", "_meta": ["inputTokens": 18559]]) == .turnEnded(tokens: 18559))
+        assert(ACPConnection.turnEnd(["stopReason": "cancelled"]) == .turnEnded(tokens: nil))
+        assert(ACPConnection.turnEnd(["stopReason": "max_tokens"]) == .turnFailed("max_tokens"))
+
+        // 承認の選択肢は「一度きり」を先に選ぶ。「以後ずっと」を AT22 が勝手に選ばない
+        let options: [[String: Any]] = [["optionId": "aa", "kind": "allow_always"], ["optionId": "ao", "kind": "allow_once"],
+                                        ["optionId": "ro", "kind": "reject_once"], ["optionId": "ra", "kind": "reject_always"]]
+        assert(ACPConnection.option(options, allow: true) == "ao" && ACPConnection.option(options, allow: false) == "ro")
+        assert(ACPConnection.option([["optionId": "x", "kind": "allow_always"]], allow: true) == "x")
+        let approval = ACPConnection.approval("perm-7", session: "G1", params: [
+            "toolCall": ["title": "Execute `rm -rf build`", "kind": "execute", "rawInput": ["command": "rm -rf build"]]])
+        assert(approval.id == "perm-7" && approval.session == "G1" && approval.input.contains("rm -rf build"), "\(approval)")
+
+        // 台帳は古い形（backend 無し）も読める。台帳を持っていたのは codex だけだった
+        let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
+        let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
+        assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
     }
 
     /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。

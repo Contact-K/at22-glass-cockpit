@@ -276,11 +276,13 @@ enum Launcher {
     /// ponytail: シェルの起動を待つだけで、時間制限は付けていない。壊れた rc ファイルで
     /// 帰ってこない場合はバックグラウンドの1本が留まり、起動UIが出ないまま終わる（画面は固まらない）。
     /// 実害が出たら `Process` に締め切りを付ける
-    nonisolated static func locate(override: String?) -> Found? {
+    /// - Parameter command: 探すコマンド名（claude / codex / grok）。**コードに書いた名前だけを渡す**——
+    ///   ログインシェルの `-c` に埋め込むので、人の入力を通してはいけない
+    nonisolated static func locate(override: String?, command: String = "claude") -> Found? {
         // シェルの答えは実体と PATH の2つ。**実体が空でも PATH は使う**——
         // 実測で、GUI と同じ最小環境では `command -v claude` だけが空を返すことがある。
         // そこで諦めると npm 入れの claude（node を要る）を最小 PATH で起こして落ちる
-        let shell = askLoginShell()
+        let shell = askLoginShell(command: command)
 
         if let override, !override.isEmpty {
             let url = URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
@@ -290,27 +292,28 @@ enum Launcher {
 
         // シェルが実体を知らなかった時だけ。入れ方ごとの既定の置き場を順に見る
         let home = NSHomeDirectory()
-        for candidate in ["\(home)/.local/bin/claude",
-                          "\(home)/.claude/local/claude",
-                          "/opt/homebrew/bin/claude",
-                          "/usr/local/bin/claude"] {
+        for candidate in ["\(home)/.local/bin/\(command)",
+                          "\(home)/.\(command)/local/\(command)",
+                          "\(home)/.\(command)/bin/\(command)",
+                          "/opt/homebrew/bin/\(command)",
+                          "/usr/local/bin/\(command)"] {
             let url = URL(fileURLWithPath: candidate)
             if isExecutable(url) { return Found(executable: url, path: shell.path) }
         }
         return nil
     }
 
-    /// `command -v claude` と `$PATH` を1回のログインシェルで両方取る。
+    /// `command -v <command>` と `$PATH` を1回のログインシェルで両方取る。
     /// 別々に起こすと、シェルの初期化を2回待つことになる。
     /// **どちらか片方だけ取れることがある**ので、取れた分をそのまま返す
-    nonisolated static func askLoginShell() -> (executable: URL?, path: String?) {
+    nonisolated static func askLoginShell(command: String = "claude") -> (executable: URL?, path: String?) {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         guard isExecutable(URL(fileURLWithPath: shell)) else { return (nil, nil) }
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: shell)
-        // 1行目 = claude の場所（無ければ空行）、2行目 = PATH
-        task.arguments = ["-l", "-c", "command -v claude; printf '\\n%s' \"$PATH\""]
+        // 1行目 = コマンドの場所（無ければ空行）、2行目 = PATH
+        task.arguments = ["-l", "-c", "command -v \(command); printf '\\n%s' \"$PATH\""]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
@@ -409,84 +412,14 @@ enum Launcher {
                                    resuming: String? = nil,
                                    onExit: (@Sendable (Int32, String) -> Void)? = nil,
                                    onStream: (@Sendable (StreamEvent) -> Void)? = nil) throws -> Started {
-        let task = Process()
-        task.executableURL = found.executable
-        task.arguments = resuming.map { resumeArguments(sessionID: $0, config: config) }
-                      ?? arguments(sessionID: sessionID, config: config)
-        task.currentDirectoryURL = URL(fileURLWithPath: config.cwd)
-        if let path = found.path {
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = path
-            task.environment = env
-        }
-
-        // stdout を読む（部分テキスト・ターン進行・割り込み受領など）。
-        // 読まないと 64KB のパイプバッファが詰まり、claude がブロックして固まる
-        let output = Pipe()
-        let outBuffer = StreamBuffer()
-        let outQueue = DispatchQueue(label: "at22.launcher.stdout", qos: .utility)
-
-        // stderr も継続的に吸い出す（既存バグ修正）。
-        // 読まないと 64KB で固まる。末尾 8KB だけ保持
-        let errors = Pipe()
-        let errBuffer = StreamBuffer(maxTailBytes: 8 * 1024)
-
-        let stdin = Pipe()
-        task.standardInput = stdin
-        task.standardOutput = output
-        task.standardError = errors
-
-        // stdout を行単位で読む
-        output.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                outBuffer.append(data)
-
-                // 改行で分かれた完全な行を取り出す
-                for lineData in outBuffer.takeCompleteLines() {
-                    // 各行を JSON パース
-                    if let event = Launcher.parseStreamLine(lineData) {
-                        onStream?(event)
-                    }
-                }
-            }
-        }
-
-        // stderr も継続的に吸い出す。末尾 8KB を保持する
-        errors.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                errBuffer.append(data)
-            }
-        }
-
-        if let onExit {
-            task.terminationHandler = { finished in
-                // stdout / stderr の readabilityHandler が走り終わるまで待つ
-                outQueue.sync {
-                    // 末尾の改行が無い行があれば処理
-                    let restData = outBuffer.takeRest()
-                    if !restData.isEmpty, let event = Launcher.parseStreamLine(restData) {
-                        onStream?(event)
-                    }
-                    // stderr を返す
-                    let text = String(data: errBuffer.takeRest(), encoding: .utf8) ?? ""
-                    onExit(finished.terminationStatus, text)
-                }
-
-                // ハンドラを外さないと、プロセスが終わってもハンドラとそれが握っているオブジェクトが残り続ける
-                output.fileHandleForReading.readabilityHandler = nil
-                errors.fileHandleForReading.readabilityHandler = nil
-                task.terminationHandler = nil
-            }
-        }
-        try task.run()
-
-        let input = stdin.fileHandleForWriting
+        let (process, input) = try spawn(found.executable,
+                                         arguments: resuming.map { resumeArguments(sessionID: $0, config: config) }
+                                             ?? arguments(sessionID: sessionID, config: config),
+                                         cwd: config.cwd, path: found.path,
+                                         onLine: { line in
+                                             if let event = parseStreamLine(line) { onStream?(event) }
+                                         },
+                                         onExit: onExit)
         // 最初の指示も割り込みと同じ経路で送る。ここを argv に戻すと、
         // 1往復で stdin が閉じてセッションごと終わる。
         // **空なら何も書かない**——既存セッションへ繋ぐだけの時（`resuming`）は、
@@ -494,7 +427,64 @@ enum Launcher {
         if !config.prompt.isEmpty, let line = messageLine(config.prompt) {
             try? input.write(contentsOf: line)
         }
-        return Started(sessionID: sessionID, process: task, input: input)
+        return Started(sessionID: sessionID, process: process, input: input)
+    }
+
+    /// 子プロセスを1本起こし、stdout を1行ずつ `onLine` に渡す。stdin は開けたまま返す。
+    /// claude / codex / ACP で同じ配管を使う——以前は codex 側に写しがあり、片方だけ直ると食い違った。
+    ///
+    /// stdout も stderr も読み続ける。**読まないと 64KB のパイプが詰まり、相手が書けずに固まる**。
+    /// stderr は末尾 8KB だけ持ち、終わった時に `onExit` へ渡す（落ちた理由を人に見せるため）
+    nonisolated static func spawn(_ executable: URL, arguments: [String], cwd: String, path: String?,
+                                  environment extra: [String: String] = [:],
+                                  onLine: @escaping @Sendable (Data) -> Void,
+                                  onExit: (@Sendable (Int32, String) -> Void)?) throws -> (process: Process, input: FileHandle) {
+        let task = Process()
+        task.executableURL = executable
+        task.arguments = arguments
+        task.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        if path != nil || !extra.isEmpty {
+            var env = ProcessInfo.processInfo.environment
+            if let path { env["PATH"] = path }
+            env.merge(extra) { _, new in new }
+            task.environment = env
+        }
+
+        let output = Pipe(), errors = Pipe(), stdin = Pipe()
+        let outBuffer = StreamBuffer()
+        let errBuffer = StreamBuffer(maxTailBytes: 8 * 1024)
+        let queue = DispatchQueue(label: "at22.spawn.stdout", qos: .utility)
+        task.standardInput = stdin
+        task.standardOutput = output
+        task.standardError = errors
+
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            queue.async {
+                outBuffer.append(data)
+                for line in outBuffer.takeCompleteLines() { onLine(line) }
+            }
+        }
+        errors.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            queue.async { errBuffer.append(data) }
+        }
+        task.terminationHandler = { finished in
+            // stdout / stderr の readabilityHandler が走り終わるまで待ってから閉じる
+            queue.sync {
+                let rest = outBuffer.takeRest()     // 末尾の改行が無い行
+                if !rest.isEmpty { onLine(rest) }
+                onExit?(finished.terminationStatus, String(data: errBuffer.takeRest(), encoding: .utf8) ?? "")
+            }
+            // ハンドラを外さないと、プロセスが終わってもハンドラとそれが握っているオブジェクトが残り続ける
+            output.fileHandleForReading.readabilityHandler = nil
+            errors.fileHandleForReading.readabilityHandler = nil
+            finished.terminationHandler = nil
+        }
+        try task.run()
+        return (task, stdin.fileHandleForWriting)
     }
 
     /// 走っているセッションに1件割り込む。**stdin が開いている間だけ通る**

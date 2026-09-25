@@ -139,117 +139,12 @@ enum CodexLauncher {
         }
     }
 
-    /// codex を探した結果。PATH も一緒に持ち帰る
-    struct Found: Sendable {
-        let executable: URL
-        let path: String?
-    }
+    /// codex を探した結果。claude と同じ形（PATH も一緒に持ち帰る）
+    typealias Found = Launcher.Found
 
-    /// `codex` バイナリを探す。Launcher.locate の流儀をそのまま踏襲。
-    /// GUI の PATH は限定的なので、ログインシェルに訊く
+    /// `codex` を探す。探し方は claude と同じ——ログインシェルに訊き、無ければ既定の置き場を見る
     nonisolated static func find(override: String?) -> Found? {
-        let shell = askLoginShell()
-
-        if let override, !override.isEmpty {
-            let url = URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-            return isExecutable(url) ? Found(executable: url, path: shell.path) : nil
-        }
-        if let executable = shell.executable { return Found(executable: executable, path: shell.path) }
-
-        let home = NSHomeDirectory()
-        for candidate in ["\(home)/.local/bin/codex",
-                          "\(home)/.codex/local/codex",
-                          "/opt/homebrew/bin/codex",
-                          "/usr/local/bin/codex"] {
-            let url = URL(fileURLWithPath: candidate)
-            if isExecutable(url) { return Found(executable: url, path: shell.path) }
-        }
-        return nil
-    }
-
-    /// `command -v codex` と `$PATH` を1回のログインシェルで取る。
-    nonisolated static func askLoginShell() -> (executable: URL?, path: String?) {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        guard isExecutable(URL(fileURLWithPath: shell)) else { return (nil, nil) }
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: shell)
-        task.arguments = ["-l", "-c", "command -v codex; printf '\\n%s' \"$PATH\""]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        guard (try? task.run()) != nil else { return (nil, nil) }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        return parseShellReply(String(data: data, encoding: .utf8) ?? "")
-    }
-
-    /// シェルの返事を分ける
-    nonisolated static func parseShellReply(_ reply: String) -> (executable: URL?, path: String?) {
-        let lines = reply.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        let first = lines.first ?? ""
-        let url = URL(fileURLWithPath: first)
-        let path = lines.dropFirst().first(where: { !$0.isEmpty })
-        return (first.isEmpty || !isExecutable(url) ? nil : url, path)
-    }
-
-    private nonisolated static func isExecutable(_ url: URL) -> Bool {
-        FileManager.default.isExecutableFile(atPath: url.path)
-    }
-
-    // MARK: - バッファ管理
-
-    /// stdout / stderr バッファ。Launcher の StreamBuffer と同等。
-    /// 別スレッドの readabilityHandler から安全に捕捉・追記できるよう NSLock で直列化
-    final class StreamBuffer: @unchecked Sendable {
-        private let lock = NSLock()
-        private var buffer = Data()
-        private let maxTailBytes: Int?
-
-        init(maxTailBytes: Int? = nil) {
-            self.maxTailBytes = maxTailBytes
-        }
-
-        func append(_ data: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            buffer.append(data)
-
-            if let max = maxTailBytes, buffer.count > max {
-                buffer.removeFirst(buffer.count - max)
-            }
-        }
-
-        func takeCompleteLines() -> [Data] {
-            lock.lock()
-            defer { lock.unlock() }
-
-            let (lines, remaining) = Self.extractLines(from: buffer)
-            buffer = remaining
-            return lines
-        }
-
-        func takeRest() -> Data {
-            lock.lock()
-            defer { lock.unlock() }
-            let rest = buffer
-            buffer = Data()
-            return rest
-        }
-
-        nonisolated static func extractLines(from buffer: Data) -> (lines: [Data], remaining: Data) {
-            var lines: [Data] = []
-            var remaining = buffer
-
-            while let newlineIndex = remaining.firstIndex(of: 0x0A) {
-                lines.append(remaining.subdata(in: remaining.startIndex..<newlineIndex))
-                remaining.removeFirst(newlineIndex + 1 - remaining.startIndex)
-            }
-
-            return (lines, remaining)
-        }
+        Launcher.locate(override: override, command: "codex")
     }
 
     // MARK: - 起こす
@@ -263,147 +158,27 @@ enum CodexLauncher {
     nonisolated static func launch(_ config: Config, using found: Found,
                                    onExit: (@Sendable (Int32, String) -> Void)? = nil,
                                    onStream: (@Sendable (Event) -> Void)? = nil) -> Started? {
-        let task = Process()
-        task.executableURL = found.executable
-        task.arguments = launchArguments(config: config)
-        task.currentDirectoryURL = URL(fileURLWithPath: config.cwd)
-        if let path = found.path {
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = path
-            task.environment = env
-        }
-
-        let output = Pipe()
-        let outBuffer = StreamBuffer()
-        let outQueue = DispatchQueue(label: "at22.codex.stdout", qos: .utility)
-
-        let errors = Pipe()
-        let errBuffer = StreamBuffer(maxTailBytes: 8 * 1024)
-
-        let stdin = Pipe()
-        task.standardInput = stdin
-        task.standardOutput = output
-        task.standardError = errors
-
-        output.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                outBuffer.append(data)
-
-                for lineData in outBuffer.takeCompleteLines() {
-                    if let event = CodexLauncher.parseStreamLine(lineData) {
-                        onStream?(event)
-                    }
-                }
-            }
-        }
-
-        errors.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                errBuffer.append(data)
-            }
-        }
-
-        if let onExit {
-            task.terminationHandler = { finished in
-                outQueue.sync {
-                    let restData = outBuffer.takeRest()
-                    if !restData.isEmpty, let event = CodexLauncher.parseStreamLine(restData) {
-                        onStream?(event)
-                    }
-                    let text = String(data: errBuffer.takeRest(), encoding: .utf8) ?? ""
-                    onExit(finished.terminationStatus, text)
-                }
-
-                output.fileHandleForReading.readabilityHandler = nil
-                errors.fileHandleForReading.readabilityHandler = nil
-                task.terminationHandler = nil
-            }
-        }
-
-        guard (try? task.run()) != nil else { return nil }
-
-        let input = stdin.fileHandleForWriting
+        guard let (process, input) = try? Launcher.spawn(
+            found.executable, arguments: launchArguments(config: config), cwd: config.cwd, path: found.path,
+            onLine: { line in if let event = parseStreamLine(line) { onStream?(event) } },
+            onExit: onExit) else { return nil }
         if let line = messageLine(config.prompt) { try? input.write(contentsOf: line) }
         try? input.close()
-
-        return Started(process: task)
+        return Started(process: process)
     }
 
-    /// codex を resume する。stdin は使わない（prompt は argv 経由）
+    /// codex を resume する。prompt は argv 経由なので stdin はすぐ閉じる
     nonisolated static func resume(threadID: String, prompt: String, config: Config,
                                    using found: Found,
                                    onExit: (@Sendable (Int32, String) -> Void)? = nil,
                                    onStream: (@Sendable (Event) -> Void)? = nil) -> Started? {
-        let task = Process()
-        task.executableURL = found.executable
-        task.arguments = resumeArguments(threadID: threadID, prompt: prompt, config: config)
-        task.currentDirectoryURL = URL(fileURLWithPath: config.cwd)
-        if let path = found.path {
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = path
-            task.environment = env
-        }
-
-        let output = Pipe()
-        let outBuffer = StreamBuffer()
-        let outQueue = DispatchQueue(label: "at22.codex.stdout", qos: .utility)
-
-        let errors = Pipe()
-        let errBuffer = StreamBuffer(maxTailBytes: 8 * 1024)
-
-        task.standardOutput = output
-        task.standardError = errors
-
-        output.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                outBuffer.append(data)
-
-                for lineData in outBuffer.takeCompleteLines() {
-                    if let event = CodexLauncher.parseStreamLine(lineData) {
-                        onStream?(event)
-                    }
-                }
-            }
-        }
-
-        errors.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            outQueue.async {
-                errBuffer.append(data)
-            }
-        }
-
-        if let onExit {
-            task.terminationHandler = { finished in
-                outQueue.sync {
-                    let restData = outBuffer.takeRest()
-                    if !restData.isEmpty, let event = CodexLauncher.parseStreamLine(restData) {
-                        onStream?(event)
-                    }
-                    let text = String(data: errBuffer.takeRest(), encoding: .utf8) ?? ""
-                    onExit(finished.terminationStatus, text)
-                }
-
-                output.fileHandleForReading.readabilityHandler = nil
-                errors.fileHandleForReading.readabilityHandler = nil
-                task.terminationHandler = nil
-            }
-        }
-
-        guard (try? task.run()) != nil else { return nil }
-
-        return Started(process: task)
+        guard let (process, input) = try? Launcher.spawn(
+            found.executable, arguments: resumeArguments(threadID: threadID, prompt: prompt, config: config),
+            cwd: config.cwd, path: found.path,
+            onLine: { line in if let event = parseStreamLine(line) { onStream?(event) } },
+            onExit: onExit) else { return nil }
+        try? input.close()
+        return Started(process: process)
     }
 
     /// stdin に流す1行。Launcher と同形

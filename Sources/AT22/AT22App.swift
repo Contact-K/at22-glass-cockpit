@@ -106,6 +106,7 @@ private struct ThresholdSettings: View {
     /// CLI の場所を人が指定する口。空ならログインシェルに訊く
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
+    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
 
     var body: some View {
         Form {
@@ -133,6 +134,11 @@ private struct ThresholdSettings: View {
 
                 found("codex", cockpit.codexFound?.executable.path)
                 TextField("codex の場所（空ならログインシェルに訊く）", text: $codexPath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+
+                found("grok", cockpit.grokFound?.executable.path)
+                TextField("grok の場所（空ならログインシェルに訊く）", text: $grokPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
 

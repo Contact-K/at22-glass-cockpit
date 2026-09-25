@@ -188,6 +188,7 @@ final class Cockpit {
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let claudePathKey = "claudePath"
     static let codexPathKey = "codexPath"
+    static let grokPathKey = "grokPath"
 
     /// 画面に並べるファイル数の上限（最終接触が新しい順）
     static let maxFiles = 48
@@ -381,22 +382,43 @@ final class Cockpit {
 
     /// codex セッション台帳（内部セッションID → threadID・題名等）
     /// UserDefaults（キー "codexSessions"）で読み書き
-    private(set) var codexRecords: [CodexRecord] = []
+    private(set) var runRecords: [RunRecord] = []
 
     /// セッションのバックエンド種別（claude または codex）
     private var backends: [String: Backend] = [:]
 
-    /// Codex セッション台帳。UserDefaults で永続化
-    struct CodexRecord: Codable, Identifiable {
+    /// AT22 が起こした、transcript を AT22 が読まない相手（Codex / ACP）のセッション台帳。
+    /// UserDefaults で永続化し、アプリを閉じても続きに繋げるようにする
+    struct RunRecord: Codable, Identifiable {
         var id: String              // 内部セッションID（UUID lowercased）
+        /// 相手側のID（codex の thread / ACP の sessionId）。続きに繋ぐ時に使う
         var threadID: String?
         var title: String
         var cwd: String
         var model: String
         var lastUsed: Date
+        /// どのエージェントか。項目の無い古い記録は codex（台帳を持っていたのは codex だけだった）
+        var backend: Backend
 
         enum CodingKeys: String, CodingKey {
-            case id, threadID, title, cwd, model, lastUsed
+            case id, threadID, title, cwd, model, lastUsed, backend
+        }
+
+        init(id: String, threadID: String?, title: String, cwd: String, model: String,
+             lastUsed: Date, backend: Backend) {
+            (self.id, self.threadID, self.title, self.cwd, self.model, self.lastUsed, self.backend)
+                = (id, threadID, title, cwd, model, lastUsed, backend)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            threadID = try c.decodeIfPresent(String.self, forKey: .threadID)
+            title = try c.decode(String.self, forKey: .title)
+            cwd = try c.decode(String.self, forKey: .cwd)
+            model = try c.decode(String.self, forKey: .model)
+            lastUsed = try c.decode(Date.self, forKey: .lastUsed)
+            backend = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .codex
         }
     }
 
@@ -419,26 +441,26 @@ final class Cockpit {
         self.projectsRoot = projectsRoot
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/projects")
         // codex 台帳を UserDefaults から読み込み
-        loadCodexRecords()
+        loadRunRecords()
     }
 
     /// codex 台帳を UserDefaults から読み込む
-    private func loadCodexRecords() {
+    private func loadRunRecords() {
         guard let data = UserDefaults.standard.data(forKey: "codexSessions") else { return }
-        if let decoded = try? JSONDecoder().decode([CodexRecord].self, from: data) {
-            codexRecords = decoded
+        if let decoded = try? JSONDecoder().decode([RunRecord].self, from: data) {
+            runRecords = decoded
         }
     }
 
     /// codex 台帳を UserDefaults に保存
-    private func saveCodexRecords() {
-        if let encoded = try? JSONEncoder().encode(codexRecords) {
+    private func saveRunRecords() {
+        if let encoded = try? JSONEncoder().encode(runRecords) {
             UserDefaults.standard.set(encoded, forKey: "codexSessions")
         }
     }
 
     /// codex 台帳から既存セッションをライブセッション化（プロセスはまだ起動しない）
-    func resumeCodexRecord(_ record: CodexRecord) {
+    func resumeRunRecord(_ record: RunRecord) {
         // ライブセッションに追加（プロセスはまだ無し）
         let tab = LiveSession(id: record.id, name: String(record.id.prefix(8)),
                              cwd: record.cwd, busy: false)
@@ -448,7 +470,7 @@ final class Cockpit {
             liveSessions.sort { $0.name < $1.name }
         }
 
-        backends[record.id] = .codex
+        backends[record.id] = record.backend
 
         // 案内メッセージを追加
         messages.append(Message(
@@ -822,56 +844,28 @@ final class Cockpit {
 
     // MARK: 起動
 
-    /// `claude` の在り処。見つかるまで起動UIは出さない（配布先で「押しても無反応」にしない）
-    private(set) var claude: Launcher.Found?
-    private var lookedForClaude = false
-    /// デバウンス用。設定画面で `claude` のパスを打つたびに探索を再実行しないように、タスクをキャンセル・再スケジュール
-    private var lookupTask: Task<Void, Never>?
+    /// CLI の在り処。見つかるまでそのエージェントの起動UIは出さない（配布先で「押しても無反応」にしない）
+    private(set) var found: [Backend: Launcher.Found] = [:]
+    private var lookedFor: Set<Backend> = []
+    /// デバウンス用。設定画面でパスを打つたびにログインシェルを立てないよう、前の探索を取り消して待つ
+    private var lookups: [Backend: Task<Void, Never>] = [:]
+    var claude: Launcher.Found? { found[.claude] }
+    var codexFound: Launcher.Found? { found[.codex] }
+    var grokFound: Launcher.Found? { found[.grok] }
 
-    /// `codex` の在り処。claude と並行して探索
-    private(set) var codexFound: CodexLauncher.Found?
-    private var lookedForCodex = false
-    private var codexLookupTask: Task<Void, Never>?
-
-    /// ログインシェルを起こして claude を探す。既定は1回だけだが、設定でパスを変えた時は再探索
-    func findClaudeIfNeeded(override: String? = nil, force: Bool = false) {
-        guard force || !lookedForClaude else { return }
-        lookedForClaude = true
-
-        // force で呼ばれたら前の探索をキャンセル（設定を打つたびに `$SHELL -l -c` でログインシェルを立てるのを防ぐ）
-        if force {
-            lookupTask?.cancel()
-        }
-
-        lookupTask = Task.detached(priority: .utility) {
+    /// ログインシェルを起こして CLI を探す。既定は1回だけだが、設定でパスを変えた時は再探索
+    func findIfNeeded(_ backend: Backend, override: String? = nil, force: Bool = false) {
+        guard force || !lookedFor.contains(backend) else { return }
+        lookedFor.insert(backend)
+        if force { lookups[backend]?.cancel() }
+        lookups[backend] = Task.detached(priority: .utility) {
             // force のときだけ待つ。起動時（force: false）は遅延なく実行
             if force {
                 try? await Task.sleep(for: .milliseconds(600))
                 guard !Task.isCancelled else { return }
             }
-
-            let found = Launcher.locate(override: override)
-            await MainActor.run { [weak self] in self?.claude = found }
-        }
-    }
-
-    /// ログインシェルを起こして codex を探す。claude と並行して実行
-    func findCodexIfNeeded(override: String? = nil, force: Bool = false) {
-        guard force || !lookedForCodex else { return }
-        lookedForCodex = true
-
-        if force {
-            codexLookupTask?.cancel()
-        }
-
-        codexLookupTask = Task.detached(priority: .utility) {
-            if force {
-                try? await Task.sleep(for: .milliseconds(600))
-                guard !Task.isCancelled else { return }
-            }
-
-            let found = CodexLauncher.find(override: override)
-            await MainActor.run { [weak self] in self?.codexFound = found }
+            let result = Launcher.locate(override: override, command: backend.command)
+            await MainActor.run { [weak self] in self?.found[backend] = result }
         }
     }
 
@@ -894,6 +888,8 @@ final class Cockpit {
                                 level: level)
         case .codex:
             return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
+        case .grok:
+            return launchGrok(prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
 
@@ -980,9 +976,9 @@ final class Cockpit {
     func setModel(_ model: String, for session: String) {
         sessionModel[session] = model
         // codex は台帳のモデルで繋ぐ。以前はここを書き換えず、選び直しても効いていなかった
-        if let index = codexRecords.firstIndex(where: { $0.id == session }) {
-            codexRecords[index].model = model
-            saveCodexRecords()
+        if let index = runRecords.firstIndex(where: { $0.id == session }) {
+            runRecords[index].model = model
+            saveRunRecords()
         }
         guard let run = runs[session], run.connection.acceptsInput else { return }
         run.connection.close()
@@ -1033,9 +1029,9 @@ final class Cockpit {
         switch event {
         case let .ready(remoteID):
             // 続きに繋ぐための相手側の ID。アプリを閉じても続けられるよう台帳に残す
-            if let index = codexRecords.firstIndex(where: { $0.id == session }) {
-                codexRecords[index].threadID = remoteID
-                saveCodexRecords()
+            if let index = runRecords.firstIndex(where: { $0.id == session }) {
+                runRecords[index].threadID = remoteID
+                saveRunRecords()
             }
 
         case let .partial(text):
@@ -1047,6 +1043,10 @@ final class Cockpit {
             // 会話にも盤面のチップにも同じ規則で出る
             apply([.said(agent: session, session: session, text: text, speaker: .model,
                          thinking: thinking, at: Date())])
+
+        case let .said(text):
+            apply([.said(agent: session, session: session, text: text, speaker: .human,
+                         thinking: false, at: Date())])
 
         case let .tool(id, kind, title, path, write, done):
             // 道具の呼び出し。transcript の tool_use と同じ出来事に直して、労働量・「今していること」・
@@ -1162,9 +1162,10 @@ final class Cockpit {
 
         // 台帳に記録（最初は threadID は nil、thread が始まった時に入る）
         let title = Self.titleRule(prompt) ?? ""
-        let record = CodexRecord(id: sessionID, threadID: nil, title: title, cwd: cwd, model: model, lastUsed: Date())
-        codexRecords.append(record)
-        saveCodexRecords()
+        let record = RunRecord(id: sessionID, threadID: nil, title: title, cwd: cwd, model: model,
+                               lastUsed: Date(), backend: .codex)
+        runRecords.append(record)
+        saveRunRecords()
 
         selectedSession = sessionID
         launchError = nil
@@ -1221,7 +1222,7 @@ final class Cockpit {
                 launchError = "codex が見つかりません"
                 return nil
             }
-            guard let record = codexRecords.first(where: { $0.id == session }) else {
+            guard let record = runRecords.first(where: { $0.id == session }) else {
                 launchError = "codex セッションが見つかりません"
                 return nil
             }
@@ -1236,7 +1237,64 @@ final class Cockpit {
                           token: UUID())
             runs[session] = run
             return run
+        case .grok:
+            guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
+                launchError = "Grok のセッションが見つからない"
+                return nil
+            }
+            return startGrok(session: session, cwd: record.cwd, model: sessionModel[session] ?? record.model,
+                             level: gateLevel, resume: remote)
         }
+    }
+
+    /// Grok を ACP で起こす。`resume` を渡すと session/load で続きへ繋ぐ（履歴は相手が送り直す）
+    private func startGrok(session: String, cwd: String, model: String, level: Gate.Level,
+                           resume: String?) -> Run? {
+        guard let grok = grokFound else {
+            launchError = "grok が見つからない"
+            return nil
+        }
+        // grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
+        // それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する
+        var arguments = ["agent"]
+        if !model.isEmpty { arguments += ["-m", model] }
+        if level.needsConfirmation { arguments.append("--always-approve") }
+        arguments.append("stdio")
+        let token = UUID()
+        do {
+            let connection = try ACPConnection.start(
+                grok.executable, arguments: arguments, cwd: cwd, path: grok.path,
+                session: session, resume: resume,
+                onEvent: agentStream(session: session),
+                onExit: exitHandler(label: "grok", session: session, token: token))
+            let run = Run(connection: connection, token: token)
+            runs[session] = run
+            backends[session] = .grok
+            return run
+        } catch {
+            launchError = "\(error)"
+            return nil
+        }
+    }
+
+    private func launchGrok(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
+        let sessionID = UUID().uuidString.lowercased()
+        guard let run = startGrok(session: sessionID, cwd: cwd, model: model, level: level, resume: nil),
+              run.connection.send(prompt) else { return nil }
+        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
+        loadedSessionTabs[sessionID] = tab
+        liveSessions.append(tab)
+        liveSessions.sort { $0.name < $1.name }
+        openTurns.insert(sessionID)
+        appendHuman(prompt, session: sessionID)
+        // 相手側のIDは挨拶が済んだ時（.ready）に台帳へ入る
+        runRecords.append(RunRecord(id: sessionID, threadID: nil, title: Self.titleRule(prompt) ?? "", cwd: cwd,
+                                    model: model, lastUsed: Date(), backend: .grok))
+        saveRunRecords()
+        selectedSession = sessionID
+        launchError = nil
+        refreshLiveSessions()
+        return UUID(uuidString: sessionID) ?? UUID()
     }
 
     /// 走っているセッションの進行中のターンだけを止める。
@@ -1931,7 +1989,7 @@ final class Cockpit {
 
         // codex セッション
         if backend(of: sessionID) == .codex {
-            if let record = codexRecords.first(where: { $0.id == sessionID }) {
+            if let record = runRecords.first(where: { $0.id == sessionID }) {
                 let result = Self.titleRule(record.title)
                 titles.updateValue(result, forKey: sessionID)
                 return result

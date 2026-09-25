@@ -14,6 +14,8 @@ enum AgentEvent: Equatable, Sendable {
     case partial(String)
     /// 確定した発言
     case message(String, thinking: Bool)
+    /// 人の発言。繋ぎ直した時に相手が送り直す履歴（ACP の session/load）でだけ来る
+    case said(String)
     /// 道具の呼び出し。`path` があればファイルの触りとして盤面に出す。
     /// `done` が偽の間は触っている最中（ACP は開始と完了が別々に来る。Codex は完了だけ）
     case tool(id: String, kind: WorkKind, title: String, path: String?, write: Bool, done: Bool)

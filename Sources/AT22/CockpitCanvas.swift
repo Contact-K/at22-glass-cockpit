@@ -45,6 +45,7 @@ struct CockpitView: View {
     /// `claude` / `codex` の場所を人が指定する口。空ならログインシェルに訊く
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
+    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
     /// 左側に会話サイドバーを表示するか（既定ON）
     @AppStorage("showConversation") private var showConversation = true
     /// 右側にタスクパネルを表示するか（既定OFF）
@@ -101,6 +102,7 @@ struct CockpitView: View {
         .onChange(of: launcherEnabled) { findCLIs(force: true) }
         .onChange(of: claudePath) { findCLIs(force: true) }
         .onChange(of: codexPath) { findCLIs(force: true) }
+        .onChange(of: grokPath) { findCLIs(force: true) }
         // Esc は手前から順に畳む。重なっているものを一度に全部消すと、
         // 「戻る」つもりで押した時に土台まで戻ってしまう
         .onKeyPress(.escape) {
@@ -118,11 +120,12 @@ struct CockpitView: View {
         }
     }
 
-    /// claude と codex を両方探す。**片方だけ呼ぶ書き方をやめた**——
-    /// codex 側は呼び出し元が抜け落ちたまま気づかれず、Codex 経路が丸ごと到達不能だった
+    /// 起こせる CLI を全部探す。**1つずつ呼ぶ書き方をやめた**——
+    /// 以前は codex 側の呼び出しが抜け落ちたまま気づかれず、Codex 経路が丸ごと到達不能だった
     private func findCLIs(force: Bool) {
-        cockpit.findClaudeIfNeeded(override: claudePath.isEmpty ? nil : claudePath, force: force)
-        cockpit.findCodexIfNeeded(override: codexPath.isEmpty ? nil : codexPath, force: force)
+        for (backend, path) in [(Backend.claude, claudePath), (.codex, codexPath), (.grok, grokPath)] {
+            cockpit.findIfNeeded(backend, override: path.isEmpty ? nil : path, force: force)
+        }
     }
 
     /// レールが押した「門を開け」。作業タブへ移して、いちばん古い門を開き直す。
