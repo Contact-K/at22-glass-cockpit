@@ -54,14 +54,15 @@ enum Gate {
 
         /// `claude --permission-mode` のどれで起こすか。
         ///
-        /// Lv.2 と Lv.3 が同じ値なのは間違いではない。**段の違いは門（`stops(risk:)`）が持つ**もので、
-        /// permission-mode が決めるのは「人間に訊かずに何を触れるか」の方。
-        /// `manual` を使わないのは、端末を持たない `-p` 実行では claude が誰にも訊けず、
-        /// 承認待ちのまま帰ってこなくなるため
+        /// 訊く相手は AT22 の承認パネル（`--permission-prompt-tool stdio`）。
+        /// Lv.2 は道具ごとに全部訊く（`default`）、Lv.3 は編集だけ任せてそれ以外を訊く（`acceptEdits`）。
+        /// 以前は訊く相手が居なかったので Lv.2 も `acceptEdits` に寄せ、段の違いを門だけが持っていた。
+        /// サブエージェントを起こす Agent ツールはどの段でも訊かれない（実測）ので、そこは今も門が持つ
         var permissionMode: String {
             switch self {
             case .plan:                   "plan"
-            case .each, .normal:          "acceptEdits"
+            case .each:                   "default"
+            case .normal:                 "acceptEdits"
             case .auto, .unattended:      "bypassPermissions"
             }
         }

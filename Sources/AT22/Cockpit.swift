@@ -1105,11 +1105,23 @@ final class Cockpit {
         }
     }
 
-    /// 承認に答える。**呼ぶのは人のクリックだけ**。`input` を渡すと書き換えた入力で許可する
-    func answer(_ approval: Approval, allow: Bool, input: String? = nil) {
-        runs[approval.session]?.connection.answer(approval, allow: allow, input: input)
+    /// 承認に答える。**呼ぶのは人のクリックだけ**。`input` を渡すと書き換えた入力で許可する。
+    /// 送れなかった時（書き換えた入力が JSON として読めない等）は依頼を残して false——
+    /// 黙って消すと、相手は答えを待ったまま止まり続ける
+    @discardableResult
+    func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input) == true else {
+            return false
+        }
         approvals.removeAll { $0.id == approval.id }
+        return true
     }
+
+    /// 人の番で止まっているものの数（門＋道具の承認）。タブとステータスバーの件数
+    var stoppedCount: Int { gates.count + approvals.count }
+
+    /// 検査・画像焼きから承認の依頼を直接流し込む口
+    func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
 
     /// 割り込みを送ったことを覚える。受領確認の照合と、止めたターンの終わり方の見分けに使う
     func expectInterrupt(_ requestID: String, for session: String) {
@@ -1696,8 +1708,10 @@ final class Cockpit {
         // 返事待ちのセッション。キーはセッションIDなので、引けるのは司令塔（ID＝セッションID）だけ。
         // ponytail: どのサブエージェントのどの道具が待っているかまでは sessions/*.json に無い。
         // 要るなら PermissionRequest フック（agent_id・tool_use_id が来る）だが、設定に触ることになる
-        let waitingSessions = Dictionary(liveSessions.compactMap { s in s.waiting.map { (s.id, $0) } },
+        var waitingSessions = Dictionary(liveSessions.compactMap { s in s.waiting.map { (s.id, $0) } },
                                          uniquingKeysWith: { first, _ in first })
+        // AT22 が繋いでいるセッションの承認待ち。答えるまで相手は道具の前で止まっている
+        for approval in approvals { waitingSessions[approval.session] = "承認待ち" }
 
         // セッションごとの消費量合計。`share` の分母になる。
         //

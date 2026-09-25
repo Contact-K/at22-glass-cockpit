@@ -15,12 +15,21 @@ import AppKit
 enum Snapshot {
 
     @MainActor
-    static func write(to path: String, size: CGSize, transcript: String? = nil, gate: Bool = false) {
+    static func write(to path: String, size: CGSize, transcript: String? = nil, gate: Bool = false,
+                      approval: Bool = false) {
         let cockpit = Cockpit()
         // 空のまま焼くと外枠しか写らない。実 transcript を1本流し込むと、
         // エージェントの行・ファイルの格子・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
+        // 承認の板の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
+        if approval {
+            cockpit.loadApprovalsForProbe([Approval(
+                id: "probe", session: cockpit.selectedSession ?? "probe", tool: "Bash",
+                detail: "Create file at /tmp/at22-spike-file",
+                input: #"{"command":"touch /tmp/at22-spike-file","description":"Create file at /tmp/at22-spike-file"}"#,
+                at: Date(timeIntervalSinceNow: -8))])
+        }
 
         let renderer = ImageRenderer(content:
             CockpitView(cockpit: cockpit)

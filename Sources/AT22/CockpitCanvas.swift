@@ -56,6 +56,8 @@ struct CockpitView: View {
     @State private var dragStartWidth: Double?
     /// 門に答えられなかった時の印。**黙って消さない**（司令塔は待ったまま）
     @State private var gateFailed: String?
+    @State private var approvalFailed: String?
+    @State private var dismissedApproval: String?
     /// ✕ で畳んだ門。答えたわけではないので、レールの G から開き直せる
     @State private var dismissedGate: String?
 
@@ -214,7 +216,20 @@ struct CockpitView: View {
         // 門は**エージェント帯の右**に立てる。レールの上の紙と同じ高さに並ぶので、
         // どの行が止まったのかが目で繋がる。許可・書換・却下はここで完結する
         .overlay(alignment: .topTrailing) {
-            if let request = stoppedGate {
+            // 道具の承認は門より先に出す。相手は答えるまで道具の前で本当に止まっている
+            if let approval = pendingApproval {
+                GatePanel(request: Self.request(for: approval, agent: cockpit.backend(of: approval.session).title),
+                          failed: approvalFailed == approval.id, approval: true, canRevise: approval.canRevise,
+                          onAnswer: { verdict, revised in
+                              let sent = cockpit.answer(approval, allow: verdict != .deny,
+                                                        input: verdict == .revise ? revised : nil)
+                              approvalFailed = sent ? nil : approval.id
+                          },
+                          onClose: { dismissedApproval = approval.id })
+                    .padding(.top, Palette.Space.small)
+                    .padding(.trailing, Palette.Space.s3)
+                    .transition(.opacity)
+            } else if let request = stoppedGate {
                 GatePanel(request: request,
                           failed: gateFailed == request.id,
                           onAnswer: { verdict, revised in
@@ -232,6 +247,18 @@ struct CockpitView: View {
                     .transition(.opacity)
             }
         }
+    }
+
+    /// いま答えを出す承認。門と同じく、待たせている順に1件だけ出す
+    private var pendingApproval: Approval? {
+        cockpit.approvals.filter { $0.id != dismissedApproval }.min { $0.at < $1.at }
+    }
+
+    /// 承認を門の板に載せる形へ。小さい行に「誰の・何を」、本文に道具への入力（書換で編む対象）
+    static func request(for approval: Approval, agent: String) -> Gate.Request {
+        Gate.Request(id: approval.id, call: approval.id, by: approval.session,
+                     to: "\(agent) · \(approval.tool) — \(approval.detail)", risk: "",
+                     issued: approval.at, instruction: approval.input)
     }
 
     /// いま答えを出す1件。**複数溜まっていても出すのは待たせている順に1件だけ**——

@@ -435,7 +435,7 @@ struct TabBar: View {
         HStack(alignment: .bottom, spacing: Palette.Space.s4) {
             // 門はこのタブの中（行・紙・明るいパネル）に居るので、警報もここに出す。
             // レールの `G` に付けていた頃は、警報と門が画面の別々の場所にあった
-            tab(.work, key: "a", slug: "sagyou", stopped: cockpit.gates.count)
+            tab(.work, key: "a", slug: "sagyou", stopped: cockpit.stoppedCount)
             tab(.structure, key: "b", slug: "kouzou")
             tab(.memory, key: "c", slug: "kabeuchi")
             Spacer(minLength: Palette.Space.s3)
@@ -596,6 +596,11 @@ struct GatePanel: View {
     let request: Gate.Request
     /// 答えを書けなかった時。**黙って消さない**（司令塔は待ったまま）
     let failed: Bool
+    /// 道具の承認（Claude の can_use_tool / ACP の request_permission）として出すか。
+    /// 門と同じ板・同じ3択で答える——答える口を2つに割らない
+    var approval = false
+    /// 書換を出すか。ACP の承認には入力を書き換える口が無い
+    var canRevise = true
     let onAnswer: (Gate.Verdict, String) -> Void
     let onClose: () -> Void
 
@@ -609,7 +614,8 @@ struct GatePanel: View {
             header
             paperRow
             if failed {
-                Text("答えを書けなかった。司令塔は待ったままなので、置き場を直してもう一度")
+                Text(approval ? "送れなかった。書き換えた入力が JSON として読めないか、相手がもう終わっている"
+                              : "答えを書けなかった。司令塔は待ったままなので、置き場を直してもう一度")
                     .font(.system(size: Palette.FontSize.label, design: .monospaced))
                     .foregroundStyle(Palette.danger)
                     .fixedSize(horizontal: false, vertical: true)
@@ -658,7 +664,7 @@ struct GatePanel: View {
                 let on = Int(timeline.date.timeIntervalSince1970 / 0.7) % 2 == 0
                 Circle().fill(Palette.dotRed).frame(width: 9, height: 9).opacity(on ? 1 : 0.3)
             }
-            Text("門 — 止まった指示").etched(Palette.FontSize.label, light: true)
+            Text(approval ? "承認 — 道具の実行" : "門 — 止まった指示").etched(Palette.FontSize.label, light: true)
             Spacer(minLength: Palette.Space.s1)
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 Text("待機 " + CockpitCanvas.waited(request.waited(now: timeline.date)))
@@ -721,7 +727,7 @@ struct GatePanel: View {
                 .buttonStyle(.borderedProminent)
                 // 既定の青はシステムの色で、DS の「赤ひとつ」の規律の外にある
                 .tint(Palette.accent)
-            Button("書換") { rewriting = true }.buttonStyle(.bordered)
+            if canRevise { Button("書換") { rewriting = true }.buttonStyle(.bordered) }
             Button("却下") { onAnswer(.deny, "") }.buttonStyle(.bordered)
         }
         .font(.system(size: Palette.FontSize.body, design: .monospaced))
@@ -740,7 +746,7 @@ struct GatePanel: View {
                 .overlay(RoundedRectangle(cornerRadius: Palette.Radius.xs)
                     .stroke(Color.black.opacity(0.35), lineWidth: Palette.Stroke.hair))
             HStack(spacing: Palette.Space.tiny) {
-                Button("書き換えて発行") { onAnswer(.revise, revised) }
+                Button(approval ? "書き換えて許可" : "書き換えて発行") { onAnswer(.revise, revised) }
                     .buttonStyle(.borderedProminent)
                     .tint(Palette.accent)
                     .disabled(revised.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -780,7 +786,7 @@ struct StatusBar: View {
 
     /// `門 01 停止中` / `門 00`。番号を0詰めにするのは索引装飾の作法
     private var gateText: String {
-        let n = cockpit.gates.count
+        let n = cockpit.stoppedCount
         return n == 0 ? "門 00" : String(format: "門 %02d 停止中", n)
     }
 

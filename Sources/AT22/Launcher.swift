@@ -208,7 +208,10 @@ enum Launcher {
         out.append(contentsOf: ["-p", "--verbose",
                                 "--input-format", "stream-json",
                                 "--output-format", "stream-json",
-                                "--include-partial-messages"])
+                                "--include-partial-messages",
+                                // 道具の承認を stdio で AT22 に訊かせる（can_use_tool）。これが無いと
+                                // `-p` の claude は訊く相手が居ないので、承認の要る道具を黙って断る
+                                "--permission-prompt-tool", "stdio"])
         return out
     }
 

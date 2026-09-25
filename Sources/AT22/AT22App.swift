@@ -20,7 +20,8 @@ struct AT22App: App {
                                     gate: CommandLine.arguments.contains("--gate"))
             } else {
                 Snapshot.write(to: path, size: Self.shotSize(), transcript: Self.shotTranscript(),
-                               gate: CommandLine.arguments.contains("--gate"))
+                               gate: CommandLine.arguments.contains("--gate"),
+                               approval: CommandLine.arguments.contains("--approval"))
             }
             exit(0)
         }

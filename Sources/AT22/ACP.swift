@@ -163,13 +163,14 @@ final class ACPConnection: AgentConnection {
         return ""       // ACP の割り込みは知らせなので、照合する受領確認は無い
     }
 
-    func answer(_ approval: Approval, allow: Bool, input: String?) {
-        guard let ask = asks.removeValue(forKey: approval.id) else { return }
+    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool {
+        guard let ask = asks.removeValue(forKey: approval.id) else { return false }
         // 選択肢の種類は allow_once / allow_always / reject_once / reject_always。
         // **一度きりの方を選ぶ**——「以後ずっと」を AT22 が勝手に選ぶと、人が知らないまま次から通る
         let option = Self.option(ask.options, allow: allow)
         let outcome: [String: Any] = option.map { ["outcome": "selected", "optionId": $0] } ?? ["outcome": "cancelled"]
-        if let line = RPC.result(id: ask.id, ["outcome": outcome]) { try? self.input.write(contentsOf: line) }
+        guard let line = RPC.result(id: ask.id, ["outcome": outcome]) else { return false }
+        return (try? self.input.write(contentsOf: line)) != nil
     }
 
     func close() { try? input.close() }
@@ -343,7 +344,8 @@ final class ACPConnection: AgentConnection {
         let input = (try? JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys, .withoutEscapingSlashes]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         let title = (call["title"] as? String) ?? "道具"
-        return Approval(id: id, session: session, tool: (call["kind"] as? String) ?? title, detail: title, input: input)
+        return Approval(id: id, session: session, tool: (call["kind"] as? String) ?? title, detail: title, input: input,
+                        canRevise: false)
     }
 
     /// 選ぶ選択肢。許可も却下も「一度きり」を先に探す

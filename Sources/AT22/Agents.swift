@@ -38,6 +38,10 @@ struct Approval: Identifiable, Equatable, Sendable {
     let detail: String
     /// 道具への入力（JSON）。書き換えてから許可すると、書き換えた方が実行される（Claude で実測）
     let input: String
+    /// 届いた時刻。待たせている長さをパネルに出す（相手は答えるまで本当に止まっている）
+    var at = Date()
+    /// 入力を書き換えて許可できるか。ACP には書き換えの口が無い
+    var canRevise = true
 }
 
 /// 接続の共通の形。実装は Claude（stream-json）・Codex（exec / resume）・ACP の3つ。
@@ -51,8 +55,9 @@ protocol AgentConnection: AnyObject {
     /// 今のターンだけ止める。受領確認と照合する ID を返す（照合しない相手は空文字）。
     /// 止められなければ nil
     func interrupt() -> String?
-    /// 承認に答える。`input` を渡すと書き換えた入力で許可する
-    func answer(_ approval: Approval, allow: Bool, input: String?)
+    /// 承認に答える。`input` を渡すと書き換えた入力で許可する。
+    /// **送れなかったら false**——黙って消すと、相手は答えを待ったまま止まり続ける
+    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool
     /// 閉じる。以後は送れない（走っているターンは相手に任せる）
     func close()
 }
@@ -88,10 +93,11 @@ final class ClaudeConnection: AgentConnection {
     func send(_ text: String) -> Bool { Launcher.send(text, to: input) }
     func interrupt() -> String? { Launcher.interrupt(input) }
 
-    func answer(_ approval: Approval, allow: Bool, input edited: String?) {
+    func answer(_ approval: Approval, allow: Bool, input edited: String?) -> Bool {
+        // 書き換えた入力が JSON として読めなければ送らない（何が走るか分からないまま許可しない）
         guard let line = Launcher.permissionLine(requestID: approval.id, allow: allow,
-                                                 input: edited ?? approval.input) else { return }
-        try? input.write(contentsOf: line)
+                                                 input: edited ?? approval.input) else { return false }
+        return (try? input.write(contentsOf: line)) != nil
     }
 
     func close() { try? input.close() }
@@ -198,7 +204,7 @@ final class CodexConnection: AgentConnection {
         }
     }
 
-    func answer(_ approval: Approval, allow: Bool, input: String?) {}
+    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool { false }
     func close() {}
 
     /// codex の JSONL イベントを共通の形へ。ファイル変更は1件ずつ触りとして出す

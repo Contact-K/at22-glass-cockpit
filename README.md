@@ -23,6 +23,7 @@ AT22 は初期状態では **読み取るだけ** で、
 - Claude Code は stream-json、Codex は `codex exec`、Grok は ACP（Agent Client Protocol、`grok agent stdio`）で話す。どれも同じ会話欄・同じ盤面に出る。ACP は Gemini CLI や OpenCode なども話す共通の口
 - Claude Code を起こす時のセッションIDは AT22 が採番する（`--session-id`）。transcript の在り処が確定するので、起こした先をそのまま画面で追える。Codex / Grok は相手が返したIDを台帳（UserDefaults）に残し、アプリを閉じても続きに繋げる
 - CLI の場所はログインシェルに訊いて突き止める。見つからなければそのエージェントの起動UI自体が出ない
+- AT22 から起こした Claude Code は、道具の承認を AT22 に訊く（`--permission-prompt-tool stdio`）。Lv.2 は道具ごとに全部、Lv.3 は編集以外を、画面右上の承認の板で許可・書換・却下する。書き換えて許可すると、**書き換えた入力の方が実行される**。サブエージェントの起動（Agent ツール）はどの段でも訊かれないので、そこは今まで通り門が止める
 - 人間の承認なしにファイルを書き換える段（Lv.4 / Lv.5）を選ぶ時は、一度だけ確認が入る。Grok は Lv.4 / Lv.5 の時だけ `--always-approve` で起こし、それ以外はあなた自身の既定の権限モードに従う（`grok agent` に段を細かく渡す口が無いため）
 
 第三者依存はここでも増えない（`Foundation.Process` だけ）。

@@ -1958,6 +1958,14 @@ struct P0SelfCheck {
         assert(asking?.waiting == "承認待ち" && asking?.doing == "承認待ち · 編集 Gate.swift",
                "実際: \(asking?.doing ?? "無し")")
         assert(chipsWaiting.first { $0.id == "w0" }?.waiting == nil, "セッションの待ちが子に載った")
+        // AT22 が繋いでいるセッションの道具の承認も、司令塔の「承認待ち」として出す
+        c.liveSessions = [LiveSession(id: "S1", name: "S1", cwd: "/p", busy: false)]
+        c.handle(.approval(Approval(id: "r1", session: "S1", tool: "Bash", detail: "ls", input: "{}")), session: "S1")
+        assert(c.snapshot(now: later, mode: .work).chips.first { $0.id == "S1" }?.waiting == "承認待ち",
+               "承認の依頼が司令塔に出ない")
+        assert(c.stoppedCount == c.gates.count + 1, "承認が止まっている件数に入らない")
+        // 繋がっていない相手には送れないので、依頼は残る（黙って消すと相手は待ったまま）
+        assert(!c.answer(c.approvals[0], allow: true) && c.approvals.count == 1, "送れない答えで依頼が消えた")
         // 直前に動いていても（最後の作業から1秒後）、待っている間は稼働中にしない
         let justAsked = c.snapshot(now: t0.addingTimeInterval(41), mode: .work).chips.first { $0.id == "S1" }
         assert(justAsked?.waiting == "承認待ち" && justAsked?.busy == false, "承認待ちなのに稼働中のランプが点く")
@@ -1993,11 +2001,15 @@ struct P0SelfCheck {
             return a[a.firstIndex(of: "--permission-mode")! + 1]
         }
         assert(mode(.plan) == "plan", "壁打ちが編集できる段に落ちた")
-        assert(mode(.each) == "acceptEdits" && mode(.normal) == "acceptEdits",
-               "段の違いは門が持つ。permission-mode で分けるものではない")
+        // 訊く相手（AT22 の承認パネル）が居るので、Lv.2 は道具ごとに訊き、Lv.3 は編集だけ任せる
+        assert(mode(.each) == "default" && mode(.normal) == "acceptEdits",
+               "Lv.2 / Lv.3 の権限モードが違う: \(mode(.each)) / \(mode(.normal))")
+        let asked = args(.normal)
+        assert(asked[asked.firstIndex(of: "--permission-prompt-tool")! + 1] == "stdio",
+               "承認を AT22 に訊かせていない（-p の claude は黙って断る）")
         assert(mode(.auto) == "bypassPermissions" && mode(.unattended) == "bypassPermissions",
                "任せてる／留守番が確認を求める段に落ちた")
-        // 端末が無いので manual は使えない。誰も答えられないまま待ち続ける
+        // manual は使わない（訊くのは default で足りる）
         assert(!Gate.Level.allCases.contains { $0.permissionMode == "manual" },
                "訊く相手が居ない段で manual を渡している")
 
