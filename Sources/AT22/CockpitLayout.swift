@@ -627,10 +627,13 @@ struct CockpitLayout {
                                      instruction: "", counts: [], spent: 0, share: 0), false))
         }
 
-        let railX = margin + railOffset
-        // 狭い時（会話欄を出したまま窓を最小にすると盤面は320前後）は字下げを詰め、行を盤面の内側に収める。
-        // 以前は行幅に下限160を付けていたので、行が盤面の外へはみ出し、名前・モデル・バッジが重なっていた
-        let rowIndent = available - rowOffset >= 360 ? rowOffset : railOffset + 20
+        // 狭い時（会話欄を出したまま窓を最小にすると盤面は320前後）は幹を左へ寄せて字下げを詰め、
+        // 行を盤面の内側に収める。以前は行幅に下限160を付けていたので、行が盤面の外へはみ出し、
+        // 名前・モデル・バッジが重なっていた。幹と行の間は門の紙（幹の右 gatePaperInset から
+        // 幅 gatePaper.width）が立つので、その分だけは必ず空ける——詰めすぎると紙が行の ID に乗る
+        let narrow = available - rowOffset < 360
+        let railX = margin + (narrow ? 24 : railOffset)
+        let rowIndent = narrow ? 24 + gatePaperInset + gatePaper.width + 8 : rowOffset
         let rowLeft = margin + rowIndent
         let rowWidth = max(0, available - rowIndent)
 

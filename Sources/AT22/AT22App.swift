@@ -16,7 +16,8 @@ struct AT22App: App {
         if let path = Self.shotPath() {
             if CommandLine.arguments.contains("--board") {
                 Snapshot.writeBoard(to: path, size: Self.shotSize(), mode: Self.shotMode(),
-                                    transcript: Self.shotTranscript())
+                                    transcript: Self.shotTranscript(),
+                                    gate: CommandLine.arguments.contains("--gate"))
             } else {
                 Snapshot.write(to: path, size: Self.shotSize(), transcript: Self.shotTranscript(),
                                gate: CommandLine.arguments.contains("--gate"))

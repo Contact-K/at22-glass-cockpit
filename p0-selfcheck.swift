@@ -134,6 +134,20 @@ struct P0SelfCheck {
         // 名前が短くて札ごと入るなら、札は縮めない
         let short = cell("/p/src/x", 1100)
         assert(short?.tag.hasSuffix("読取中") == true && short?.display == "x", "\(short?.tag ?? "無し")")
+
+        // 狭い時に字下げを詰めても、門の紙（幹と行の間に立つ）が行の ID に乗らないこと
+        let gateID = "/probe/gate/g1.md"
+        c.loadGatesForProbe([Gate.Request(id: gateID, call: "probe", by: "w1", to: "検査", risk: "high",
+                                          issued: now, instruction: "W2 を起こす")])
+        for width: CGFloat in [320, 1100] {
+            let gated = L.compute(c.snapshot(now: now, mode: .work), width: width)
+            guard let paper = gated.paper(forGate: gateID),
+                  let row = gated.chips.first(where: { $0.chip.id == gateID }) else {
+                fatalError("幅\(width)で門が組まれない")
+            }
+            assert(paper.maxX < row.rect.minX, "幅\(width)で門の紙が行に乗る: 紙 \(paper.maxX) / 行 \(row.rect.minX)")
+            assert(row.rect.maxX <= width - L.margin + 0.5, "幅\(width)で行が盤面の外へ出る")
+        }
     }
 
     // MARK: パーサ

@@ -38,9 +38,12 @@ enum Snapshot {
     /// 時刻を固定して直接呼ぶので、行・格子・門・凡例がそのまま出る。
     /// 代わりに外枠は写らないので、外枠は `--shot` の方で見る
     @MainActor
-    static func writeBoard(to path: String, size: CGSize, mode: CockpitMode, transcript: String?) {
+    static func writeBoard(to path: String, size: CGSize, mode: CockpitMode, transcript: String?,
+                           gate: Bool = false) {
         let cockpit = Cockpit()
         if let transcript { feed(cockpit, from: transcript) }
+        // 門の紙は行の間に立つので、行と重ならないかは盤面側でしか確かめられない
+        if gate { stopOneGate(cockpit) }
 
         let now = Date()
         let snapshot = cockpit.snapshot(now: now, mode: mode)
