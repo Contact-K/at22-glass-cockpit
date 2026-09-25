@@ -1737,7 +1737,8 @@ enum CockpitCanvas {
             (FileCategory.allCases.firstIndex(of: a) ?? -1) < (FileCategory.allCases.firstIndex(of: b) ?? -1)
         }
         if !seen.isEmpty {
-            parts.append(seen.map { "\($0.mark) \($0.title)" }.joined(separator: " · "))
+            // 区切りは空白。中黒で区切ると「他」の刻印（・）と並んで「· ・ 他」と崩れて見えた
+            parts.append(seen.map { "\($0.mark) \($0.title)" }.joined(separator: "  "))
         }
 
         let font = Palette.FontSize.label

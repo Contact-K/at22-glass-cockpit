@@ -555,11 +555,22 @@ final class Cockpit {
 
             case let .mcpCalled(call, session, by, server, tool, prompt, at):
                 guard mcpCallKey[call] == nil else { break }
-                let key = "mcp-call:\(call)"
+                // prompt の無い呼び出しは仕事を任せたのではなく、道具を使っただけ（ブラウザ操作・検索など）。
+                // 1回ごとに1体にすると、実測でブラウザ操作85回が85行になって帯を埋めた。
+                // 呼んだエージェント × サーバで1体に束ね、回数を労働量として積む
+                let key = prompt.isEmpty ? "mcp-tool:\(session)#\(by)#\(server)" : "mcp-call:\(call)"
                 mcpCallKey[call] = key
-                let instruction = prompt.isEmpty ? tool : prompt
-                mcpWorkers[key] = MCPRecord(session: session, server: server, parent: by,
-                                            prompt: instruction, calls: 1, done: false, lastAt: at)
+                if prompt.isEmpty, var worker = mcpWorkers[key] {
+                    worker.calls += 1
+                    worker.prompt = tool
+                    worker.done = false
+                    worker.lastAt = max(worker.lastAt, at)
+                    mcpWorkers[key] = worker
+                } else {
+                    mcpWorkers[key] = MCPRecord(session: session, server: server, parent: by,
+                                                prompt: prompt.isEmpty ? tool : prompt,
+                                                calls: 1, done: false, lastAt: at)
+                }
 
             case let .mcpThread(call, thread):
                 mergeMCP(call: call, thread: thread)
@@ -616,7 +627,9 @@ final class Cockpit {
 
     /// threadId が返るまでは呼び出しIDで置き、判明した時点で過去の同一スレッドへ合流する
     private func mergeMCP(call: String, thread: String) {
-        guard let oldKey = mcpCallKey[call], let current = mcpWorkers.removeValue(forKey: oldKey) else { return }
+        // 束ねた道具の1体（mcp-tool:）はスレッドを持たない。ここで動かすと束ごと消える
+        guard let oldKey = mcpCallKey[call], oldKey.hasPrefix("mcp-call:"),
+              let current = mcpWorkers.removeValue(forKey: oldKey) else { return }
         let key = "mcp-thread:\(current.server)#\(thread)"
         var merged = mcpWorkers[key] ?? current
         if mcpWorkers[key] != nil {
@@ -1766,7 +1779,9 @@ final class Cockpit {
                 work: record.reportedWork ?? max(record.observedWork, touchCount[id] ?? 0),
                 doing: doing,
                 done: record.doneAt != nil,
-                busy: busy,
+                // 返事待ちは止まっている。直前15秒に動きがあっても稼働中にしない
+                // （赤いランプと琥珀の枠が同時に点くと、動いているのか待っているのか読めない）
+                busy: busy && waiting == nil,
                 target: running?.target,
                 kind: running?.kind,
                 lastAt: record.lastAt,

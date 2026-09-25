@@ -144,6 +144,21 @@ struct CockpitLayout {
     var gates: [(id: String, rect: CGRect)] { gatePapers.map { (id: $0.key, rect: $0.value) } }
     func paper(forGate id: String) -> CGRect? { gatePapers[id] }
 
+    /// 行の3つの文字（名前・モデルと割合・いま何をしているか）を行幅に収める。
+    /// 広ければ今まで通り meta に余りを全部回す。入りきらない時は
+    /// いま何をしているか → モデルと割合 の順に落とし、名前は削ってでも残す（誰なのかが最後の手掛かり）
+    static func fitRow(role: String, trailing: String, meta: String,
+                       rowWidth: CGFloat) -> (role: String, trailing: String, doing: String) {
+        let text = rowWidth - rowIDColumn - rowBadgeColumn - 10      // 名前の頭からバッジの手前まで
+        let trailingWidth = textWidth(trailing, size: badgeFont)
+        let keep = trailing.isEmpty || text >= 60 + trailingWidth + 10
+        let reserved = keep && !trailing.isEmpty ? trailingWidth + 10 : 0
+        let metaLimit = rowWidth - rowIDColumn - rowNameColumn - rowBadgeColumn - reserved - 30
+        return (truncateMiddle(role, toWidth: max(0, min(rowNameColumn - 8, text - reserved))),
+                keep ? trailing : "",
+                metaLimit >= 40 ? truncateMiddle(meta, toWidth: metaLimit, size: badgeFont) : "")
+    }
+
     /// 状態のバッジ。**終了・待機は無彩色、実行中だけが色を持つ**
     static func chipBadge(_ chip: AgentChip) -> String {
         chip.done ? "終了" : (chip.busy ? "実行中" : "待機")
@@ -610,8 +625,11 @@ struct CockpitLayout {
         }
 
         let railX = margin + railOffset
-        let rowLeft = margin + rowOffset
-        let rowWidth = max(160, available - rowOffset)
+        // 狭い時（会話欄を出したまま窓を最小にすると盤面は320前後）は字下げを詰め、行を盤面の内側に収める。
+        // 以前は行幅に下限160を付けていたので、行が盤面の外へはみ出し、名前・モデル・バッジが重なっていた
+        let rowIndent = available - rowOffset >= 360 ? rowOffset : railOffset + 20
+        let rowLeft = margin + rowIndent
+        let rowWidth = max(0, available - rowIndent)
 
         // 司令塔の箱。深さ0が複数居ることもある（セッションを跨いで見ている時）ので積む
         var top = chipsTop
@@ -639,16 +657,12 @@ struct CockpitLayout {
         for (chip, hit) in placed where chip.depth > 0 {
             worker += 1
             let rect = CGRect(x: rowLeft, y: rowY, width: rowWidth, height: rowHeight)
-            let trailing = chipTrailing(chip)
-            // 名前・いま何をしているか・モデルと割合の3つで幅を分ける。
-            // meta がいちばん伸び縮みするので、余りを全部そこへ回す
-            let metaLimit = rowWidth - rowIDColumn - rowNameColumn - rowBadgeColumn
-                          - textWidth(trailing, size: badgeFont) - 40
+            let fit = fitRow(role: chip.role, trailing: chipTrailing(chip), meta: rowMeta(chip), rowWidth: rowWidth)
             layout.chips.append(ChipBox(
                 chip: chip,
-                role: truncateMiddle(chip.role, toWidth: rowNameColumn - 8),
-                trailing: trailing,
-                doing: truncateMiddle(rowMeta(chip), toWidth: max(40, metaLimit), size: badgeFont),
+                role: fit.role,
+                trailing: fit.trailing,
+                doing: fit.doing,
                 rect: rect, summary: !hit,
                 dot: CGPoint(x: rect.maxX - rowBadgeColumn - 12, y: rect.midY),
                 isRoot: false, shortID: hit ? "W\(worker)" : "",
@@ -666,13 +680,12 @@ struct CockpitLayout {
                                     work: 0, doing: "門で停止中 — 右の欄で応答", done: false, busy: false,
                                     target: nil, kind: nil, lastAt: gate.issued,
                                     instruction: gate.instruction, counts: [], spent: 0, share: 0)
+            let stoppedFit = fitRow(role: gate.to, trailing: "", meta: plainLine(gate.instruction), rowWidth: rowWidth)
             layout.chips.append(ChipBox(
                 chip: stopped,
-                role: truncateMiddle(gate.to, toWidth: rowNameColumn - 8),
+                role: stoppedFit.role,
                 trailing: "",
-                doing: truncateMiddle(plainLine(gate.instruction),
-                                      toWidth: max(40, rowWidth - rowIDColumn - rowNameColumn - rowBadgeColumn - 40),
-                                      size: badgeFont),
+                doing: stoppedFit.doing,
                 rect: rect, summary: false,
                 dot: CGPoint(x: rect.maxX - rowBadgeColumn - 12, y: rect.midY),
                 isRoot: false, shortID: "G", badge: "待機", gate: true))

@@ -88,9 +88,28 @@ struct P0SelfCheck {
         chipDetailsListWhatItTouched()
         mcpWorkerSurvivesLongFlight()
         foldsChipsOverTheLimit()
+        rowsFitWhenNarrow()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
         print("p0: ok")
+    }
+
+    /// 会話欄を出したまま窓を最小にすると盤面は320前後になる。そこで名前・モデル・バッジが重なっていた
+    static func rowsFitWhenNarrow() {
+        typealias L = CockpitLayout
+        // 行の中で名前が使える幅（ID の右からバッジの手前まで）に、名前とモデル表示が並んで収まること
+        for width: CGFloat in [120, 160, 240, 360, 900] {
+            let fit = L.fitRow(role: "claude-in-chrome", trailing: "opus-5.5 124 100%",
+                               meta: "javascripttool", rowWidth: width)
+            let room = width - L.rowIDColumn - L.rowBadgeColumn - 10
+            let used = L.textWidth(fit.role) + (fit.trailing.isEmpty ? 0 : L.textWidth(fit.trailing, size: L.badgeFont) + 10)
+            assert(used <= max(room, L.textWidth("…")), "幅\(width)で名前とモデルが重なる: \(fit)")
+            // いま何をしているか は名前の欄の右から描くので、欄が無ければ出さない
+            if width - L.rowIDColumn - L.rowNameColumn - L.rowBadgeColumn < 40 { assert(fit.doing.isEmpty, "幅\(width): \(fit)") }
+        }
+        // 広ければ今まで通り全部出す
+        let wide = L.fitRow(role: "claude-in-chrome", trailing: "MCP 85", meta: "navigate", rowWidth: 900)
+        assert(wide == ("claude-in-chrome", "MCP 85", "navigate"), "\(wide)")
     }
 
     // MARK: パーサ
@@ -1751,6 +1770,9 @@ struct P0SelfCheck {
         assert(asking?.waiting == "承認待ち" && asking?.doing == "承認待ち · 編集 Gate.swift",
                "実際: \(asking?.doing ?? "無し")")
         assert(chipsWaiting.first { $0.id == "w0" }?.waiting == nil, "セッションの待ちが子に載った")
+        // 直前に動いていても（最後の作業から1秒後）、待っている間は稼働中にしない
+        let justAsked = c.snapshot(now: t0.addingTimeInterval(41), mode: .work).chips.first { $0.id == "S1" }
+        assert(justAsked?.waiting == "承認待ち" && justAsked?.busy == false, "承認待ちなのに稼働中のランプが点く")
     }
 
     // MARK: 門（人間の介入）
@@ -3151,12 +3173,14 @@ struct P0SelfCheck {
         feed(looseShape)
         feed(otherShape)
         snap = c.snapshot(now: TranscriptParser.date("2026-08-01T09:00:09.000Z")!, mode: .work)
-        let slack = snap.chips.first { $0.id == "mcp-call:m3" }
-        assert(slack?.id == "mcp-call:m3" && slack?.done == true && slack?.work == 1)
+        // prompt の無い呼び出しは道具の利用。呼び出しごとに分裂させず、サーバ単位で1体に束ねて回数を積む
+        // （実測でブラウザ操作85回が85行になり、エージェントの帯を埋めていた）
+        let slacks = snap.chips.filter { $0.role == "claude_ai_Slack" }
+        assert(slacks.count == 1, "道具として呼んだMCPが呼び出しごとに分裂した: \(slacks.map(\.id))")
+        let slack = slacks.first
+        assert(slack?.done == true && slack?.work == 2, "束ねた回数か完了が違う: \(String(describing: slack?.work))")
         assert(slack?.doing == "search" && slack?.instruction == "search",
                "promptが無いMCPでツール名へ戻らない")
-        assert(snap.chips.contains { $0.id == "mcp-call:m4" && $0.done },
-               "threadIdのない別JSON形を呼び出しIDで残せない")
 
         let root = snap.chips.first { $0.id == "S1" }!
         assert(root.counts.first { $0.kind == .spawn }?.count == 4,

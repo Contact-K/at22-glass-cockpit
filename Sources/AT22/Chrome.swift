@@ -483,6 +483,8 @@ struct TabBar: View {
                 Text("停止\(count)")
                     .font(.system(size: Palette.FontSize.label, design: .monospaced))
                     .foregroundStyle(Palette.accentText)
+                    // スラグと同じく折り返させない。折り返すと件数だけ下に落ちてタブの下線に掛かる
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .opacity(on ? 1 : 0.35)
         }
