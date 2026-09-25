@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -90,6 +90,8 @@ struct P0SelfCheck {
         foldsChipsOverTheLimit()
         rowsFitWhenNarrow()
         streamingIsPerSession()
+        claudePermissionRoundTrip()
+        codexEventsReachBoard()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -100,26 +102,77 @@ struct P0SelfCheck {
     /// 全セッションが稼働中に見え、別のセッションのターン終了で書きかけが消えていた
     static func streamingIsPerSession() {
         let c = Cockpit()
-        c.applyStream(.partialText("書いている途中"), session: "A")
+        c.handle(.partial("書いている途中"), session: "A")
         assert(c.isWorking("A"), "書いているセッションが稼働中にならない")
         assert(!c.isWorking("B"), "A の書きかけで B まで稼働中になった")
-        c.applyStream(.turnEnded, session: "B")
+        c.handle(.turnEnded(tokens: nil), session: "B")
         assert(c.streaming["A"] == "書いている途中", "B のターン終了で A の書きかけが消えた")
         // 送っていない割り込みの受領確認は無視する（別セッション宛ての誤配を止め損ないと言わない）
-        c.applyStream(.interruptAcknowledged(requestID: "rB", stillQueued: 2, cancelled: 0), session: "A")
+        c.handle(.interruptAcknowledged(requestID: "rB", stillQueued: 2, cancelled: 0), session: "A")
         assert(c.launchError == nil, "送っていない割り込みの確認で警告が出た: \(c.launchError ?? "")")
-        c.applyStream(.turnEnded, session: "A")
+        c.handle(.turnEnded(tokens: nil), session: "A")
         assert(c.streaming["A"] == nil && !c.isWorking("A"), "ターン終了で書きかけが残った")
 
         // 人が止めたターンは失敗と言わない。claude は止めたターンを error_during_execution で終える（実機で確認）
         c.expectInterrupt("rA", for: "A")
-        c.applyStream(.partialText("1\n2\n"), session: "A")
-        c.applyStream(.interruptAcknowledged(requestID: "rA", stillQueued: 0, cancelled: 0), session: "A")
-        c.applyStream(.turnFailed("error_during_execution"), session: "A")
+        c.handle(.partial("1\n2\n"), session: "A")
+        c.handle(.interruptAcknowledged(requestID: "rA", stillQueued: 0, cancelled: 0), session: "A")
+        c.handle(.turnFailed("error_during_execution"), session: "A")
         assert(c.launchError == nil, "自分で止めたのに失敗と出た: \(c.launchError ?? "")")
         // 止めていないセッションの同じ終わり方は、今まで通り失敗として出す
-        c.applyStream(.turnFailed("error_during_execution"), session: "B")
+        c.handle(.turnFailed("error_during_execution"), session: "B")
         assert(c.launchError?.contains("error_during_execution") == true, "本物の失敗を握り潰した")
+    }
+
+    /// `--permission-prompt-tool stdio` の問い合わせを読み、答えを組み立てる。
+    /// 材料は実機（claude 2.1.282）が出した行そのまま
+    static func claudePermissionRoundTrip() {
+        let line = #"{"type":"control_request","request_id":"b9e19849-0112-4e1e-953a-382cc30eff00","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"touch /tmp/at22-spike-file","description":"Create file at /tmp/at22-spike-file"},"description":"Create file at /tmp/at22-spike-file","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch /tmp/at22-spike-file"}],"behavior":"allow","destination":"localSettings"}],"blocked_path":"/tmp/at22-spike-file","tool_use_id":"toolu_014MCDkiywWxxbETWMR57Lw4"}}"#
+        guard case let .permissionRequest(id, tool, detail, input)? = Launcher.parseStreamLine(Data(line.utf8)) else {
+            fatalError("承認の問い合わせを読めない")
+        }
+        assert(id == "b9e19849-0112-4e1e-953a-382cc30eff00" && tool == "Bash")
+        assert(detail == "Create file at /tmp/at22-spike-file", "実際: \(detail)")
+        assert(input.contains("touch /tmp/at22-spike-file"), "入力が落ちた: \(input)")
+        // 共通の形では、どのセッションへの依頼かが付く
+        guard case let .approval(approval)? = ClaudeConnection.agentEvent(
+            .permissionRequest(requestID: id, tool: tool, detail: detail, input: input), session: "S1"),
+              approval.session == "S1", approval.id == id else { fatalError("承認の依頼に直せない") }
+
+        func decode(_ data: Data?) -> [String: Any] {
+            let outer = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
+            let response = outer?["response"] as? [String: Any]
+            assert(outer?["type"] as? String == "control_response" && response?["request_id"] as? String == id)
+            return response?["response"] as? [String: Any] ?? [:]
+        }
+        // 書き換えて許可 → 書き換えた方が updatedInput に載る（実機で、実行されるのはこちらだった）
+        let revised = decode(Launcher.permissionLine(requestID: id, allow: true, input: #"{"command":"echo ok"}"#))
+        assert(revised["behavior"] as? String == "allow"
+               && (revised["updatedInput"] as? [String: Any])?["command"] as? String == "echo ok", "\(revised)")
+        let denied = decode(Launcher.permissionLine(requestID: id, allow: false, input: input))
+        assert(denied["behavior"] as? String == "deny" && denied["message"] != nil, "\(denied)")
+        // 壊れた入力で許可はしない。何が走るか分からない
+        assert(Launcher.permissionLine(requestID: id, allow: true, input: "{壊れた") == nil)
+    }
+
+    /// Codex の出来事は transcript を通らないので、会話にも盤面にも接続から直に出す
+    static func codexEventsReachBoard() {
+        let git = CodexConnection.agentEvents(.commandRun(command: "git status", exitCode: 0))
+        guard case let .tool(_, kind, title, path, _, done)? = git.first else { fatalError("\(git)") }
+        assert(kind == .git && title.hasPrefix("git") && path == nil && done, "\(git)")
+        assert(CodexConnection.agentEvents(.fileChanged(paths: ["/p/a.swift", "/p/b.swift"])).count == 2,
+               "変更ファイルを1件ずつ出していない")
+
+        let c = Cockpit()
+        c.handle(.message("直しました", thinking: false), session: "X1")
+        for event in CodexConnection.agentEvents(.fileChanged(paths: ["/p/src/Fixed.swift"])) {
+            c.handle(event, session: "X1")
+        }
+        c.handle(.turnEnded(tokens: 1200), session: "X1")
+        let snap = c.snapshot(now: Date(), mode: .work)
+        assert(c.messages.contains { $0.session == "X1" && $0.text == "直しました" }, "発言が会話に出ない")
+        assert(snap.chips.contains { $0.id == "X1" }, "Codex のセッションが盤面のチップに出ない")
+        assert(snap.cards.flatMap(\.files).contains { $0.id == "/p/src/Fixed.swift" }, "変更したファイルが盤面に出ない")
     }
 
     /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。

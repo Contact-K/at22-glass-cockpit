@@ -35,6 +35,9 @@ enum Launcher {
         /// stillQueued/cancelled とも 0 として扱う。それを「受領したが内訳は不明」と見なし、
         /// エラー扱いにはしない（新しい版が来るまで待つことの方が、誤報より害がない）
         case interruptAcknowledged(requestID: String, stillQueued: Int, cancelled: Int)
+        /// 道具を使ってよいかの問い合わせ（`--permission-prompt-tool stdio` の時だけ来る）。
+        /// `input` は道具への入力の JSON。答えるまで claude はその道具の前で待つ
+        case permissionRequest(requestID: String, tool: String, detail: String, input: String)
         /// API 再試行など。`message` に人間向けの文言を載せる
         case error(String)
         /// セッションが立ち上がった
@@ -95,6 +98,19 @@ enum Launcher {
                 return .turnFailed(message.isEmpty ? "ターン失敗" : message)
             }
             return .turnEnded
+
+        case "control_request":
+            // 実測（v2.1.282）の形: {"type":"control_request","request_id":R,"request":{"subtype":"can_use_tool",
+            // "tool_name":"Bash","input":{…},"description":"…","permission_suggestions":[…],"tool_use_id":…}}
+            guard let requestID = dict["request_id"] as? String,
+                  let request = dict["request"] as? [String: Any],
+                  request["subtype"] as? String == "can_use_tool",
+                  let tool = request["tool_name"] as? String else { return nil }
+            let input = request["input"] ?? [String: Any]()
+            let json = (try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys, .withoutEscapingSlashes]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            let detail = (request["description"] as? String) ?? (request["display_name"] as? String) ?? tool
+            return .permissionRequest(requestID: requestID, tool: tool, detail: detail, input: json)
 
         case "control_response":
             // 割り込みの受領確認。request_id を確認し、止まりきったか見る。
@@ -220,6 +236,27 @@ enum Launcher {
         ]
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         data.append(0x0A)   // 1行1メッセージ。改行が無いと相手が読み始めない
+        return data
+    }
+
+    /// 道具の問い合わせへの答え1行。許可なら `input`（書き換えていればその中身）で実行させる。
+    /// 実測で `updatedInput` の書き換えは効く——実行されるのは書き換えた方。
+    /// 入力が JSON として読めなければ何も返さない（壊れた入力で許可すると、何が走るか分からない）
+    nonisolated static func permissionLine(requestID: String, allow: Bool, input: String) -> Data? {
+        let body: [String: Any]
+        if allow {
+            guard let data = input.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            body = ["behavior": "allow", "updatedInput": object]
+        } else {
+            body = ["behavior": "deny", "message": "AT22 で人が却下した"]
+        }
+        let payload: [String: Any] = [
+            "type": "control_response",
+            "response": ["subtype": "success", "request_id": requestID, "response": body],
+        ]
+        guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        data.append(0x0A)
         return data
     }
 

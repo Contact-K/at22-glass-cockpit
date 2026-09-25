@@ -311,13 +311,21 @@ final class Cockpit {
     /// 承認の強さ。正は `memory/gate/LEVEL` の中身——司令塔も同じファイルを読むので、
     /// UserDefaults に置くと向こうから見えない
     private(set) var gateLevel = Gate.defaultLevel
-    /// AT22 が起こした／繋いだプロセス。終了まで手元に置いて、落ちた理由を拾えるようにする。
-    /// キーはセッションID。`token` は起こすたびに新しくする——同じセッションへ繋ぎ直した後に
-    /// 古いプロセスが終わった時、新しい方の記録まで片付けないため
-    private var launched: [String: (token: UUID, process: Process)] = [:]
+    /// AT22 が起こした／繋いだ接続。キーはセッションID。終了まで手元に置いて、落ちた理由を拾う。
+    /// `token` は繋ぐたびに新しくする——同じセッションへ繋ぎ直した後に古いプロセスが終わった時、
+    /// 新しい方まで片付けないため
+    private struct Run {
+        let connection: any AgentConnection
+        let token: UUID
+    }
+    private var runs: [String: Run] = [:]
+    /// 人の返事を待っている承認の依頼。答えると消える
+    private(set) var approvals: [Approval] = []
+    /// ターンを回している AT22 の接続。送った時に開き、ターンの終わり・失敗・接続の終了で閉じる。
+    /// **ここを持つまで、起こしたセッションのタブは busy のまま固定で**、Codex は終わっても
+    /// 「処理中」に見え続けていた（`-p` の claude は `~/.claude/sessions` に載らないので同じ）
+    private var openTurns: Set<String> = []
     private(set) var launchError: String?
-    /// 起こした／繋いだセッションの stdin。**ここが開いている間だけ言葉が通る**
-    private var inputs: [String: FileHandle] = [:]
     /// 人がセッションごとに選んだモデル。**選ばれていない間は渡さない**——
     /// `--resume` にモデルを渡さなければ、claude は元のセッションの設定をそのまま引き継ぐ
     private var sessionModel: [String: String] = [:]
@@ -374,8 +382,6 @@ final class Cockpit {
     /// codex セッション台帳（内部セッションID → threadID・題名等）
     /// UserDefaults（キー "codexSessions"）で読み書き
     private(set) var codexRecords: [CodexRecord] = []
-    private var codexProcesses: [String: Process] = [:]  // 内部セッションID -> プロセス
-    private var codexThreads: [String: String] = [:]      // 内部セッションID -> threadID
 
     /// セッションのバックエンド種別（claude または codex）
     private var backends: [String: Backend] = [:]
@@ -443,7 +449,6 @@ final class Cockpit {
         }
 
         backends[record.id] = .codex
-        codexThreads[record.id] = record.threadID
 
         // 案内メッセージを追加
         messages.append(Message(
@@ -909,23 +914,21 @@ final class Cockpit {
         let token = UUID()
 
         do {
-            // 末尾クロージャは使わない。`onStream:` を明示したうえで末尾に閉じ括弧を置くと、
-            // Swift が末尾クロージャを最後の引数（onStream）に結ぼうとして衝突する
-            let started = try Launcher.launch(
-                config, using: claude, sessionID: sessionID,
-                onExit: exitHandler(label: "claude", session: id, token: token),
-                onStream: claudeStream(session: id))
-            launched[id] = (token, started.process)
+            let connection = try ClaudeConnection.start(
+                config, using: claude, session: id, sessionID: sessionID,
+                onEvent: agentStream(session: id),
+                onExit: exitHandler(label: "claude", session: id, token: token))
+            runs[id] = Run(connection: connection, token: token)
+            backends[id] = .claude
             launchError = nil
 
             // `.jsonl` はまだ無い。タブを先に立てておかないと、起こした直後の数秒が行方不明になる
-            inputs[id] = started.input
-            backends[id] = .claude
             loadedSessionTabs[id] = LiveSession(id: id, name: String(id.prefix(8)),
-                                                cwd: cwd, busy: true)
+                                                cwd: cwd, busy: false)
+            openTurns.insert(id)
             selectedSession = id
             refreshLiveSessions()
-            return started.sessionID
+            return sessionID
         } catch {
             launchError = "\(error)"
             return nil
@@ -941,7 +944,7 @@ final class Cockpit {
     /// ponytail: 繋ぐのは送信の直前だけ。開いて眺めているだけのセッションでプロセスは起こさない
     @discardableResult
     func attach(to session: String) -> Bool {
-        if inputs[session] != nil { return true }
+        if runs[session] != nil { return true }
         guard backend(of: session) == .claude else { return false }
         guard let claude else {
             launchError = "claude が見つからない。設定で場所を指定する"
@@ -958,13 +961,11 @@ final class Cockpit {
                                      model: sessionModel[session] ?? "")
         let token = UUID()
         do {
-            let started = try Launcher.launch(
-                config, using: claude, resuming: session,
-                onExit: exitHandler(label: "claude", session: session, token: token),
-                onStream: claudeStream(session: session))
-            // `started.sessionID` は繋ぐ時には使われない乱数なので、キーには繋いだ先の ID を使う
-            launched[session] = (token, started.process)
-            inputs[session] = started.input
+            let connection = try ClaudeConnection.start(
+                config, using: claude, session: session, resuming: session,
+                onEvent: agentStream(session: session),
+                onExit: exitHandler(label: "claude", session: session, token: token))
+            runs[session] = Run(connection: connection, token: token)
             backends[session] = .claude
             launchError = nil
             return true
@@ -974,14 +975,18 @@ final class Cockpit {
         }
     }
 
-    /// 人が選んだモデル。**繋ぎ直すまで効かない**ので、既に繋がっているなら畳んでおく。
-    /// 次に送った時に新しいモデルで繋がる（`claude -p` は走っている最中に切り替えられない）
+    /// 人が選んだモデル。**繋ぎ直すまで効かない**ので、ターンの合間なら今の接続を畳んでおく。
+    /// 次に送った時に新しいモデルで繋がる（`claude -p` も codex も、走っている最中には切り替えられない）
     func setModel(_ model: String, for session: String) {
         sessionModel[session] = model
-        if let input = inputs[session] {
-            try? input.close()
-            inputs[session] = nil
+        // codex は台帳のモデルで繋ぐ。以前はここを書き換えず、選び直しても効いていなかった
+        if let index = codexRecords.firstIndex(where: { $0.id == session }) {
+            codexRecords[index].model = model
+            saveCodexRecords()
         }
+        guard let run = runs[session], run.connection.acceptsInput else { return }
+        run.connection.close()
+        forget(session)
     }
 
     /// そのセッションが実際に使っているモデル。transcript から観測した値
@@ -989,20 +994,24 @@ final class Cockpit {
         sessionModel[session] ?? agents[session]?.model
     }
 
+    /// 接続を手放す。書きかけ・割り込み待ち・答え待ちの承認も一緒に消す
+    private func forget(_ session: String) {
+        runs[session] = nil
+        streaming[session] = nil
+        interruptRequests[session] = nil
+        stopping.remove(session)
+        openTurns.remove(session)
+        approvals.removeAll { $0.session == session }
+    }
+
     /// 終わった時の後始末。起こす／繋ぐで同じものを使う。
     /// 片付けるのは `token` が合う時だけ——モデルの切り替えで閉じた古いプロセスが、
-    /// 繋ぎ直した後に終わることがあり、そこで消すと新しい接続の stdin まで捨ててしまう
+    /// 繋ぎ直した後に終わることがあり、そこで消すと新しい接続まで捨ててしまう
     private func exitHandler(label: String, session: String, token: UUID) -> @Sendable (Int32, String) -> Void {
         { status, errors in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.launched[session]?.token == token {
-                    self.launched[session] = nil
-                    self.inputs[session] = nil
-                    self.streaming[session] = nil
-                    self.interruptRequests[session] = nil
-                    self.stopping.remove(session)
-                }
+                if self.runs[session]?.token == token { self.forget(session) }
                 guard status != 0 else { return }
                 self.launchError = errors.isEmpty
                     ? "\(label) が終了コード \(status) で終わった" : errors
@@ -1010,34 +1019,69 @@ final class Cockpit {
         }
     }
 
-    /// stdout のイベントを状態に反映するハンドラ。**起こす時と繋ぐ時で同じもの**を使う——
+    /// 接続の出来事を状態に反映するハンドラ。**起こす時と繋ぐ時で同じもの**を使う——
     /// 2本に割ると、片方だけ直して挙動が食い違う。
     /// `readabilityHandler` は別スレッドで走るので、MainActor に載せ替える
-    private func claudeStream(session: String) -> @Sendable (Launcher.StreamEvent) -> Void {
+    private func agentStream(session: String) -> @Sendable (AgentEvent) -> Void {
         { event in
-            Task { @MainActor [weak self] in self?.applyStream(event, session: session) }
+            Task { @MainActor [weak self] in self?.handle(event, session: session) }
         }
     }
 
-    /// stdout の出来事を1件、そのセッションの状態に反映する。自己チェックが直接叩く
-    func applyStream(_ event: Launcher.StreamEvent, session: String) {
+    /// 接続から来た出来事を1件、そのセッションの状態に反映する。自己チェックが直接叩く
+    func handle(_ event: AgentEvent, session: String) {
         switch event {
-        case let .partialText(text):
+        case let .ready(remoteID):
+            // 続きに繋ぐための相手側の ID。アプリを閉じても続けられるよう台帳に残す
+            if let index = codexRecords.firstIndex(where: { $0.id == session }) {
+                codexRecords[index].threadID = remoteID
+                saveCodexRecords()
+            }
+
+        case let .partial(text):
             // 部分テキスト。ターン終了で消える
             streaming[session, default: ""] += text
 
-        case .turnProgressed, .initialized:
-            break
+        case let .message(text, thinking):
+            // transcript を AT22 が読まない相手の確定した発言。transcript 由来と同じ入口に通すので、
+            // 会話にも盤面のチップにも同じ規則で出る
+            apply([.said(agent: session, session: session, text: text, speaker: .model,
+                         thinking: thinking, at: Date())])
 
-        case .turnEnded:
-            // 確定メッセージは transcript から来るので、ここには残さない
+        case let .tool(id, kind, title, path, write, done):
+            // 道具の呼び出し。transcript の tool_use と同じ出来事に直して、労働量・「今していること」・
+            // ファイルの触りを盤面に出す。開始と完了が別々に来る相手（ACP）は、2回目は閉じるだけ
+            let now = Date()
+            var events: [TranscriptEvent] = [
+                .agentActivity(agent: session, session: session, model: model(of: session), at: now),
+                .agentAction(id: id, agent: session, session: session, kind: kind, detail: title, at: now),
+            ]
+            if let path {
+                if index[id] == nil {
+                    events.append(.touchStarted(id: id, session: session, agent: session, path: path,
+                                                kind: write ? .write : .read, at: now))
+                }
+                if done { events.append(.touchFinished(id: id, added: 0, removed: 0, at: now)) }
+            }
+            apply(events)
+
+        case let .approval(approval):
+            approvals.append(approval)
+
+        case let .turnEnded(tokens):
+            // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             streaming[session] = nil
             stopping.remove(session)
+            openTurns.remove(session)
+            if let tokens {
+                Snowman.observe(&readings[session, default: Snowman.Reading()], tokens: tokens)
+            }
 
         case let .turnFailed(reason):
             // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
             // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
             streaming[session] = nil
+            openTurns.remove(session)
             // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
             // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
             // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
@@ -1061,6 +1105,12 @@ final class Cockpit {
         }
     }
 
+    /// 承認に答える。**呼ぶのは人のクリックだけ**。`input` を渡すと書き換えた入力で許可する
+    func answer(_ approval: Approval, allow: Bool, input: String? = nil) {
+        runs[approval.session]?.connection.answer(approval, allow: allow, input: input)
+        approvals.removeAll { $0.id == approval.id }
+    }
+
     /// 割り込みを送ったことを覚える。受領確認の照合と、止めたターンの終わり方の見分けに使う
     func expectInterrupt(_ requestID: String, for session: String) {
         interruptRequests[session] = requestID
@@ -1075,6 +1125,16 @@ final class Cockpit {
         }
     }
 
+    /// 人の発言は transcript から返ってくるまで画面に出ない。
+    /// 押してから数秒何も起きないと「効いていない」に見えるので、送った側で先に置く
+    private func appendHuman(_ text: String, session: String) {
+        messages.append(Message(id: messages.count, session: session, agent: session,
+                                text: text, thinking: false, speaker: .human, at: Date()))
+        if messages.count > Self.maxMessages {
+            messages.removeFirst(messages.count - Self.maxMessages)
+        }
+    }
+
     private func launchCodex(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
         guard let codex = codexFound else {
             launchError = "codex が見つからない"
@@ -1082,117 +1142,25 @@ final class Cockpit {
         }
 
         let sessionID = UUID().uuidString.lowercased()
-        let config = CodexLauncher.Config(cwd: cwd, level: level, prompt: prompt, model: model)
-
-        let onStream: @Sendable (CodexLauncher.Event) -> Void = { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .threadStarted(id):
-                    guard let self = self else { return }
-                    self.codexThreads[sessionID] = id
-                    if let index = self.codexRecords.firstIndex(where: { $0.id == sessionID }) {
-                        self.codexRecords[index].threadID = id
-                        self.saveCodexRecords()
-                    }
-
-                case let .agentMessage(text):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: text,
-                        thinking: false,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .reasoning(text):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: text,
-                        thinking: true,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .commandRun(command, exitCode):
-                    guard let self = self else { return }
-                    let detail = exitCode.map { "終了コード \($0)" } ?? "実行中"
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: "$ \(command) (\(detail))",
-                        thinking: false,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .turnEnded(inputTokens, _):
-                    guard let self = self else { return }
-                    self.codexProcesses[sessionID] = nil
-                    Snowman.observe(&self.readings[sessionID, default: Snowman.Reading()],
-                                   tokens: inputTokens)
-
-                case let .turnFailed(msg):
-                    self?.codexProcesses[sessionID] = nil
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(msg)"
-                    } else {
-                        self?.launchError = "失敗: \(msg)"
-                    }
-
-                case let .error(msg):
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(msg)"
-                    } else {
-                        self?.launchError = msg
-                    }
-
-                case .fileChanged:
-                    break   // ファイル変更は台帳に任せる
-                }
-            }
-        }
-
-        guard let started = CodexLauncher.launch(config, using: codex, onStream: onStream) else {
+        let connection = CodexConnection(
+            found: codex, config: CodexLauncher.Config(cwd: cwd, level: level, prompt: "", model: model),
+            threadID: nil, onEvent: agentStream(session: sessionID))
+        guard connection.send(prompt) else {
             launchError = "codex を起動できなかった"
             return nil
         }
-
-        codexProcesses[sessionID] = started.process
+        runs[sessionID] = Run(connection: connection, token: UUID())
         backends[sessionID] = .codex
 
         // codex セッションをライブセッション・台帳に登録
-        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: true)
+        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
+        openTurns.insert(sessionID)
         loadedSessionTabs[sessionID] = tab
         liveSessions.append(tab)
         liveSessions.sort { $0.name < $1.name }
+        appendHuman(prompt, session: sessionID)
 
-        // 最初のユーザー発言をメッセージに追加
-        messages.append(Message(
-            id: messages.count,
-            session: sessionID,
-            agent: sessionID,
-            text: prompt,
-            thinking: false,
-            speaker: .human,
-            at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
-
-        // 台帳に記録（最初はthreadIDは nil、turnEnded で入る）
+        // 台帳に記録（最初は threadID は nil、thread が始まった時に入る）
         let title = Self.titleRule(prompt) ?? ""
         let record = CodexRecord(id: sessionID, threadID: nil, title: title, cwd: cwd, model: model, lastUsed: Date())
         codexRecords.append(record)
@@ -1211,13 +1179,12 @@ final class Cockpit {
     ///
     /// 以前は「AT22 が起こしたセッションだけ」だった。人が端末で開いている transcript を
     /// 2つのプロセスが書く事故を避けるためだったが、その結果**履歴から開いた会話には
-    /// 一言も送れず、画面が行き止まりになっていた**。いまは送る直前に `attach` が
-    /// `claude --resume` で繋ぐので、口は常に1本のまま繋がる
+    /// 一言も送れず、画面が行き止まりになっていた**。いまは送る直前に `connect` が
+    /// 繋ぐので、口は常に1本のまま繋がる
     func canSend(to session: String?) -> Bool {
         guard let session else { return false }
         // codex は1ターン1プロセス。走っている間は次を受けられない（ボタンは停止に変わる）
-        if backend(of: session) == .codex { return codexProcesses[session] == nil }
-        return true
+        return runs[session]?.connection.acceptsInput ?? true
     }
 
     @discardableResult
@@ -1225,187 +1192,91 @@ final class Cockpit {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, let session else { return false }
 
-        if backend(of: session) == .codex {
-            return sendToCodex(body, to: session)
-        }
-        return sendToClaude(body, to: session)
-    }
-
-    private func sendToClaude(_ text: String, to session: String) -> Bool {
         // 繋がっていなければここで繋ぐ。**送ろうとした時が繋ぎ時**——
         // 開いて眺めているだけのセッションでプロセスを起こさない
-        guard let input = inputs[session] ?? (attach(to: session) ? inputs[session] : nil) else {
-            return false        // 理由は attach が launchError に載せている
+        guard let run = runs[session] ?? connect(session) else {
+            return false        // 理由は connect が launchError に載せている
         }
-        guard Launcher.send(text, to: input) else {
-            inputs[session] = nil
+        guard run.connection.acceptsInput else {
+            launchError = "まだ前のターンを処理している"
+            return false
+        }
+        guard run.connection.send(body) else {
+            forget(session)
             launchError = "送れなかった。セッションが終わっている"
             return false
         }
-        // 人の発言は transcript から返ってくるまで画面に出ない。
-        // 押してから数秒何も起きないと「効いていない」に見えるので、ここで先に置く
-        messages.append(Message(id: messages.count, session: session, agent: session,
-                                text: text, thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
+        openTurns.insert(session)
+        appendHuman(body, session: session)
         return true
     }
 
-    private func sendToCodex(_ text: String, to session: String) -> Bool {
-        guard codexProcesses[session] == nil else {
-            launchError = "codex がまだ処理中です"
-            return false
-        }
-        guard let threadID = codexThreads[session] else {
-            launchError = "codex のスレッドID が不明です"
-            return false
-        }
-        guard let codex = codexFound else {
-            launchError = "codex が見つかりません"
-            return false
-        }
-
-        // 台帳から config を復元
-        guard let record = codexRecords.first(where: { $0.id == session }) else {
-            launchError = "codex セッションが見つかりません"
-            return false
-        }
-
-        let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: text, model: record.model)
-
-        let onStream: @Sendable (CodexLauncher.Event) -> Void = { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .agentMessage(msg):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session, text: msg,
-                        thinking: false, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .reasoning(msg):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session, text: msg,
-                        thinking: true, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .commandRun(command, exitCode):
-                    guard let self = self else { return }
-                    let detail = exitCode.map { "終了コード \($0)" } ?? "実行中"
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session,
-                        text: "$ \(command) (\(detail))", thinking: false, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .turnEnded(inputTokens, _):
-                    guard let self = self else { return }
-                    self.codexProcesses[session] = nil
-                    Snowman.observe(&self.readings[session, default: Snowman.Reading()], tokens: inputTokens)
-
-                case let .turnFailed(msg):
-                    self?.codexProcesses[session] = nil
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(msg)"
-                    } else {
-                        self?.launchError = "失敗: \(msg)"
-                    }
-
-                case let .error(msg):
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(msg)"
-                    } else {
-                        self?.launchError = msg
-                    }
-
-                case .threadStarted, .fileChanged:
-                    break
-                }
+    /// まだ繋がっていないセッションに繋ぐ。claude は `--resume`、codex は台帳の thread ID で続きへ
+    private func connect(_ session: String) -> Run? {
+        switch backend(of: session) {
+        case .claude:
+            return attach(to: session) ? runs[session] : nil
+        case .codex:
+            guard let codex = codexFound else {
+                launchError = "codex が見つかりません"
+                return nil
             }
+            guard let record = codexRecords.first(where: { $0.id == session }) else {
+                launchError = "codex セッションが見つかりません"
+                return nil
+            }
+            guard let thread = record.threadID else {
+                launchError = "codex のスレッドID が不明です"
+                return nil
+            }
+            let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: "",
+                                              model: sessionModel[session] ?? record.model)
+            let run = Run(connection: CodexConnection(found: codex, config: config, threadID: thread,
+                                                      onEvent: agentStream(session: session)),
+                          token: UUID())
+            runs[session] = run
+            return run
         }
-
-        guard let started = CodexLauncher.resume(threadID: threadID, prompt: text, config: config,
-                                                 using: codex, onStream: onStream) else {
-            launchError = "codex resume に失敗"
-            return false
-        }
-
-        codexProcesses[session] = started.process
-
-        // ユーザー発言をメッセージに追加
-        messages.append(Message(
-            id: messages.count, session: session, agent: session, text: text,
-            thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
-
-        return true
     }
 
     /// 走っているセッションの進行中のターンだけを止める。
     ///
-    /// **AT22 が起こしたセッションにだけ通る。** セッション自体は開いたままで、
-    /// `send` と同じく stdin が開いている間だけ有効。
-    /// 返された request_id で `onStream` の `interruptAcknowledged` イベントを照合し、
-    /// 止まりきったか確認する
+    /// **AT22 が繋いでいるセッションにだけ通る。** セッション自体は開いたまま。
+    /// 返された request_id で `interruptAcknowledged` を照合し、止まりきったか確認する
     @discardableResult
     func interrupt(_ session: String?) -> Bool {
         guard let session else { return false }
-
-        if backend(of: session) == .codex {
-            return interruptCodex(session)
-        }
-        return interruptClaude(session)
-    }
-
-    private func interruptClaude(_ session: String) -> Bool {
         // 繋がっていないセッションは AT22 から止められない。**別の端末が回している**ので、
         // 「終わっている」と言うと嘘になる。止められない理由をそのまま出す
-        guard let input = inputs[session] else {
+        guard let run = runs[session] else {
             launchError = "このセッションは AT22 から繋がっていないので止められない"
             return false
         }
-        guard let requestID = Launcher.interrupt(input) else {
-            inputs[session] = nil
+        guard let requestID = run.connection.interrupt() else {
+            // claude は stdin に書けなかった＝もう終わっている。codex は走っているターンが無い
+            if backend(of: session) == .claude { forget(session) }
             launchError = "止められなかった。セッションが終わっている"
             return false
         }
-        expectInterrupt(requestID, for: session)
-        return true
-    }
-
-    private func interruptCodex(_ session: String) -> Bool {
-        guard let process = codexProcesses[session] else { return false }
-        process.terminate()
-        codexProcesses[session] = nil
+        // 受領確認を返さない相手（codex はプロセスを落とすだけ）は照合しない
+        if requestID.isEmpty { stopping.insert(session) } else { expectInterrupt(requestID, for: session) }
         return true
     }
 
     /// そのセッションが今動いているか。メッセージ窓の「思考中」表示に使う。
     ///
-    /// `liveSessions` の busy フラグ、stdout からの部分テキスト、エージェント台帳の最終活動時刻から判定する。
+    /// `liveSessions` の busy フラグ、接続からの部分テキスト、エージェント台帳の最終活動時刻から判定する。
     /// `streaming` が空でなければ「今この瞬間」書いている状態なので優先。
-    /// codex セッションはプロセスが存在すれば稼働中と判定。
     /// 既存の `activeWindow` 定数と `isBusy` 判定を組み合わせるだけで、新しい閾値は作らない
     func isWorking(_ session: String?) -> Bool {
         guard let wanted = session else {
             // セッションが指定されていない場合は、稼働中のセッションが1つでもあれば true
             return liveSessions.contains { $0.busy }
         }
-        // そのセッションの stdout から部分テキストが流れてきている。「今書いている途中」の状態
+        // そのセッションの接続から部分テキストが流れてきている。「今書いている途中」の状態
         if streaming[wanted]?.isEmpty == false { return true }
-        // codex セッション: プロセスが実行中なら稼働中
-        if backend(of: wanted) == .codex && codexProcesses[wanted] != nil {
-            return true
-        }
+        // AT22 の接続がターンを回している間は稼働中（書きかけがまだ来ていない考え中も含む）
+        if openTurns.contains(wanted) { return true }
         // 指定されたセッションが liveSessions に在るか、busy フラグで確認
         if let session = liveSessions.first(where: { $0.id == wanted }), session.busy {
             return true
@@ -1763,7 +1634,7 @@ final class Cockpit {
                             now: Date) -> ([AgentChip], Int) {
         var chips: [AgentChip] = []
         // Claude Code 自身が busy と言っているセッション。考えている時間もここには出る
-        let busySessions = Set(liveSessions.lazy.filter(\.busy).map(\.id))
+        let busySessions = Set(liveSessions.lazy.filter(\.busy).map(\.id)).union(openTurns)
         // 返事待ちのセッション。キーはセッションIDなので、引けるのは司令塔（ID＝セッションID）だけ。
         // ponytail: どのサブエージェントのどの道具が待っているかまでは sessions/*.json に無い。
         // 要るなら PermissionRequest フック（agent_id・tool_use_id が来る）だが、設定に触ることになる
