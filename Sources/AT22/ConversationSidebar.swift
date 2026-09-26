@@ -115,6 +115,10 @@ struct ConversationSidebar: View {
             }
         }
         .background(CockpitCanvas.background)
+        // 左の木から別のセッションを選んだら会話を出す。履歴や新規の画面のままだと、選んだのに何も変わらない
+        .onChange(of: cockpit.selectedSession) { _, selected in
+            if selected != nil { pane = .conversation }
+        }
         .alert("この段は人間の承認なしにファイルを書き換える", isPresented: Binding(
             get: { confirmingLevel && riskyLevel != nil },
             set: { if !$0 { confirmingLevel = false; riskyLevel = nil } }

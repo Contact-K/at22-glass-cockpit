@@ -326,6 +326,8 @@ final class Cockpit {
     /// **ここを持つまで、起こしたセッションのタブは busy のまま固定で**、Codex は終わっても
     /// 「処理中」に見え続けていた（`-p` の claude は `~/.claude/sessions` に載らないので同じ）
     private var openTurns: Set<String> = []
+    /// 最後のターンが失敗したセッション。サイドバーの赤い印。次に送ると消える
+    private(set) var failedTurns: Set<String> = []
     private(set) var launchError: String?
     /// 人がセッションごとに選んだモデル。**選ばれていない間は渡さない**——
     /// `--resume` にモデルを渡さなければ、claude は元のセッションの設定をそのまま引き継ぐ
@@ -700,6 +702,7 @@ final class Cockpit {
         refreshStructureIfNeeded()
         refreshMemory()
         refreshGates()
+        refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
     }
 
@@ -921,7 +924,7 @@ final class Cockpit {
             // `.jsonl` はまだ無い。タブを先に立てておかないと、起こした直後の数秒が行方不明になる
             loadedSessionTabs[id] = LiveSession(id: id, name: String(id.prefix(8)),
                                                 cwd: cwd, busy: false)
-            openTurns.insert(id)
+            beginTurn(id)
             selectedSession = id
             refreshLiveSessions()
             return sessionID
@@ -1086,6 +1089,7 @@ final class Cockpit {
             // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
             // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
             if stopping.remove(session) != nil, reason == "error_during_execution" { break }
+            failedTurns.insert(session)
             appendLaunchError("失敗: \(reason)")
 
         case let .interruptAcknowledged(requestID, stillQueued, cancelled):
@@ -1122,6 +1126,12 @@ final class Cockpit {
 
     /// 検査・画像焼きから承認の依頼を直接流し込む口
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
+
+    /// ターンを開く。前のターンの「失敗」の印はここで消す
+    private func beginTurn(_ session: String) {
+        openTurns.insert(session)
+        failedTurns.remove(session)
+    }
 
     /// 割り込みを送ったことを覚える。受領確認の照合と、止めたターンの終わり方の見分けに使う
     func expectInterrupt(_ requestID: String, for session: String) {
@@ -1166,7 +1176,7 @@ final class Cockpit {
 
         // codex セッションをライブセッション・台帳に登録
         let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
-        openTurns.insert(sessionID)
+        beginTurn(sessionID)
         loadedSessionTabs[sessionID] = tab
         liveSessions.append(tab)
         liveSessions.sort { $0.name < $1.name }
@@ -1219,7 +1229,7 @@ final class Cockpit {
             launchError = "送れなかった。セッションが終わっている"
             return false
         }
-        openTurns.insert(session)
+        beginTurn(session)
         appendHuman(body, session: session)
         return true
     }
@@ -1297,7 +1307,7 @@ final class Cockpit {
         loadedSessionTabs[sessionID] = tab
         liveSessions.append(tab)
         liveSessions.sort { $0.name < $1.name }
-        openTurns.insert(sessionID)
+        beginTurn(sessionID)
         appendHuman(prompt, session: sessionID)
         // 相手側のIDは挨拶が済んだ時（.ready）に台帳へ入る
         runRecords.append(RunRecord(id: sessionID, threadID: nil, title: Self.titleRule(prompt) ?? "", cwd: cwd,
@@ -1457,6 +1467,271 @@ final class Cockpit {
         lastScan = Date()
         wroteSinceScan = false
         scanning = false
+    }
+
+    // MARK: ワークスペース（プロジェクト → worktree → エージェント）
+
+    /// エージェントの状態。サイドバーの印の色になる
+    enum AgentStatus: Int, Comparable, Sendable {
+        case waiting, working, failed, done, idle     // 並べる順（人の番が先）
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    struct AgentRow: Identifiable {
+        let id: String
+        let title: String
+        let backend: Backend
+        let status: AgentStatus
+        /// まだ読み込んでいない過去のセッション。押したら読み込む
+        let recent: RecentSession?
+        /// AT22 の台帳にある Codex / Grok のセッション。押したら続きに繋ぐ
+        let record: RunRecord?
+    }
+
+    struct WorkspaceNode: Identifiable {
+        /// worktree のパス
+        let id: String
+        let name: String
+        let branch: String?
+        let isMain: Bool
+        var agents: [AgentRow]
+        /// 作っている最中なら "作成中"、失敗したらその理由
+        var pending: String?
+    }
+
+    struct ProjectNode: Identifiable {
+        /// リポジトリ本体のパス
+        let id: String
+        let name: String
+        let registered: Bool
+        var workspaces: [WorkspaceNode]
+    }
+
+    /// AT22 が作ったワークスペースの基点。差分の基準（レビュー）と親子（競走）に使う
+    struct WorkspaceMeta: Codable, Equatable {
+        var baseRef: String
+        var baseSHA: String
+        var parent: String?
+        var createdAt: Date
+    }
+
+    struct PendingWorkspace: Equatable {
+        let repo: String
+        let name: String
+        var error: String?
+    }
+
+    /// 登録したリポジトリ。UserDefaults（AT22 自身の記録はここだけに置く）
+    private(set) var projects: [String] = UserDefaults.standard.stringArray(forKey: "projects") ?? []
+    private(set) var workspaceMeta: [String: WorkspaceMeta] = {
+        guard let data = UserDefaults.standard.data(forKey: "workspaceMeta") else { return [:] }
+        return (try? JSONDecoder().decode([String: WorkspaceMeta].self, from: data)) ?? [:]
+    }()
+    /// 各リポジトリの worktree 一覧。git に訊き直すのは数秒おき（裏で）
+    private(set) var worktrees: [String: [Worktree.Entry]] = [:]
+    /// 作業ディレクトリ → リポジトリ本体（"" はリポジトリの外）。一度訊いたら覚えておく
+    private var repoOf: [String: String] = [:]
+    private(set) var pendingWorkspaces: [String: PendingWorkspace] = [:]
+    private var lastWorktreeScan = Date.distantPast
+    private var scanningWorktrees = false
+
+    func addProject(_ repo: String) {
+        guard !projects.contains(repo) else { return }
+        projects.append(repo)
+        UserDefaults.standard.set(projects, forKey: "projects")
+        refreshWorktreesIfNeeded(force: true)
+    }
+
+    func removeProject(_ repo: String) {
+        projects.removeAll { $0 == repo }
+        UserDefaults.standard.set(projects, forKey: "projects")
+    }
+
+    /// 選んだフォルダをリポジトリとして登録する。worktree の中を選んでも本体を登録する
+    func addProject(containing folder: String) async -> String? {
+        let result = await Task.detached { Result { try Worktree.root(of: folder) } }.value
+        switch result {
+        case let .success(repo): addProject(repo); return nil
+        case let .failure(error): return "\(error)"
+        }
+    }
+
+    private func saveWorkspaceMeta() {
+        if let data = try? JSONEncoder().encode(workspaceMeta) {
+            UserDefaults.standard.set(data, forKey: "workspaceMeta")
+        }
+    }
+
+    /// worktree の一覧を読み直す。動いているセッションの在り処からもリポジトリを見つける——
+    /// 登録しなくても、端末や `claude -w` で始めた作業がその場で木に並ぶ。
+    /// ponytail: 5秒おきに git を数回叩くだけ。リポジトリが数十を超えたら FSEvents で .git を見る
+    func refreshWorktreesIfNeeded(force: Bool = false) {
+        guard !scanningWorktrees, force || Date().timeIntervalSince(lastWorktreeScan) > 5 else { return }
+        scanningWorktrees = true
+        lastWorktreeScan = Date()
+        let unknown = Set(liveSessions.map(\.cwd) + runRecords.map(\.cwd)).filter { !$0.isEmpty && repoOf[$0] == nil }
+        let known = Set(projects + repoOf.values.filter { !$0.isEmpty })
+        Task.detached(priority: .utility) {
+            var roots: [String: String] = [:]
+            for cwd in unknown { roots[cwd] = (try? Worktree.root(of: cwd)) ?? "" }
+            var lists: [String: [Worktree.Entry]] = [:]
+            for repo in known.union(roots.values.filter { !$0.isEmpty }) {
+                lists[repo] = (try? Worktree.list(repo: repo)) ?? []
+            }
+            let (found, listed) = (roots, lists)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.repoOf.merge(found) { _, new in new }
+                if listed != self.worktrees { self.worktrees = listed }
+                self.scanningWorktrees = false
+            }
+        }
+    }
+
+    /// セッションの作業ディレクトリ。起こしたタブ・稼働中・台帳の順に見る
+    func cwd(of session: String) -> String? {
+        (loadedSessionTabs[session]?.cwd).flatMap { $0.isEmpty ? nil : $0 }
+            ?? liveSessions.first { $0.id == session }?.cwd
+            ?? runRecords.first { $0.id == session }?.cwd
+    }
+
+    func status(of session: String) -> AgentStatus {
+        if approvals.contains(where: { $0.session == session })
+            || liveSessions.first(where: { $0.id == session })?.waiting != nil { return .waiting }
+        if isWorking(session) { return .working }
+        if failedTurns.contains(session) { return .failed }
+        if runs[session] != nil { return .done }
+        return .idle
+    }
+
+    /// 作業ディレクトリが属するワークスペース。**最も長い前方一致**——本体のパスは
+    /// `.claude/worktrees/*` 全部の前方にもなるので、短い方に吸われないようにする
+    nonisolated static func owner(of cwd: String, among paths: [String]) -> String? {
+        paths.filter { cwd == $0 || cwd.hasPrefix($0 + "/") }.max { $0.count < $1.count }
+    }
+
+    /// サイドバーの木。登録したリポジトリを先に、見つけたリポジトリを名前順に。
+    /// ponytail: リポジトリの外で動いているセッションは載せない（会話欄の履歴から開ける）
+    func workspaceTree() -> [ProjectNode] {
+        let discovered = Set(repoOf.values.filter { !$0.isEmpty }).subtracting(projects)
+            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
+        let repos = projects + discovered
+        var paths = repos.flatMap { repo in worktrees[repo]?.map(\.path) ?? [repo] }
+        paths += pendingWorkspaces.keys.filter { !paths.contains($0) }
+
+        var rows: [String: [AgentRow]] = [:]
+        var placed = Set<String>()
+        let sessions = Set(liveSessions.map(\.id) + runRecords.map(\.id) + runs.keys)
+        for session in sessions {
+            guard let cwd = cwd(of: session), let workspace = Self.owner(of: cwd, among: paths) else { continue }
+            let record = runRecords.first { $0.id == session }
+            rows[workspace, default: []].append(AgentRow(
+                id: session, title: title(for: session) ?? String(session.prefix(8)),
+                backend: backend(of: session), status: status(of: session), recent: nil,
+                record: runs[session] == nil && !liveSessions.contains { $0.id == session } ? record : nil))
+            placed.insert(session)
+        }
+        // 過去のセッションは cwd を持たないので、プロジェクトのフォルダ名（slug）で突き合わせる。
+        // 1つのワークスペースに並べるのは新しい方から5本まで（それより前は会話欄の履歴で）
+        for workspace in paths {
+            let slug = Self.projectSlug(workspace)
+            let past = recentSessions.filter { $0.project == slug && !placed.contains($0.id) }.prefix(5)
+            rows[workspace, default: []] += past.map {
+                AgentRow(id: $0.id, title: title(for: $0.id) ?? String($0.id.prefix(8)), backend: .claude,
+                         status: .idle, recent: $0, record: nil)
+            }
+        }
+
+        return repos.map { repo in
+            let entries = worktrees[repo] ?? []
+            var workspaces = entries.map { entry in
+                WorkspaceNode(id: entry.path, name: entry.isMain ? "本体" : (entry.path as NSString).lastPathComponent,
+                              branch: entry.branch, isMain: entry.isMain,
+                              agents: (rows[entry.path] ?? []).sorted { $0.status < $1.status },
+                              pending: nil)
+            }
+            for (path, pending) in pendingWorkspaces where pending.repo == repo && !entries.contains(where: { $0.path == path }) {
+                workspaces.append(WorkspaceNode(id: path, name: Worktree.slug(pending.name), branch: nil, isMain: false,
+                                                agents: [], pending: pending.error ?? "作成中"))
+            }
+            return ProjectNode(id: repo, name: (repo as NSString).lastPathComponent,
+                               registered: projects.contains(repo), workspaces: workspaces)
+        }
+    }
+
+    /// ワークスペースを作り、できたらそこでエージェントを起こす。作成は裏で進め、
+    /// 待つ間はカードに「作成中」、失敗したら理由を出す（ダイアログは待たせない）
+    func createWorkspace(repo: String, name: String, base: String, backend: Backend, model: String,
+                         prompt: String, level: Gate.Level) {
+        let path = Worktree.location(repo: repo, name: name)
+        pendingWorkspaces[path] = PendingWorkspace(repo: repo, name: name, error: nil)
+        addProject(repo)
+        Task.detached(priority: .userInitiated) {
+            let result = Result { try Worktree.add(repo: repo, name: name, base: base) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                switch result {
+                case let .success(made):
+                    self.pendingWorkspaces[path] = nil
+                    self.workspaceMeta[made.path] = WorkspaceMeta(baseRef: base, baseSHA: made.baseSHA,
+                                                                  parent: nil, createdAt: Date())
+                    self.saveWorkspaceMeta()
+                    self.refreshWorktreesIfNeeded(force: true)
+                    let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !prompt.isEmpty {
+                        self.launch(prompt: prompt, cwd: made.path, backend: backend, model: model, level: level)
+                    }
+                case let .failure(error):
+                    self.pendingWorkspaces[path]?.error = "\(error)"
+                }
+            }
+        }
+    }
+
+    /// 検査・画像焼きからワークスペースの木を直接流し込む口。実機の git と ~/.claude に依存させない
+    func loadWorkspacesForProbe(projects: [String], worktrees: [String: [Worktree.Entry]],
+                                pending: [String: PendingWorkspace] = [:], failed: Set<String> = [],
+                                backends: [String: Backend] = [:]) {
+        self.projects = projects
+        self.worktrees = worktrees
+        self.pendingWorkspaces = pending
+        self.failedTurns = failed
+        self.backends.merge(backends) { _, new in new }
+        lastWorktreeScan = .distantFuture      // 毎秒の読み直しで消されないように
+    }
+
+    /// 失敗したまま残っている「作成中」を畳む
+    func dismissPending(_ path: String) { pendingWorkspaces[path] = nil }
+
+    /// 消す前に人へ見せる、未コミットの変更
+    func dirtyFiles(of path: String) async -> [String] {
+        await Task.detached { (try? Worktree.dirtyFiles(path)) ?? [] }.value
+    }
+
+    /// ワークスペースを消す。**そこで動いている接続を先に閉じる**（書いている最中の場所を消さない）。
+    /// `force` は未コミットの変更を人に見せて確認を取った後だけ立てる。
+    /// 戻り値は人に伝える一言（失敗の理由、または枝を残した旨）。何も無ければ nil
+    func deleteWorkspace(_ path: String, force: Bool, deleteBranch: Bool) async -> String? {
+        guard let (repo, entry) = worktrees.lazy.compactMap({ repo, list in
+            list.first { $0.path == path }.map { (repo, $0) } }).first else {
+            return "この作業場所は一覧に無い"
+        }
+        for session in runs.keys where cwd(of: session).map({ Self.owner(of: $0, among: [path]) != nil }) == true {
+            runs[session]?.connection.close()
+            forget(session)
+        }
+        let branch = entry.branch
+        let outcome: String? = await Task.detached {
+            do { try Worktree.remove(repo: repo, path: path, force: force) } catch { return "\(error)" }
+            if deleteBranch, let branch, !Worktree.deleteBranch(branch, repo: repo) {
+                return "枝 \(branch) はマージされていないので残した（中身を見てから消せる）"
+            }
+            return nil
+        }.value
+        workspaceMeta[path] = nil
+        saveWorkspaceMeta()
+        refreshWorktreesIfNeeded(force: true)
+        return outcome
     }
 
     // MARK: 畳み込み

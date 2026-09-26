@@ -337,6 +337,7 @@ struct SpendReadout: View {
 /// 56pt。**モードの切り替えではなく「どこを開くか」**——
 /// 見る軸（作業／構造／壁打ち）はタブが持つ
 struct ModeRail: View {
+    @Binding var showWorkspaces: Bool
     @Binding var showConversation: Bool
     @Binding var showTasks: Bool
 
@@ -353,6 +354,8 @@ struct ModeRail: View {
     /// 履歴と ＋新規 は会話画面の中にある（そこが会話の入口なので）
     var body: some View {
         VStack(spacing: Palette.Space.s1) {
+            key("square.stack.3d.up", label: "ワーク", pressed: showWorkspaces,
+                shortcut: "w") { showWorkspaces.toggle() }
             key("bubble.left.and.bubble.right", label: "会話",
                 pressed: showConversation, shortcut: "m") { showConversation.toggle() }
             key("checklist", label: "タスク", pressed: showTasks) { showTasks.toggle() }

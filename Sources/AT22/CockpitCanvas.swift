@@ -48,6 +48,8 @@ struct CockpitView: View {
     @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
     /// 左側に会話サイドバーを表示するか（既定ON）
     @AppStorage("showConversation") private var showConversation = true
+    /// プロジェクト → ワークスペース → エージェントの木（Orca のサイドバー）
+    @AppStorage("showWorkspaces") private var showWorkspaces = true
     /// 右側にタスクパネルを表示するか（既定OFF）
     @AppStorage("showTasks") private var showTasks = false
     /// 左側の会話サイドバーの幅（既定 400、範囲 300〜640）
@@ -68,7 +70,8 @@ struct CockpitView: View {
         VStack(spacing: 0) {
             TitleBar(cockpit: cockpit, mode: mode)
             HStack(spacing: 0) {
-                ModeRail(showConversation: $showConversation, showTasks: $showTasks)
+                ModeRail(showWorkspaces: $showWorkspaces, showConversation: $showConversation,
+                         showTasks: $showTasks)
                 shelf
             }
             StatusBar(cockpit: cockpit)
@@ -141,6 +144,11 @@ struct CockpitView: View {
     /// レールの右側ぜんぶ。会話サイドバー ＋（タブ・進行表・盤面）
     private var shelf: some View {
         HStack(spacing: 0) {
+            if showWorkspaces {
+                // 行を押したら会話を開く。会話欄を畳んでいても、選んだものが見えないと押した意味が無い
+                WorkspaceSidebar(cockpit: cockpit, onOpen: { showConversation = true })
+                Rectangle().fill(Palette.border).frame(width: Palette.Stroke.hair)
+            }
             if showConversation {
                 // 門はキャンバス側の `GatePanel` で答える。サイドバーは会話だけを持つ
                 ConversationSidebar(cockpit: cockpit, onOpenWork: { mode = .work })

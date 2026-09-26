@@ -40,6 +40,41 @@ enum Snapshot {
         emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height))")
     }
 
+    /// ワークスペースの木を焼く。`AT22 --shot <path> --workspaces`。
+    /// 状態の印（あなた待ち・作業中・失敗・待機）・作成中・作成失敗・Grok の行を1枚に並べる
+    @MainActor
+    static func writeWorkspaces(to path: String, height: CGFloat) {
+        let cockpit = Cockpit()
+        let repo = "/Users/you/AT22_Glass_Cockpit"
+        let wt = repo + "/.claude/worktrees/"
+        cockpit.loadWorkspacesForProbe(
+            projects: [repo],
+            worktrees: [repo: [
+                Worktree.Entry(path: repo, head: "e0fba49", branch: "dev", isMain: true),
+                Worktree.Entry(path: wt + "login-screen", head: "e0fba49", branch: "at22/login-screen", isMain: false),
+                Worktree.Entry(path: wt + "api-rate-limit-with-a-very-long-name", head: "e0fba49",
+                               branch: "at22/api-rate-limit-with-a-very-long-name", isMain: false),
+            ]],
+            pending: [wt + "search": .init(repo: repo, name: "search", error: nil),
+                      wt + "broken": .init(repo: repo, name: "broken", error: "基点 feature/x が見つからない")],
+            failed: ["s-failed"],
+            backends: ["s-grok": .grok])
+        cockpit.liveSessions = [
+            LiveSession(id: "s-main", name: "main", cwd: repo, busy: false),
+            LiveSession(id: "s-ask", name: "ask", cwd: wt + "login-screen", busy: false, waiting: "承認待ち"),
+            LiveSession(id: "s-work", name: "work", cwd: wt + "login-screen/src", busy: true),
+            LiveSession(id: "s-failed", name: "failed", cwd: wt + "api-rate-limit-with-a-very-long-name", busy: false),
+            LiveSession(id: "s-grok", name: "grok", cwd: wt + "api-rate-limit-with-a-very-long-name", busy: true),
+        ]
+        cockpit.selectedSession = "s-work"
+        let renderer = ImageRenderer(content:
+            WorkspaceSidebar(cockpit: cockpit, onOpen: {}, scrolls: false)
+                .frame(height: height)
+                .environment(\.colorScheme, .dark))
+        renderer.scale = 2
+        emit(renderer, to: path, label: "\(Int(WorkspaceSidebar.width))×\(Int(height)) ワークスペース")
+    }
+
     /// 盤面だけを焼く。`AT22 --shot <path> --board [--mode work|structure|memory]`。
     ///
     /// `CockpitView` ごと焼くと**盤面が写らない**——`TimelineView` と `ScrollView` は

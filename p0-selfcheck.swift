@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -93,6 +93,8 @@ struct P0SelfCheck {
         claudePermissionRoundTrip()
         codexEventsReachBoard()
         acpSpeaksJSONRPC()
+        worktreesAreSafe()
+        workspaceTreePlacesAgents()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -216,6 +218,77 @@ struct P0SelfCheck {
         let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
         let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
         assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
+    }
+
+    /// 木の組み立て。セッションは最も深いワークスペースに、人の番が先に並ぶ
+    static func workspaceTreePlacesAgents() {
+        let c = Cockpit(projectsRoot: URL(fileURLWithPath: "/nonexistent"))
+        let repo = "/r", wt = "/r/.claude/worktrees/a"
+        c.loadWorkspacesForProbe(projects: [repo],
+                                 worktrees: [repo: [Worktree.Entry(path: repo, head: "x", branch: "main", isMain: true),
+                                                    Worktree.Entry(path: wt, head: "x", branch: "at22/a", isMain: false)]],
+                                 pending: ["/r/.claude/worktrees/b": .init(repo: repo, name: "b", error: nil)])
+        c.liveSessions = [LiveSession(id: "idle", name: "i", cwd: wt + "/src", busy: false),
+                          LiveSession(id: "ask", name: "a", cwd: wt, busy: false, waiting: "承認待ち"),
+                          LiveSession(id: "top", name: "t", cwd: repo, busy: true)]
+        let tree = c.workspaceTree()
+        assert(tree.count == 1 && tree[0].registered, "\(tree.map(\.name))")
+        let byID = Dictionary(uniqueKeysWithValues: tree[0].workspaces.map { ($0.id, $0) })
+        assert(byID[repo]?.agents.map(\.id) == ["top"], "本体に worktree の中のセッションが吸われた")
+        assert(byID[wt]?.agents.map(\.id) == ["ask", "idle"], "人の番が先に並んでいない: \(byID[wt]?.agents.map(\.id) ?? [])")
+        assert(byID["/r/.claude/worktrees/b"]?.pending == "作成中", "作成中のカードが出ない")
+        assert(byID[repo]?.agents.first?.status == .working && byID[wt]?.agents.first?.status == .waiting)
+    }
+
+    /// git worktree の読み取りと、作る・消すの安全装置。使い捨てのリポジトリで本物の git を叩く
+    static func worktreesAreSafe() {
+        // 実機の `git worktree list --porcelain`（本体・切り離し・枝付き）
+        let porcelain = "worktree /r\nHEAD 267fb2b\nbranch refs/heads/main\n\nworktree /r/.claude/worktrees/det\nHEAD 267fb2b\ndetached\n\nworktree /r/.claude/worktrees/task2\nHEAD 267fb2b\nbranch refs/heads/at22/task2\nlocked\n"
+        let entries = Worktree.parse(porcelain)
+        assert(entries.map(\.path) == ["/r", "/r/.claude/worktrees/det", "/r/.claude/worktrees/task2"], "\(entries)")
+        assert(entries[0].isMain && !entries[1].isMain && entries[1].branch == nil, "本体と切り離しを取り違えた")
+        assert(entries[2].branch == "at22/task2" && entries[2].locked, "\(entries[2])")
+        // 名前はブランチにも置き場にも使える形へ。パスを抜ける名前は潰す
+        assert(Worktree.slug("ログイン画面の修正 v2") == "v2" || !Worktree.slug("ログイン画面の修正 v2").contains(" "))
+        assert(!Worktree.slug("../../etc").contains("..") && !Worktree.slug("../../etc").contains("/"), Worktree.slug("../../etc"))
+        assert(Worktree.slug("   ") == "task")
+        // 最も長い前方一致。本体は worktree 全部の前方にもなるので、短い方に吸わせない
+        let paths = ["/r", "/r/.claude/worktrees/a", "/r/.claude/worktrees/ab"]
+        assert(Cockpit.owner(of: "/r/.claude/worktrees/ab/src", among: paths) == "/r/.claude/worktrees/ab")
+        assert(Cockpit.owner(of: "/r/src", among: paths) == "/r")
+        assert(Cockpit.owner(of: "/r2/src", among: paths) == nil, "前方一致を文字列の頭だけで見ている")
+        assert(Worktree.changedFiles(" M a.txt\n?? new.txt\n") == ["a.txt", "new.txt"])
+
+        // 本物の git で、作る → 汚す → 消す
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-wt-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        try! manager.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let identity = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: base)
+        try! "a\n".write(toFile: base + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "a.txt"], in: base)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "init"], in: base)
+        let repo = try! Worktree.root(of: base)
+        let made = try! Worktree.add(repo: repo, name: "task 1", base: "main")
+        assert(made.branch == "at22/task-1" && made.path.hasSuffix("/.claude/worktrees/task-1"), "\(made)")
+        assert((try? Worktree.root(of: made.path)) == repo, "worktree の中から本体を引けない")
+        assert((try? Worktree.git(["status", "--porcelain"], in: repo))?.isEmpty == true,
+               "作業場所が本体の git status に出ている（.git/info/exclude が効いていない）")
+        assert((try? Worktree.add(repo: repo, name: "task 1", base: "main")) == nil, "同じ名前を二度作った")
+        // 汚れた作業場所は force 無しでは消えない。本体と一覧に無い場所はどうやっても消えない
+        try! "x\n".write(toFile: made.path + "/new.txt", atomically: true, encoding: .utf8)
+        assert((try? Worktree.dirtyFiles(made.path)) == ["new.txt"])
+        assert((try? Worktree.remove(repo: repo, path: made.path, force: false)) == nil, "汚れた作業場所を確認無しで消した")
+        assert((try? Worktree.remove(repo: repo, path: repo, force: true)) == nil, "本体を消せてしまう")
+        assert((try? Worktree.remove(repo: repo, path: base + "/elsewhere", force: true)) == nil, "一覧に無い場所を消せてしまう")
+        // コミットを積んだ枝は、作業場所を消しても -d では消えずに残る（中身を見てから消せる）
+        _ = try! Worktree.git(["add", "-A"], in: made.path)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "wip"], in: made.path)
+        try! Worktree.remove(repo: repo, path: made.path, force: false)
+        assert(!manager.fileExists(atPath: made.path))
+        assert(!Worktree.deleteBranch(made.branch, repo: repo), "マージされていない枝を消した")
+        assert((try? Worktree.git(["branch", "--list", made.branch], in: repo))?.contains("task-1") == true)
     }
 
     /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。
