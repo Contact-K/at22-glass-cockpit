@@ -439,13 +439,25 @@ struct TabBar: View {
     let locked: Bool
 
     var body: some View {
+        // ワークスペースと会話の欄を両方開くと盤面の列は 500pt を切る。タブがそれより広いと
+        // HStack ごと窓からはみ出し、**左のレールと欄が窓の外へ押し出される**。
+        // 入らなければローマ字を落とし、それでも入らなければ右を切る（隣を押さない）
+        ViewThatFits(in: .horizontal) {
+            tabs(slugs: true)
+            tabs(slugs: false)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .clipped()
+    }
+
+    private func tabs(slugs: Bool) -> some View {
         HStack(alignment: .bottom, spacing: Palette.Space.s4) {
             // 門はこのタブの中（行・紙・明るいパネル）に居るので、警報もここに出す。
             // レールの `G` に付けていた頃は、警報と門が画面の別々の場所にあった
-            tab(.work, key: "a", slug: "sagyou", stopped: cockpit.stoppedCount)
-            tab(.structure, key: "b", slug: "kouzou")
-            tab(.memory, key: "c", slug: "kabeuchi")
-            reviewTab
+            tab(.work, key: "a", slug: slugs ? "sagyou" : nil, stopped: cockpit.stoppedCount)
+            tab(.structure, key: "b", slug: slugs ? "kouzou" : nil)
+            tab(.memory, key: "c", slug: slugs ? "kabeuchi" : nil)
+            reviewTab(slug: slugs)
             Spacer(minLength: Palette.Space.s3)
         }
         .padding(.horizontal, Palette.Space.s4)
@@ -453,7 +465,7 @@ struct TabBar: View {
     }
 
     /// `d レビュー`。モードの3つと同じ形に並べる
-    private var reviewTab: some View {
+    private func reviewTab(slug: Bool) -> some View {
         Button { if !locked { reviewing = true } } label: {
             VStack(spacing: Palette.Space.s2) {
                 HStack(alignment: .firstTextBaseline, spacing: Palette.Space.s2) {
@@ -464,9 +476,11 @@ struct TabBar: View {
                         .font(.system(size: Palette.FontSize.prose, design: .monospaced))
                         .tracking(Palette.Tracking.wider)
                         .foregroundStyle(reviewing ? Palette.ink : Palette.inkTertiary)
-                    Text("rebyuu")
-                        .font(.system(size: Palette.FontSize.label, design: .monospaced))
-                        .foregroundStyle(Palette.inkTertiary)
+                    if slug {
+                        Text("rebyuu")
+                            .font(.system(size: Palette.FontSize.label, design: .monospaced))
+                            .foregroundStyle(Palette.inkTertiary)
+                    }
                 }
                 Rectangle()
                     .fill(reviewing ? Palette.rule : Color.clear)
@@ -478,7 +492,7 @@ struct TabBar: View {
         .opacity(locked && !reviewing ? 0.4 : 1)
     }
 
-    private func tab(_ target: CockpitMode, key: String, slug: String,
+    private func tab(_ target: CockpitMode, key: String, slug: String?,
                      stopped: Int = 0) -> some View {
         let active = mode == target && !reviewing
         return Button { if !locked { mode = target; reviewing = false } } label: {
@@ -491,9 +505,11 @@ struct TabBar: View {
                         .font(.system(size: Palette.FontSize.prose, design: .monospaced))
                         .tracking(Palette.Tracking.wider)
                         .foregroundStyle(active ? Palette.ink : Palette.inkTertiary)
-                    Text(slug)
-                        .font(.system(size: Palette.FontSize.label, design: .monospaced))
-                        .foregroundStyle(Palette.inkTertiary)
+                    if let slug {
+                        Text(slug)
+                            .font(.system(size: Palette.FontSize.label, design: .monospaced))
+                            .foregroundStyle(Palette.inkTertiary)
+                    }
                     if stopped > 0 { stopBadge(stopped) }
                 }
                 // 選択中の下線は**行の下**に引く。重ねると字を貫いて取り消し線に見える
@@ -736,6 +752,13 @@ struct GatePanel: View {
                 Text(request.to.isEmpty ? request.call : request.to)
                     .font(.system(size: Palette.FontSize.label, design: .monospaced))
                     .foregroundStyle(Palette.paperInkDim)
+                // 采配：許可すると AT22 がワークスペースを作ってこのエージェントを起こす
+                if let backend = request.dispatch {
+                    Text("采配 → \(backend.title) で \(Worktree.slug(request.name))（\(request.base) から）")
+                        .font(.system(size: Palette.FontSize.label, design: .monospaced))
+                        .foregroundStyle(Palette.danger)
+                        .lineLimit(2)
+                }
                 Text(CockpitLayout.plainLine(request.instruction))
                     .font(.system(size: Palette.FontSize.body))
                     .lineSpacing(1)

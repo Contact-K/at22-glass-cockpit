@@ -85,6 +85,7 @@ enum Snapshot {
         let cockpit = Cockpit()
         let repo = "/Users/you/AT22_Glass_Cockpit"
         let wt = repo + "/.claude/worktrees/"
+        let race = Cockpit.WorkspaceMeta(baseRef: "dev", baseSHA: "e0fba49", parent: "競走 dev", createdAt: Date())
         cockpit.loadWorkspacesForProbe(
             projects: [repo],
             worktrees: [repo: [
@@ -96,7 +97,8 @@ enum Snapshot {
             pending: [wt + "search": .init(repo: repo, name: "search", error: nil),
                       wt + "broken": .init(repo: repo, name: "broken", error: "基点 feature/x が見つからない")],
             failed: ["s-failed"],
-            backends: ["s-grok": .grok])
+            backends: ["s-grok": .grok],
+            meta: [wt + "login-screen": race, wt + "api-rate-limit-with-a-very-long-name": race])
         cockpit.liveSessions = [
             LiveSession(id: "s-main", name: "main", cwd: repo, busy: false),
             LiveSession(id: "s-ask", name: "ask", cwd: wt + "login-screen", busy: false, waiting: "承認待ち"),
@@ -184,7 +186,8 @@ enum Snapshot {
             Gate.Request(id: "/probe/gate/g1.md", call: "probe", by: issuer,
                          to: "凡例の検査", risk: "high",
                          issued: Date(timeIntervalSinceNow: -12),
-                         instruction: "W6 を起こす：p0-selfcheck に凡例の検査を足す")
+                         instruction: "W6 を起こす：p0-selfcheck に凡例の検査を足す",
+                         dispatch: .grok, name: "legend-check", base: "main")
         ])
         print("AT22: 門を1つ立てた（\(cockpit.gates.count)件）")
     }

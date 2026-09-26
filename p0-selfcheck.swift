@@ -99,6 +99,7 @@ struct P0SelfCheck {
         reviewReadsDiff()
         providersAndLogins()
         launchLevelTargetsNewProject()
+        await racesAndDispatches()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
         print("p0: ok")
@@ -428,6 +429,100 @@ struct P0SelfCheck {
         assert(!manager.fileExists(atPath: made.path))
         assert(!Worktree.deleteBranch(made.branch, repo: repo), "マージされていない枝を消した")
         assert((try? Worktree.git(["branch", "--list", made.branch], in: repo))?.contains("task-1") == true)
+    }
+
+    /// 競走は同じ基点の SHA から N 本。勝ちを採ると負けは消え、勝ちは普通のワークスペースに戻る。
+    /// 采配は答えを書いた後でワークスペースを作り、起こせなければ `.result` に失敗を書く（司令塔を待たせ続けない）
+    static func racesAndDispatches() async {
+        func wait(_ secs: Double, _ ok: () -> Bool) async -> Bool {
+            let end = Date().addingTimeInterval(secs)
+            while Date() < end { if ok() { return true }; try? await Task.sleep(for: .milliseconds(50)) }
+            return ok()
+        }
+        // 門の書式。dispatch の無い門は今まで通り（名前・基点は既定で埋まる）
+        let asked = Gate.parse(path: "/p/memory/gate/d.md",
+                               text: "---\ncall: t9\nto: fix\ndispatch: grok\nname: fix 1\nbase: main\n---\n直して\n")!
+        assert(asked.dispatch == .grok && asked.name == "fix 1" && asked.base == "main" && asked.instruction.contains("直して"), "\(asked)")
+        let plain = Gate.parse(path: "/p/memory/gate/e.md", text: "---\ncall: t1\nto: Explore\n---\nx\n")!
+        assert(plain.dispatch == nil && plain.base == "HEAD", "\(plain)")
+        assert(Gate.parse(path: "/p/memory/gate/f.md", text: "---\ncall: t1\ndispatch: nope\n---\nx\n")!.dispatch == nil,
+               "知らないエージェント名で采配になった")
+        assert(Gate.projectDirectory(of: "/h/.claude/projects/-r/memory/gate/d.md") == "/h/.claude/projects/-r")
+        assert(Gate.resultPath(for: "/p/memory/gate/d.md") == "/p/memory/gate/d.result")
+        let result = Gate.resultText(status: "done", fields: [("branch", "at22/x")], summary: " 直した \n",
+                                     at: Date(timeIntervalSince1970: 0))
+        assert(Memory.frontMatter(result)["status"] == "done" && Memory.frontMatter(result)["branch"] == "at22/x"
+               && Memory.body(result).contains("直した"), result)
+
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-race-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        let repoPath = base + "/repo"
+        try! manager.createDirectory(atPath: repoPath, withIntermediateDirectories: true)
+        let identity = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: repoPath)
+        try! "a\n".write(toFile: repoPath + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "a.txt"], in: repoPath)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "init"], in: repoPath)
+        let repo = try! Worktree.root(of: repoPath)
+        let sha = try! Worktree.git(["rev-parse", "HEAD"], in: repo).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 司令塔のセッション（transcript に cwd を持つ）を開いて、そのプロジェクトの門を読む
+        let projects = URL(fileURLWithPath: base + "/projects")
+        let project = projects.appendingPathComponent(Cockpit.projectSlug(repo))
+        let gateDir = project.appendingPathComponent("memory/gate")
+        try! manager.createDirectory(at: gateDir, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("orc.jsonl")
+        try! "{\"type\":\"user\",\"cwd\":\"\(repo)\",\"sessionId\":\"orc\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n"
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let c = Cockpit(projectsRoot: projects)
+        await c.loadSession(RecentSession(id: "orc", project: project.lastPathComponent, projectURL: project,
+                                          transcriptURL: transcript, modifiedAt: Date()))
+        c.refreshMemory()
+
+        // 競走：2本とも同じ SHA から、同じ親で
+        c.createWorkspaces(repo: repo, base: "main",
+                           racers: [.init(name: "r-claude", backend: .claude), .init(name: "r-grok", backend: .grok)],
+                           prompt: "", level: .normal)
+        let a = Worktree.location(repo: repo, name: "r-claude"), b = Worktree.location(repo: repo, name: "r-grok")
+        let raced = await wait(20) { c.refreshWorktreesIfNeeded(force: true); return c.rivals(of: a) == [b] }
+        assert(raced, "競走の相手が引けない: \(c.worktrees) \(c.workspaceMeta)")
+        assert(c.workspaceMeta[a]?.baseSHA == sha && c.workspaceMeta[b]?.baseSHA == sha, "基点の SHA が揃っていない")
+        assert(c.workspaceMeta[a]?.baseRef == "main", "レビュー・PR の基点が枝の名前でなくなった")
+        try! "x\n".write(toFile: b + "/wip.txt", atomically: true, encoding: .utf8)
+        _ = await c.adopt(a)
+        assert(!manager.fileExists(atPath: b), "負けが消えていない")
+        assert(manager.fileExists(atPath: a) && c.workspaceMeta[a]?.parent == nil && c.rivals(of: a).isEmpty,
+               "勝ちが普通のワークスペースに戻っていない")
+
+        // 采配：答えを先に書き、ワークスペースを作る。ここでは CLI が無いので、起こせなかったことを結果に書く
+        let gatePath = gateDir.appendingPathComponent("d1.md").path
+        try! "---\ncall: t1\nby: orc\nto: fixer\ndispatch: claude\nname: fix-1\nbase: main\n---\nREADME を直して\n"
+            .write(toFile: gatePath, atomically: true, encoding: .utf8)
+        c.refreshGates()
+        guard let gate = c.gates.first(where: { $0.dispatch == .claude }) else { return assertionFailure("采配の門が読めない") }
+        assert(c.answer(gate, .allow) == .saved && c.gates.isEmpty, "采配の門に答えられない")
+        let resultFile = Gate.resultPath(for: gatePath)
+        let reported = await wait(20) { manager.fileExists(atPath: resultFile) }
+        assert(reported, "采配の結果が書かれない")
+        let written = try! String(contentsOfFile: resultFile, encoding: .utf8)
+        let front = Memory.frontMatter(written)
+        assert(front["status"] == "failed" && front["error"]?.contains("claude") == true, written)
+        assert(front["workspace"] == Worktree.location(repo: repo, name: "fix-1")
+               && manager.fileExists(atPath: Worktree.location(repo: repo, name: "fix-1")),
+               "采配のワークスペースが司令塔のリポジトリに作られていない: \(written)")
+        // 却下した采配は何も作らない
+        try! "---\ncall: t2\ndispatch: claude\nname: fix-2\n---\nx\n".write(toFile: gateDir.appendingPathComponent("d2.md").path,
+                                                                              atomically: true, encoding: .utf8)
+        c.refreshGates()
+        _ = c.answer(c.gates.first!, .deny)
+        try? await Task.sleep(for: .milliseconds(500))
+        assert(!manager.fileExists(atPath: Worktree.location(repo: repo, name: "fix-2")), "却下したのに作った")
+
+        // 検査の跡を UserDefaults に残さない
+        _ = await c.deleteWorkspace(a, force: true, deleteBranch: false)
+        _ = await c.deleteWorkspace(Worktree.location(repo: repo, name: "fix-1"), force: true, deleteBranch: false)
+        c.removeProject(repo)
     }
 
     /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。

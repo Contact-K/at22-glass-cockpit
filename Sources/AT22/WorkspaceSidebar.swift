@@ -18,6 +18,7 @@ struct WorkspaceSidebar: View {
 
     @State private var creatingIn: CreateTarget?
     @State private var deleting: Cockpit.WorkspaceNode?
+    @State private var adopting: Cockpit.WorkspaceNode?
     @State private var problem: String?
 
     static let width: CGFloat = 248
@@ -53,6 +54,12 @@ struct WorkspaceSidebar: View {
         .background(CockpitCanvas.background)
         .sheet(item: $creatingIn) { target in
             NewWorkspaceSheet(cockpit: cockpit, repo: target.repo) { creatingIn = nil }
+        }
+        .sheet(item: $adopting) { workspace in
+            AdoptSheet(cockpit: cockpit, winner: workspace) { notes in
+                adopting = nil
+                problem = notes.isEmpty ? nil : notes.joined(separator: "\n")
+            }
         }
         .sheet(item: $deleting) { workspace in
             DeleteWorkspaceSheet(cockpit: cockpit, workspace: workspace) { message in
@@ -138,6 +145,11 @@ struct WorkspaceSidebar: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
+                if cockpit.workspaceMeta[workspace.id]?.parent != nil {
+                    Text("競走")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                }
                 // AT22 が作った枝（at22/<名前>）は名前の繰り返しなので出さない。端末や claude -w で作った枝だけ
                 if let branch = workspace.branch, !workspace.isMain, branch != Worktree.branch(for: workspace.name) {
                     Text(branch)
@@ -174,6 +186,9 @@ struct WorkspaceSidebar: View {
         .contextMenu {
             Button("Finder で開く") { NSWorkspace.shared.open(URL(fileURLWithPath: workspace.id)) }
             if !workspace.isMain && workspace.pending == nil {
+                if !cockpit.rivals(of: workspace.id).isEmpty {
+                    Button("この案を採る…") { adopting = workspace }
+                }
                 Divider()
                 Button("削除…") { deleting = workspace }
             }
@@ -267,8 +282,17 @@ struct NewWorkspaceSheet: View {
     @State private var base = ""
     @State private var prompt = ""
     @State private var level = Gate.defaultLevel
+    /// 同じ指示で競走させる相手。選ぶと、どれも同じ基点のコミットから1本ずつ作る
+    @State private var rivals: Set<Backend> = []
 
     private var backend: Backend { Backend(rawValue: launchBackend) ?? .claude }
+    private var racers: [Cockpit.Racer] {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        let others = Backend.allCases.filter { rivals.contains($0) && $0 != backend }
+        guard !others.isEmpty else { return [Cockpit.Racer(name: name, backend: backend, model: launchModel)] }
+        return [Cockpit.Racer(name: "\(name)-\(backend.command)", backend: backend, model: launchModel)]
+            + others.map { Cockpit.Racer(name: "\(name)-\($0.command)", backend: $0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -285,6 +309,18 @@ struct NewWorkspaceSheet: View {
                 Text("既定").tag("")
                 ForEach(ModelChoice.models(for: backend), id: \.id) { Text($0.title).tag($0.id) }
             }
+            let others = Backend.allCases.filter { cockpit.found[$0] != nil && $0 != backend }
+            if !others.isEmpty {
+                HStack(spacing: 10) {
+                    Text("競走させる").font(.system(size: 11)).foregroundStyle(.secondary)
+                    ForEach(others, id: \.self) { other in
+                        Toggle(other.title, isOn: Binding(get: { rivals.contains(other) },
+                                                          set: { if $0 { rivals.insert(other) } else { rivals.remove(other) } }))
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 11))
+                    }
+                }
+            }
             Picker("承認の段", selection: $level) {
                 ForEach(Gate.Level.allCases, id: \.self) { Text($0.title).tag($0) }
             }
@@ -299,14 +335,15 @@ struct NewWorkspaceSheet: View {
                 Spacer()
                 Button("やめる", role: .cancel) { onClose() }
                     .keyboardShortcut(.cancelAction)
-                Button("作る") {
-                    cockpit.createWorkspace(repo: repo, name: name, base: base.isEmpty ? "HEAD" : base,
-                                            backend: backend, model: launchModel, prompt: prompt, level: level)
+                Button(racers.count > 1 ? "\(racers.count) 本で競走" : "作る") {
+                    cockpit.createWorkspaces(repo: repo, base: base.isEmpty ? "HEAD" : base, racers: racers,
+                                             prompt: prompt, level: level)
                     onClose()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
-                          || (!prompt.isEmpty && cockpit.found[backend] == nil))
+                          || (!prompt.isEmpty && cockpit.found[backend] == nil)
+                          || (racers.count > 1 && prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }
         }
         .textFieldStyle(.roundedBorder)
@@ -319,6 +356,52 @@ struct NewWorkspaceSheet: View {
             if cockpit.found[backend] == nil, let first = Backend.allCases.first(where: { cockpit.found[$0] != nil }) {
                 launchBackend = first.rawValue
             }
+        }
+    }
+}
+
+// MARK: - 競走の勝ちを採る
+
+/// 負けの一覧を**未コミットの変更の数つきで**見せてから消す。勝ちの push / PR はレビューのタブから
+struct AdoptSheet: View {
+    let cockpit: Cockpit
+    let winner: Cockpit.WorkspaceNode
+    let onDone: ([String]) -> Void
+
+    @State private var dirty: [String: Int] = [:]
+    @State private var working = false
+
+    var body: some View {
+        let losers = cockpit.rivals(of: winner.id)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("この案を採る — \(winner.name)")
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            Text("負けの \(losers.count) 本を変更ごと消す。枝はマージされていなければ残す。")
+                .font(.system(size: 12))
+            ForEach(losers, id: \.self) { loser in
+                HStack {
+                    Text((loser as NSString).lastPathComponent).font(.system(size: 11, design: .monospaced))
+                    Spacer()
+                    Text(dirty[loser].map { $0 == 0 ? "変更なし" : "未コミット \($0) 件" } ?? "…")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle((dirty[loser] ?? 0) > 0 ? Palette.danger : .secondary)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("やめる", role: .cancel) { onDone([]) }
+                    .keyboardShortcut(.cancelAction)
+                Button("負けを消して採る", role: .destructive) {
+                    working = true
+                    Task { onDone(await cockpit.adopt(winner.id)) }
+                }
+                .disabled(working || dirty.count < losers.count)
+            }
+        }
+        .padding(18)
+        .frame(width: 400)
+        .task {
+            for loser in losers { dirty[loser] = await cockpit.dirtyFiles(of: loser).count }
         }
     }
 }

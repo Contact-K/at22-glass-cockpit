@@ -820,14 +820,65 @@ final class Cockpit {
 
     /// 門に答える。**書けなかったら必ず呼び出し元に返す**——
     /// 黙って画面から消すと、司令塔は答えが来ないまま待ち続ける
+    /// 采配（`dispatch:` のある門）は、許可・書換の答えを書いた**後で** AT22 がワークスペースを作って
+    /// ワーカーを起こし、最初のターンが終わったら `<id>.result` を書く。答えを先に書くのは、
+    /// 作成を待つ間に門が板に残って二度押されないため
     @discardableResult
     func answer(_ request: Gate.Request, _ verdict: Gate.Verdict,
                 revised: String = "", at: Date = Date()) -> NoteSaveResult {
         let result = saveNote(path: Gate.verdictPath(for: request),
                               text: Gate.verdictText(verdict, at: at, revised: revised),
                               creating: true)
-        if result == .saved { refreshGates() }
+        guard result == .saved else { return result }
+        refreshGates()
+        if let backend = request.dispatch, verdict != .deny {
+            dispatch(request, backend: backend, instruction: verdict == .revise ? revised : request.instruction)
+        }
         return result
+    }
+
+    /// 采配したワーカー → 答えた門のパス。最初のターンが終わったら結果を書いて外す
+    private var dispatched: [String: String] = [:]
+
+    private func dispatch(_ request: Gate.Request, backend: Backend, instruction: String) {
+        let gate = request.id
+        let cwd = selectedSession.flatMap(cwd(of:)) ?? ""
+        let level = gateLevel
+        Task {
+            let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
+            guard let repo else {
+                return writeResult(gate, status: "failed", fields: [("error", "司令塔の作業ディレクトリがリポジトリの外")])
+            }
+            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: "",
+                            prompt: instruction, level: level) { [weak self] path, session, error in
+                guard let self else { return }
+                if let session, error == nil {
+                    self.dispatched[session] = gate
+                } else {
+                    self.writeResult(gate, status: "failed", fields: [("workspace", path), ("error", error ?? "起こせなかった")])
+                }
+            }
+        }
+    }
+
+    /// 采配の結果を門の隣に書く。**門が置かれたプロジェクト**へ（その間に選択が別へ移っていても）
+    private func writeResult(_ gate: String, status: String, fields: [(String, String)], summary: String = "") {
+        guard let project = Gate.projectDirectory(of: gate) else { return }
+        let result = saveNote(path: Gate.resultPath(for: gate),
+                              text: Gate.resultText(status: status, fields: fields, summary: summary, at: Date()),
+                              creating: true, project: URL(fileURLWithPath: project))
+        if result != .saved { appendLaunchError("采配の結果を書けない: \(Gate.resultPath(for: gate))") }
+    }
+
+    /// 采配したワーカーの最初のターンが終わった。本文はそのターンの返事（書きかけが無い相手は最後の発言）
+    private func reportDispatched(_ session: String, status: String, reply: String?) {
+        guard let gate = dispatched.removeValue(forKey: session) else { return }
+        let path = cwd(of: session) ?? ""
+        let text = reply ?? messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.text ?? ""
+        writeResult(gate, status: status,
+                    fields: [("workspace", path), ("branch", Worktree.branch(for: (path as NSString).lastPathComponent)),
+                             ("agent", backend(of: session).rawValue), ("session", session)],
+                    summary: String(text.suffix(4000)))
     }
 
     /// 承認の強さを変える。ファイルが正なので、選んだその場で書く
@@ -1080,6 +1131,7 @@ final class Cockpit {
             noteAttention(session, "承認を待っている — \(approval.detail)")
 
         case let .turnEnded(tokens):
+            reportDispatched(session, status: "done", reply: streaming[session])
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             streaming[session] = nil
             stopping.remove(session)
@@ -1097,7 +1149,11 @@ final class Cockpit {
             // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
             // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
             // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
-            if stopping.remove(session) != nil, reason == "error_during_execution" { break }
+            if stopping.remove(session) != nil, reason == "error_during_execution" {
+                reportDispatched(session, status: "stopped", reply: nil)
+                break
+            }
+            reportDispatched(session, status: "failed", reply: reason)
             failedTurns.insert(session)
             noteAttention(session, "失敗した — \(reason)")
             appendLaunchError("失敗: \(reason)")
@@ -1799,40 +1855,92 @@ final class Cockpit {
         }
     }
 
-    /// ワークスペースを作り、できたらそこでエージェントを起こす。作成は裏で進め、
-    /// 待つ間はカードに「作成中」、失敗したら理由を出す（ダイアログは待たせない）
+    /// 1本のワークスペースで走らせるエージェント
+    struct Racer: Equatable {
+        let name: String
+        let backend: Backend
+        var model = ""
+    }
+
+    /// 1本版。`then` は（置き場, 起こしたセッション, 失敗の理由）
     func createWorkspace(repo: String, name: String, base: String, backend: Backend, model: String,
-                         prompt: String, level: Gate.Level) {
-        let path = Worktree.location(repo: repo, name: name)
-        pendingWorkspaces[path] = PendingWorkspace(repo: repo, name: name, error: nil)
+                         prompt: String, level: Gate.Level,
+                         then: ((String, String?, String?) -> Void)? = nil) {
+        createWorkspaces(repo: repo, base: base, racers: [Racer(name: name, backend: backend, model: model)],
+                         prompt: prompt, level: level, then: then)
+    }
+
+    /// ワークスペースを作り、できたらそこでエージェントを起こす。作成は裏で進め、
+    /// 待つ間はカードに「作成中」、失敗したら理由を出す（ダイアログは待たせない）。
+    /// 2つ以上渡すと**競走**：最初の1本で基点を SHA に固定し、残りも同じ SHA から作って同じ指示を送る。
+    /// 作るのは1本ずつ順に——同じリポジトリで `git worktree add` を同時に走らせない（ref や exclude の取り合い）
+    func createWorkspaces(repo: String, base: String, racers: [Racer], prompt: String, level: Gate.Level,
+                          then: ((String, String?, String?) -> Void)? = nil) {
+        let parent = racers.count > 1 ? "競走 " + base + " " + UUID().uuidString.prefix(8) : nil
+        for racer in racers {
+            pendingWorkspaces[Worktree.location(repo: repo, name: racer.name)] = PendingWorkspace(repo: repo, name: racer.name, error: nil)
+        }
         addProject(repo)
-        Task.detached(priority: .userInitiated) {
-            let result = Result { try Worktree.add(repo: repo, name: name, base: base) }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                switch result {
-                case let .success(made):
-                    self.pendingWorkspaces[path] = nil
-                    self.workspaceMeta[made.path] = WorkspaceMeta(baseRef: base, baseSHA: made.baseSHA,
-                                                                  parent: nil, createdAt: Date())
-                    self.saveWorkspaceMeta()
-                    self.refreshWorktreesIfNeeded(force: true)
-                    let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !prompt.isEmpty {
-                        self.launch(prompt: prompt, cwd: made.path, backend: backend, model: model, level: level)
-                    }
-                case let .failure(error):
-                    self.pendingWorkspaces[path]?.error = "\(error)"
-                }
+        Task {
+            var pinned: String?
+            for racer in racers {
+                let from = pinned ?? base
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try Worktree.add(repo: repo, name: racer.name, base: from) }
+                }.value
+                if case let .success(made) = result { pinned = pinned ?? made.baseSHA }
+                finishWorkspace(repo: repo, racer: racer, base: base, parent: parent, result: result,
+                                prompt: prompt, level: level, then: then)
             }
         }
+    }
+
+    private func finishWorkspace(repo: String, racer: Racer, base: String, parent: String?,
+                                 result: Result<(path: String, branch: String, baseSHA: String), Error>,
+                                 prompt: String, level: Gate.Level, then: ((String, String?, String?) -> Void)?) {
+        let path = Worktree.location(repo: repo, name: racer.name)
+        switch result {
+        case let .success(made):
+            pendingWorkspaces[path] = nil
+            workspaceMeta[made.path] = WorkspaceMeta(baseRef: base, baseSHA: made.baseSHA, parent: parent, createdAt: Date())
+            saveWorkspaceMeta()
+            refreshWorktreesIfNeeded(force: true)
+            let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prompt.isEmpty else { then?(made.path, nil, nil); return }
+            let session = launch(prompt: prompt, cwd: made.path, backend: racer.backend, model: racer.model, level: level)
+            then?(made.path, session?.uuidString.lowercased(), session == nil ? (launchError ?? "起こせなかった") : nil)
+        case let .failure(error):
+            pendingWorkspaces[path]?.error = "\(error)"
+            then?(path, nil, "\(error)")
+        }
+    }
+
+    /// 同じ競走で走った他のワークスペース（まだ残っているものだけ）
+    func rivals(of path: String) -> [String] {
+        guard let parent = workspaceMeta[path]?.parent,
+              let list = worktrees.values.first(where: { $0.contains { $0.path == path } }) else { return [] }
+        return list.map(\.path).filter { $0 != path && workspaceMeta[$0]?.parent == parent }
+    }
+
+    /// 競走の勝ちを決める。**人が負けの一覧（未コミットの変更の数つき）を見て押した後だけ**呼ぶ。
+    /// 負けは変更ごと消し、枝は `-d`（コミットを積んだ負けの枝は残る）。勝ちは普通のワークスペースに戻る。
+    /// 戻り値は人に伝える一言（残した枝など）
+    func adopt(_ winner: String) async -> [String] {
+        var notes: [String] = []
+        for loser in rivals(of: winner) {
+            if let note = await deleteWorkspace(loser, force: true, deleteBranch: true) { notes.append(note) }
+        }
+        workspaceMeta[winner]?.parent = nil
+        saveWorkspaceMeta()
+        return notes
     }
 
     /// 検査・画像焼きからワークスペースの木を直接流し込む口。実機の git と ~/.claude に依存させない
     func loadWorkspacesForProbe(projects: [String], worktrees: [String: [Worktree.Entry]],
                                 pending: [String: PendingWorkspace] = [:], failed: Set<String> = [],
-                                backends: [String: Backend] = [:]) {
+                                backends: [String: Backend] = [:], meta: [String: WorkspaceMeta] = [:]) {
         self.projects = projects
+        self.workspaceMeta = meta
         self.worktrees = worktrees
         self.pendingWorkspaces = pending
         self.failedTurns = failed

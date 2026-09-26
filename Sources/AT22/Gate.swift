@@ -89,6 +89,12 @@ enum Gate {
         let issued: Date
         /// 指示の全文。押すとこれを編集できる
         let instruction: String
+        /// 采配（dispatch）。司令塔が「このエージェントでワーカーを起こして」と頼む時だけ入る。
+        /// 人が許可すると AT22 がワークスペースを作り、そこでこのエージェントを起こす
+        var dispatch: Backend? = nil
+        /// 采配で作るワークスペースの名前と基点
+        var name = ""
+        var base = ""
 
         /// 待たせている時間。司令塔は Bash の中で止まっているので、必ず出す
         func waited(now: Date) -> TimeInterval { max(0, now.timeIntervalSince(issued)) }
@@ -133,7 +139,10 @@ enum Gate {
                        to: front["to"] ?? call,
                        risk: front["risk"] ?? "",
                        issued: front["issued"].flatMap(date) ?? .distantPast,
-                       instruction: Memory.body(text))
+                       instruction: Memory.body(text),
+                       dispatch: front["dispatch"].flatMap(Backend.init(rawValue:)),
+                       name: front["name"] ?? front["to"] ?? call,
+                       base: front["base"] ?? "HEAD")
     }
 
     /// ISO8601。壊れていたら nil を返して `distantPast` に落とす（経過時間が伸び続けるだけで落ちない）
@@ -163,6 +172,26 @@ enum Gate {
     /// `gate/<id>.md` に対する答えの置き場
     nonisolated static func verdictPath(for request: Request) -> String {
         (request.id as NSString).deletingPathExtension + ".verdict"
+    }
+
+    /// 采配したワーカーの結果の置き場。司令塔は .verdict の後にこれを待つ
+    nonisolated static func resultPath(for gatePath: String) -> String {
+        (gatePath as NSString).deletingPathExtension + ".result"
+    }
+
+    /// ワーカーの最初のターンが終わった時の結果。本文はワーカーの最後の発言
+    nonisolated static func resultText(status: String, fields: [(String, String)], summary: String, at: Date) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        let lines = ([("status", status), ("at", iso.string(from: at))] + fields).map { "\($0.0): \($0.1)\n" }.joined()
+        return "---\n\(lines)---\n" + summary.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+    }
+
+    /// `…/projects/<slug>/memory/gate/<id>.md` → `…/projects/<slug>`。
+    /// 答えは**門が置かれたプロジェクト**へ書く（その間に選択が別のセッションへ移っていても）
+    nonisolated static func projectDirectory(of gatePath: String) -> String? {
+        guard let range = gatePath.range(of: "/memory/" + directory + "/") else { return nil }
+        return String(gatePath[..<range.lowerBound])
     }
 
     // MARK: 承認モード

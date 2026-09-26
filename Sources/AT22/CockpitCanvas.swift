@@ -78,8 +78,19 @@ struct CockpitView: View {
                          showTasks: $showTasks)
                 shelf
             }
+            // 開いている欄のぶんだけ窓の下限を上げる。盤面の列には門のパネルが収まる幅を残す——
+            // 欄を2つ開いた最小の窓では、パネルが盤面からはみ出して会話欄を覆っていた
+            .frame(minWidth: ModeRail.width
+                   + (showWorkspaces ? WorkspaceSidebar.width + Palette.Stroke.hair : 0)
+                   + (showConversation ? sidebarWidth + 6 : 0)
+                   + GatePanel.width + 2 * Palette.Space.s4)
             StatusBar(cockpit: cockpit)
         }
+    }
+
+    /// Dock のバッジ。画像焼き（--shot）では NSApplication が無いので何もしない
+    private static func badge(_ count: Int) {
+        NSApp?.dockTile.badgeLabel = count == 0 ? nil : "\(count)"
     }
 
     var body: some View {
@@ -99,9 +110,7 @@ struct CockpitView: View {
                 .opacity(0)
         }
         // Dock のバッジ＝人の番で止まっている／見ていない間に何か起きたセッションの数
-        .onChange(of: cockpit.attentionCount, initial: true) { _, count in
-            NSApp.dockTile.badgeLabel = count == 0 ? nil : "\(count)"
-        }
+        .onChange(of: cockpit.attentionCount, initial: true) { _, count in Self.badge(count) }
         .task { cockpit.onAttention = { _, title, body in Notifier.post(title: title, body: body) } }
         // **`onKeyPress` はフォーカスを持つ View にしか来ない。** これが無いと
         // `a` / `b` / `c` も Esc も一生発火せず、`keyboardShortcut` 系（⇧⌘M / ⇧⌘T / ⇧⌘G）

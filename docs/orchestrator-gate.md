@@ -245,3 +245,54 @@ MEMORY_ROOT="$HOME/.claude/projects/$SLUG/memory"
 2. **無人モード（Lv.5）では門が立たない** — `unattended` レベルを選ぶと、全指示が門を立たずに通る。人間不在の想定なので、門を選ぶべき段階なら Lv.3 か Lv.4 を選ぶ
 3. **`gate/` は記憶DB の一覧には出ない** — AT22 のツール UI 上では `gate/` フォルダは非表示。実際のファイルシステムには書かれているので、Finder や terminal から直接操作できる
 4. **frontmatter の `call` が無い門は捨てられる** — AT22 が司令塔と結びつけられないので、画面に出す価値がない。必ず `call:` に tool-use id を入れる
+
+## 采配 ── AT22 にワーカーを起こしてもらう
+
+門の書式に `dispatch:` を足すと、「自分で Agent ツールを呼ぶ」代わりに **AT22 がワークスペース（git worktree）を作って、そこで別のエージェントを起こす**。人が板で許可したときだけ動く（答えるのは人のクリックだけ、は門と同じ）。
+
+**足すキー：**
+- `dispatch` — 起こすエージェント。`claude` / `codex` / `grok` / `hermes`（知らない名前なら普通の門として扱う）
+- `name` — ワークスペースの名前。置き場は `<リポジトリ>/.claude/worktrees/<name>`、枝は `at22/<name>`。省略すると `to`
+- `base` — 分岐の基点（枝・コミット）。省略すると `HEAD`
+
+リポジトリは**板で門を見ていたセッション（＝司令塔）の作業ディレクトリ**から引く。worktree の中で動いている司令塔なら、本体のリポジトリに作る。
+
+```bash
+cat > "$GATE_FILE" <<'EOF2'
+---
+call: w1
+by: orchestrator-agent-id
+to: fixer
+dispatch: grok
+name: fix-readme
+base: main
+---
+README の手順を直して。終わったら何を変えたかを一文で。
+EOF2
+```
+
+**答えは2段階で来る：**
+1. `<id>.verdict` — 門と同じ。`allow` / `revise` なら AT22 がワークスペースを作り始めている（`revise` の本文がワーカーへの指示になる）。`deny` なら何も作らない
+2. `<id>.result` — ワーカーの**最初のターン**が終わったら書かれる。2ターン目以降では書き直さない
+
+```
+---
+status: done            # done / failed / stopped（人が止めた）
+at: 2026-09-26T08:08:09Z
+workspace: /path/to/repo/.claude/worktrees/fix-readme
+branch: at22/fix-readme
+agent: grok
+session: b8ce8741-…     # AT22 の会話欄・サイドバーで開ける
+---
+ワーカーの返事（最後の 4000 字まで）
+```
+
+作れなかった・起こせなかったときも `status: failed` と `error:` を書く（待たせ続けない）。
+
+```bash
+RESULT_FILE="${GATE_FILE%.*}.result"
+until [ -f "$RESULT_FILE" ]; do sleep 5; done
+STATUS=$(grep "^status: " "$RESULT_FILE" | cut -d' ' -f2)
+```
+
+変更はワーカーの worktree に残る。マージ・push・PR は人が AT22 のレビューのタブで決める（司令塔からは頼めない）。
