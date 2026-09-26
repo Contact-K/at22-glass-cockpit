@@ -97,6 +97,7 @@ struct P0SelfCheck {
         workspaceTreePlacesAgents()
         unreadAndTerminal()
         reviewReadsDiff()
+        providersAndLogins()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -220,6 +221,25 @@ struct P0SelfCheck {
         let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
         let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
         assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
+    }
+
+    /// ACP の相手ごとの起動引数と、ログインの状態の読み方
+    static func providersAndLogins() {
+        assert(Cockpit.acpArguments(.grok, model: "grok-4.6", level: .normal) == ["agent", "-m", "grok-4.6", "stdio"])
+        assert(Cockpit.acpArguments(.grok, model: "", level: .auto) == ["agent", "--always-approve", "stdio"],
+               "Lv.4 で全部通していない")
+        assert(Cockpit.acpArguments(.hermes, model: "x", level: .auto) == ["acp"], "Hermes に知らない引数を渡した")
+        assert(Backend.allCases.filter(\.isACP) == [.grok, .hermes])
+        // Hermes はトークン数を usage に入れて返す（実測）
+        assert(ACPConnection.turnEnd(["stopReason": "end_turn", "usage": ["inputTokens": 14683]]) == .turnEnded(tokens: 14683))
+        // claude auth status（JSON）
+        assert(Cockpit.claudeLogin(#"{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}"#)
+               == "ログイン済み（claude.ai · max）")
+        assert(Cockpit.claudeLogin(#"{"loggedIn":false}"#) == "未ログイン" && Cockpit.claudeLogin("") == "未ログイン")
+        // grok は記録があればログイン済み。expires_at が過ぎていても grok が自分で更新する
+        let grok = #"{"https://auth.x.ai::u1":{"key":"k","refresh_token":"r","expires_at":"2020-01-01T00:00:00Z"}}"#
+        assert(Cockpit.grokLogin(Data(grok.utf8)) == "ログイン済み（xAI）", "期限切れの記録をログアウト扱いした")
+        assert(Cockpit.grokLogin(nil) == "未ログイン" && Cockpit.grokLogin(Data("{}".utf8)) == "未ログイン")
     }
 
     /// レビュー。差分の行番号、追跡外の新規、コメントを1通にまとめる形、コミットと push まで

@@ -8,12 +8,29 @@ enum Backend: String, CaseIterable, Codable, Sendable {
     case codex
     /// Grok Build。`grok agent stdio` を ACP（Agent Client Protocol）で話す
     case grok
+    /// Hermes Agent（Nous Research）。`hermes acp`。プロバイダとモデルは Hermes 自身の設定に従う
+    case hermes
 
     var title: String {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
         case .grok: "Grok"
+        case .hermes: "Hermes"
+        }
+    }
+
+    /// ACP で話す相手。Gemini CLI（`--experimental-acp`）や OpenCode（`acp`）も同じ口なので、
+    /// 入れたらここと `Cockpit.acpArguments` に1行ずつ足せば繋がる
+    var isACP: Bool { self == .grok || self == .hermes }
+
+    /// ログインを起こすコマンド（CLI の後ろに付ける）。**トークンは各 CLI が持つ**——AT22 は起こすだけ
+    var loginArguments: [String] {
+        switch self {
+        case .claude: ["auth", "login"]
+        case .codex: ["login"]
+        case .grok: ["login"]
+        case .hermes: ["setup"]
         }
     }
 
@@ -54,6 +71,7 @@ extension ModelChoice {
         case .claude: claudeModels
         case .codex: codexModels
         case .grok: grokModels
+        case .hermes: []        // Hermes 自身の既定（hermes model で選ぶ）
         }
     }
 

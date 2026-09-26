@@ -299,7 +299,9 @@ final class ACPConnection: AgentConnection {
     /// prompt の返事でターンを閉じる。人が止めたターン（cancelled）は失敗ではない
     nonisolated static func turnEnd(_ result: [String: Any]) -> AgentEvent {
         let reason = result["stopReason"] as? String ?? "end_turn"
-        let tokens = ((result["_meta"] as? [String: Any])?["inputTokens"] as? NSNumber)?.intValue
+        // Grok は _meta に、Hermes は usage に入れて返す（どちらも実測）
+        let tokens = (((result["_meta"] as? [String: Any])?["inputTokens"]
+                       ?? (result["usage"] as? [String: Any])?["inputTokens"]) as? NSNumber)?.intValue
         switch reason {
         case "end_turn", "cancelled": return .turnEnded(tokens: tokens)
         default: return .turnFailed(reason)     // max_tokens / max_turn_requests / refusal

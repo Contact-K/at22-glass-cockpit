@@ -151,7 +151,9 @@ struct CockpitView: View {
     /// 起こせる CLI を全部探す。**1つずつ呼ぶ書き方をやめた**——
     /// 以前は codex 側の呼び出しが抜け落ちたまま気づかれず、Codex 経路が丸ごと到達不能だった
     private func findCLIs(force: Bool) {
-        for (backend, path) in [(Backend.claude, claudePath), (.codex, codexPath), (.grok, grokPath)] {
+        let paths: [Backend: String] = [.claude: claudePath, .codex: codexPath, .grok: grokPath]
+        for backend in Backend.allCases {
+            let path = paths[backend] ?? ""
             cockpit.findIfNeeded(backend, override: path.isEmpty ? nil : path, force: force)
         }
     }

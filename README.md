@@ -34,10 +34,10 @@ AT22 は初期状態では **読み取るだけ** で、
 - **d レビュー** … 選んでいるセッションのワークスペースの差分（AT22 が作ったものは作った時のコミットから、それ以外はまだコミットしていない分）。追跡外の新規ファイルも並ぶ（インデックスには触らない）。行に乗って「＋」でコメントを付け、**エージェントに送る**でまとめて1通にして返す。良ければその場で **コミット／push／PR を作る**（PR は `gh` が自分の認証で作る。どれも押した時だけ）
 - 行を右クリック → **Terminal で開く** … 生の TUI が要る時の逃げ道。`cd <ワークスペース> && claude --resume <ID>`（Grok は `grok -r`、Codex は `codex resume`）を Terminal で開く。AT22 の接続は先に閉じる（同じ会話を2つのプロセスで書かない）。初回は macOS が Terminal の操作の許可を訊く
 
-**連携を有効にすると、`claude` / `codex` / `grok` を起こす。**設定で明示的に有効化した時だけ、AT22 はエージェントのセッションを起動できるようになる。その時も：
+**連携を有効にすると、`claude` / `codex` / `grok` / `hermes` を起こす。**設定で明示的に有効化した時だけ、AT22 はエージェントのセッションを起動できるようになる。その時も：
 
-- **AT22 は認証情報を一切持たない。**API キーも OAuth トークンも保存しない。起こすのは**あなたが既にログイン済みの CLI**（`claude` / `codex` / `grok`）で、通信するのはそのプロセスであって AT22 ではない
-- Claude Code は stream-json、Codex は `codex exec`、Grok は ACP（Agent Client Protocol、`grok agent stdio`）で話す。どれも同じ会話欄・同じ盤面に出る。ACP は Gemini CLI や OpenCode なども話す共通の口
+- **AT22 は認証情報を一切持たない。**API キーも OAuth トークンも保存しない。起こすのは**あなたが既にログイン済みの CLI**（`claude` / `codex` / `grok` / `hermes`）で、通信するのはそのプロセスであって AT22 ではない。設定の「ログイン」は、各 CLI 自身のログイン（`claude auth login` / `codex login` / `grok login` / `hermes setup`）を Terminal で起こすだけで、トークンはその CLI が持つ
+- Claude Code は stream-json、Codex は `codex exec`、Grok と Hermes は ACP（Agent Client Protocol、`grok agent stdio` / `hermes acp`）で話す。どれも同じ会話欄・同じ盤面に出る。ACP は Gemini CLI や OpenCode なども話す共通の口
 - Claude Code を起こす時のセッションIDは AT22 が採番する（`--session-id`）。transcript の在り処が確定するので、起こした先をそのまま画面で追える。Codex / Grok は相手が返したIDを台帳（UserDefaults）に残し、アプリを閉じても続きに繋げる
 - CLI の場所はログインシェルに訊いて突き止める。見つからなければそのエージェントの起動UI自体が出ない
 - AT22 から起こした Claude Code は、道具の承認を AT22 に訊く（`--permission-prompt-tool stdio`）。Lv.2 は道具ごとに全部、Lv.3 は編集以外を、画面右上の承認の板で許可・書換・却下する。書き換えて許可すると、**書き換えた入力の方が実行される**。サブエージェントの起動（Agent ツール）はどの段でも訊かれないので、そこは今まで通り門が止める

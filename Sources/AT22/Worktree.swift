@@ -81,8 +81,9 @@ enum Worktree {
 
     /// コマンドを1回走らせ、stdout を返す（git・gh 共通）。`path` はログインシェルの PATH——
     /// gh は GUI の最小 PATH では認証の補助コマンドを見つけられない
+    /// - Parameter withErrors: stderr も続けて返す。`codex login status` は状態を stderr に書く（実測）
     nonisolated static func run(_ executable: String, _ arguments: [String], in directory: String,
-                                path: String? = nil) throws -> String {
+                                path: String? = nil, withErrors: Bool = false) throws -> String {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: executable)
         task.arguments = arguments
@@ -104,7 +105,7 @@ enum Worktree {
             let reason = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw Failure(message: reason.isEmpty ? "\((executable as NSString).lastPathComponent) が失敗した" : reason)
         }
-        return String(data: out, encoding: .utf8) ?? ""
+        return (String(data: out, encoding: .utf8) ?? "") + (withErrors ? String(data: err, encoding: .utf8) ?? "" : "")
     }
 
     /// そのパスが属するリポジトリの本体。worktree の中から呼んでも本体を返す（`--git-common-dir` の親）

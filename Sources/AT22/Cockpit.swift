@@ -898,8 +898,8 @@ final class Cockpit {
                                 level: level)
         case .codex:
             return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
-        case .grok:
-            return launchGrok(prompt: prompt, cwd: cwd, model: model, level: level)
+        case .grok, .hermes:
+            return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
 
@@ -1173,6 +1173,9 @@ final class Cockpit {
         case .grok:
             guard let remote else { return nil }
             resume = "\(exe) -r \(Self.shellQuote(remote))"
+        case .hermes:
+            guard let remote else { return nil }
+            resume = "\(exe) --resume \(Self.shellQuote(remote))"
         }
         return "cd \(Self.shellQuote(cwd)) && \(resume)"
     }
@@ -1193,6 +1196,54 @@ final class Cockpit {
             run.connection.close()
             forget(session)
         }
+        return runInTerminal(command)
+    }
+
+    /// 各 CLI 自身のログインを Terminal で起こす。**トークンはその CLI が持つ**——AT22 は何も預からない
+    func login(_ backend: Backend) -> String? {
+        guard let cli = found[backend] else { return "\(backend.command) が見つからない" }
+        return runInTerminal(([cli.executable.path] + backend.loginArguments).map(Self.shellQuote).joined(separator: " "))
+    }
+
+    /// ログインの状態を1行で。調べ方は CLI ごとに違う（どれも読むだけ）
+    func loginStatus(_ backend: Backend) async -> String {
+        guard let cli = found[backend] else { return "見つからない" }
+        return await Task.detached {
+            switch backend {
+            case .claude:
+                let json = (try? Worktree.run(cli.executable.path, ["auth", "status"], in: NSHomeDirectory(), path: cli.path)) ?? ""
+                return Self.claudeLogin(json)
+            case .codex:
+                let text = (try? Worktree.run(cli.executable.path, ["login", "status"], in: NSHomeDirectory(),
+                                              path: cli.path, withErrors: true)) ?? ""
+                return text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未ログイン"
+            case .grok:
+                return Self.grokLogin(FileManager.default.contents(atPath: NSHomeDirectory() + "/.grok/auth.json"))
+            case .hermes:
+                return "Hermes の設定に従う（hermes setup）"
+            }
+        }.value
+    }
+
+    /// `claude auth status`（JSON）を1行に
+    nonisolated static func claudeLogin(_ json: String) -> String {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              object["loggedIn"] as? Bool == true else { return "未ログイン" }
+        let method = object["authMethod"] as? String ?? ""
+        let plan = object["subscriptionType"] as? String ?? ""
+        return "ログイン済み（" + [method, plan].filter { !$0.isEmpty }.joined(separator: " · ") + "）"
+    }
+
+    /// `~/.grok/auth.json` にアカウントがあればログイン済み。**expires_at は見ない**——
+    /// 短命のトークンの期限で、grok が自分で更新する（期限切れの記録のまま動くのを実測）
+    nonisolated static func grokLogin(_ data: Data?) -> String {
+        guard let data, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              !object.isEmpty else { return "未ログイン" }
+        return "ログイン済み（xAI）"
+    }
+
+    /// Terminal.app で1行のコマンドを走らせる。初回は macOS が Terminal の操作の許可を訊く
+    private func runInTerminal(_ command: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         task.arguments = ["-e", "tell application \"Terminal\"", "-e", "activate",
@@ -1333,39 +1384,52 @@ final class Cockpit {
                           token: UUID())
             runs[session] = run
             return run
-        case .grok:
+        case .grok, .hermes:
+            let backend = backend(of: session)
             guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
-                launchError = "Grok のセッションが見つからない"
+                launchError = "\(backend.title) のセッションが見つからない"
                 return nil
             }
-            return startGrok(session: session, cwd: record.cwd, model: sessionModel[session] ?? record.model,
-                             level: gateLevel, resume: remote)
+            return startACP(backend, session: session, cwd: record.cwd, model: sessionModel[session] ?? record.model,
+                            level: gateLevel, resume: remote)
         }
     }
 
-    /// Grok を ACP で起こす。`resume` を渡すと session/load で続きへ繋ぐ（履歴は相手が送り直す）
-    private func startGrok(session: String, cwd: String, model: String, level: Gate.Level,
-                           resume: String?) -> Run? {
-        guard let grok = grokFound else {
-            launchError = "grok が見つからない"
+    /// ACP の相手ごとの起動引数。
+    /// grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
+    /// それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する。
+    /// Hermes はモデルも承認も自身の設定（hermes model / hermes setup）に従う
+    nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level) -> [String] {
+        switch backend {
+        case .grok:
+            var arguments = ["agent"]
+            if !model.isEmpty { arguments += ["-m", model] }
+            if level.needsConfirmation { arguments.append("--always-approve") }
+            return arguments + ["stdio"]
+        case .hermes:
+            return ["acp"]
+        case .claude, .codex:
+            return []
+        }
+    }
+
+    /// ACP の相手を起こす。`resume` を渡すと session/load で続きへ繋ぐ（履歴は相手が送り直す）
+    private func startACP(_ backend: Backend, session: String, cwd: String, model: String, level: Gate.Level,
+                          resume: String?) -> Run? {
+        guard let cli = found[backend] else {
+            launchError = "\(backend.command) が見つからない"
             return nil
         }
-        // grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
-        // それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する
-        var arguments = ["agent"]
-        if !model.isEmpty { arguments += ["-m", model] }
-        if level.needsConfirmation { arguments.append("--always-approve") }
-        arguments.append("stdio")
         let token = UUID()
         do {
             let connection = try ACPConnection.start(
-                grok.executable, arguments: arguments, cwd: cwd, path: grok.path,
-                session: session, resume: resume,
+                cli.executable, arguments: Self.acpArguments(backend, model: model, level: level), cwd: cwd,
+                path: cli.path, session: session, resume: resume,
                 onEvent: agentStream(session: session),
-                onExit: exitHandler(label: "grok", session: session, token: token))
+                onExit: exitHandler(label: backend.command, session: session, token: token))
             let run = Run(connection: connection, token: token)
             runs[session] = run
-            backends[session] = .grok
+            backends[session] = backend
             return run
         } catch {
             launchError = "\(error)"
@@ -1373,9 +1437,9 @@ final class Cockpit {
         }
     }
 
-    private func launchGrok(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
+    private func launchACP(_ backend: Backend, prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
         let sessionID = UUID().uuidString.lowercased()
-        guard let run = startGrok(session: sessionID, cwd: cwd, model: model, level: level, resume: nil),
+        guard let run = startACP(backend, session: sessionID, cwd: cwd, model: model, level: level, resume: nil),
               run.connection.send(prompt) else { return nil }
         let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
         loadedSessionTabs[sessionID] = tab
@@ -1385,7 +1449,7 @@ final class Cockpit {
         appendHuman(prompt, session: sessionID)
         // 相手側のIDは挨拶が済んだ時（.ready）に台帳へ入る
         runRecords.append(RunRecord(id: sessionID, threadID: nil, title: Self.titleRule(prompt) ?? "", cwd: cwd,
-                                    model: model, lastUsed: Date(), backend: .grok))
+                                    model: model, lastUsed: Date(), backend: backend))
         saveRunRecords()
         selectedSession = sessionID
         launchError = nil
