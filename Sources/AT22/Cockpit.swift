@@ -1776,6 +1776,76 @@ final class Cockpit {
         lastWorktreeScan = .distantFuture      // 毎秒の読み直しで消されないように
     }
 
+    // MARK: レビューと出荷
+
+    /// 差分に付けるコメント1件。`line` は新しい側の行番号（削除行だけは旧い側）
+    struct ReviewComment: Identifiable, Equatable {
+        let id = UUID()
+        let file: String
+        let line: Int?
+        let code: String
+        var text: String
+    }
+
+    /// セッションが居るワークスペース（最も長い前方一致）。一覧をまだ読んでいなければ nil
+    func workspacePath(of session: String) -> String? {
+        guard let cwd = cwd(of: session) else { return nil }
+        return Self.owner(of: cwd, among: worktrees.values.flatMap { $0.map(\.path) })
+    }
+
+    /// 差分の基準。AT22 が作ったワークスペースは作った時の SHA（そこからの全部）、
+    /// それ以外は HEAD（まだコミットしていない分だけ）
+    func reviewBase(of path: String) -> String { workspaceMeta[path]?.baseSHA ?? "HEAD" }
+
+    func review(_ path: String) async -> Result<[Worktree.DiffFile], Worktree.Failure> {
+        let base = reviewBase(of: path)
+        return await Task.detached {
+            Result { try Worktree.review(path, base: base) }.mapError { ($0 as? Worktree.Failure) ?? .init(message: "\($0)") }
+        }.value
+    }
+
+    /// 行コメントをまとめて1通にする。どのファイルの何行目の、どのコードについてかを必ず添える
+    nonisolated static func reviewMessage(_ comments: [ReviewComment]) -> String {
+        let items = comments.enumerated().map { index, comment in
+            let place = comment.line.map { "\(comment.file):\($0)" } ?? comment.file
+            let code = comment.code.isEmpty ? "" : "\n   > \(comment.code.trimmingCharacters(in: .whitespaces))"
+            return "\(index + 1). \(place)\(code)\n   \(comment.text)"
+        }
+        return "レビューのコメントが \(comments.count) 件あります。直してください。\n\n" + items.joined(separator: "\n\n")
+    }
+
+    /// 出荷の3つ（コミット・push・PR）。**どれも人が押した時だけ**。結果は人に見せる一言で返す
+    func commit(_ path: String, message: String) async -> String {
+        await Task.detached {
+            do { return try Worktree.commitAll(path, message: message) } catch { return "コミットできない: \(error)" }
+        }.value
+    }
+
+    func push(_ path: String) async -> String {
+        guard let branch = worktrees.values.flatMap({ $0 }).first(where: { $0.path == path })?.branch else {
+            return "枝が無い（切り離し）ので push できない"
+        }
+        return await Task.detached {
+            do { return try Worktree.push(path, branch: branch).nilIfEmpty ?? "push した: \(branch)" }
+            catch { return "push できない: \(error)" }
+        }.value
+    }
+
+    /// PR を作る。gh は自分の認証（gh auth）を使う——AT22 は何も預からない
+    func createPullRequest(_ path: String) async -> String {
+        let entry = worktrees.values.flatMap { $0 }.first { $0.path == path }
+        guard let branch = entry?.branch else { return "枝が無い（切り離し）ので PR を作れない" }
+        let baseRef = workspaceMeta[path]?.baseRef
+        return await Task.detached {
+            guard let gh = Launcher.locate(override: nil, command: "gh") else { return "gh が見つからない" }
+            // 基点が枝の名前ならそこへ。HEAD や SHA で作ったものは gh の既定（リポジトリの既定の枝）に任せる
+            var arguments = ["pr", "create", "--head", branch, "--fill"]
+            if let baseRef, baseRef != "HEAD", !baseRef.allSatisfy(\.isHexDigit) { arguments += ["--base", baseRef] }
+            do { return try Worktree.run(gh.executable.path, arguments, in: path, path: gh.path) }
+            catch { return "PR を作れない: \(error)" }
+        }.value
+    }
+
     /// 失敗したまま残っている「作成中」を畳む
     func dismissPending(_ path: String) { pendingWorkspaces[path] = nil }
 

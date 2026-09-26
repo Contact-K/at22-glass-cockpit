@@ -76,20 +76,33 @@ enum Worktree {
     /// git を1回走らせ、stdout を返す。終了コードが 0 でなければ stderr を載せて投げる。
     /// ponytail: stdout を読み切ってから stderr を読む。git の stderr は数行なので詰まらない
     nonisolated static func git(_ arguments: [String], in directory: String) throws -> String {
+        try run("/usr/bin/git", ["-C", directory] + arguments, in: directory)
+    }
+
+    /// コマンドを1回走らせ、stdout を返す（git・gh 共通）。`path` はログインシェルの PATH——
+    /// gh は GUI の最小 PATH では認証の補助コマンドを見つけられない
+    nonisolated static func run(_ executable: String, _ arguments: [String], in directory: String,
+                                path: String? = nil) throws -> String {
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", directory] + arguments
+        task.executableURL = URL(fileURLWithPath: executable)
+        task.arguments = arguments
+        task.currentDirectoryURL = URL(fileURLWithPath: directory)
+        if let path {
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = path
+            task.environment = env
+        }
         let output = Pipe(), errors = Pipe()
         task.standardOutput = output
         task.standardError = errors
         task.standardInput = FileHandle.nullDevice
-        do { try task.run() } catch { throw Failure(message: "git を起こせない: \(error)") }
+        do { try task.run() } catch { throw Failure(message: "\((executable as NSString).lastPathComponent) を起こせない: \(error)") }
         let out = output.fileHandleForReading.readDataToEndOfFile()
         let err = errors.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
         guard task.terminationStatus == 0 else {
             let reason = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw Failure(message: reason.isEmpty ? "git \(arguments.first ?? "") が失敗した" : reason)
+            throw Failure(message: reason.isEmpty ? "\((executable as NSString).lastPathComponent) が失敗した" : reason)
         }
         return String(data: out, encoding: .utf8) ?? ""
     }
@@ -159,6 +172,118 @@ enum Worktree {
         let line = "\n# AT22 の作業場所（git worktree）\n\(directory)/\n"
         do { try (current + line).write(toFile: file, atomically: true, encoding: .utf8) }
         catch { throw Failure(message: ".git/info/exclude に書けない: \(error)") }
+    }
+}
+
+// MARK: - 差分（レビュー）
+
+extension Worktree {
+    struct DiffLine: Equatable, Sendable {
+        enum Kind: Equatable, Sendable { case context, add, remove }
+        let kind: Kind
+        /// 旧・新それぞれの行番号。追加行は旧を、削除行は新を持たない
+        let old: Int?
+        let new: Int?
+        let text: String
+    }
+
+    struct Hunk: Equatable, Sendable {
+        let header: String
+        var lines: [DiffLine]
+    }
+
+    struct DiffFile: Identifiable, Equatable, Sendable {
+        var id: String { path }
+        let path: String
+        var hunks: [Hunk] = []
+        var isNew = false
+        var isDeleted = false
+        var isBinary = false
+        /// 追跡外（まだ git に入っていない）新規ファイル
+        var untracked = false
+        var added: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .add }.count } }
+        var removed: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .remove }.count } }
+    }
+
+    /// `git diff` の unified 形式を読む。**行番号を旧・新の両方で持つ**——コメントを付ける行は
+    /// 新しい側の番号でエージェントに伝える（削除行だけは旧い側）
+    nonisolated static func parseDiff(_ text: String) -> [DiffFile] {
+        var files: [DiffFile] = []
+        var old = 0, new = 0
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            if line.hasPrefix("diff --git ") {
+                // "diff --git a/x b/x" の後ろ半分。空白を含む名前でも b/ 以降を取る
+                let path = line.range(of: " b/").map { String(line[$0.upperBound...]) } ?? line
+                files.append(DiffFile(path: path))
+                continue
+            }
+            guard !files.isEmpty else { continue }
+            let index = files.count - 1
+            if line.hasPrefix("new file mode") { files[index].isNew = true; continue }
+            if line.hasPrefix("deleted file mode") { files[index].isDeleted = true; continue }
+            if line.hasPrefix("Binary files") { files[index].isBinary = true; continue }
+            if line.hasPrefix("@@") {
+                // @@ -a,b +c,d @@ 続き
+                let parts = line.split(separator: " ")
+                old = parts.count > 1 ? abs(Int(parts[1].split(separator: ",")[0]) ?? 0) : 0
+                new = parts.count > 2 ? Int(parts[2].dropFirst().split(separator: ",")[0]) ?? 0 : 0
+                files[index].hunks.append(Hunk(header: line, lines: []))
+                continue
+            }
+            guard !files[index].hunks.isEmpty else { continue }     // --- / +++ などの見出し
+            let hunk = files[index].hunks.count - 1
+            switch line.first {
+            case "+":
+                files[index].hunks[hunk].lines.append(DiffLine(kind: .add, old: nil, new: new, text: String(line.dropFirst())))
+                new += 1
+            case "-":
+                files[index].hunks[hunk].lines.append(DiffLine(kind: .remove, old: old, new: nil, text: String(line.dropFirst())))
+                old += 1
+            case " ":
+                files[index].hunks[hunk].lines.append(DiffLine(kind: .context, old: old, new: new, text: String(line.dropFirst())))
+                old += 1
+                new += 1
+            default:
+                break       // "\ No newline at end of file" など
+            }
+        }
+        return files
+    }
+
+    /// 追跡外のファイルを「全部追加」の差分にする。**インデックスには触らない**（`git add -N` はしない）。
+    /// ponytail: 400行で切る。巨大な生成物で画面が埋まらないように
+    nonisolated static func untrackedDiff(_ path: String, root: String) -> DiffFile {
+        var file = DiffFile(path: path, isNew: true, untracked: true)
+        let full = (root as NSString).appendingPathComponent(path)
+        guard let data = FileManager.default.contents(atPath: full) else { return file }
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
+            file.isBinary = true
+            return file
+        }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).prefix(400)
+        file.hunks = [Hunk(header: "@@ 追跡外の新規ファイル @@", lines: lines.enumerated().map {
+            DiffLine(kind: .add, old: nil, new: $0.offset + 1, text: String($0.element))
+        })]
+        return file
+    }
+
+    /// 基点からの差分（コミット済み＋作業中）と追跡外の新規ファイル
+    nonisolated static func review(_ path: String, base: String) throws -> [DiffFile] {
+        let tracked = parseDiff(try git(["diff", "--no-color", "--no-ext-diff", base], in: path))
+        let untracked = try git(["ls-files", "--others", "--exclude-standard"], in: path)
+            .split(separator: "\n").map { untrackedDiff(String($0), root: path) }
+        return tracked + untracked
+    }
+
+    /// 全部をコミットする。**押した時だけ**呼ぶ
+    nonisolated static func commitAll(_ path: String, message: String) throws -> String {
+        _ = try git(["add", "-A"], in: path)
+        return try git(["commit", "-m", message], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func push(_ path: String, branch: String) throws -> String {
+        try git(["push", "-u", "origin", branch], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

@@ -14,7 +14,9 @@ struct AT22App: App {
         // 半透明の二重掛けで線が消える・暗い地の上で沈む——この筐体でいちばん多い壊れ方は
         // どれも「動かしてみないと分からない」ものだった。目視の前に1枚出せると差分が追える
         if let path = Self.shotPath() {
-            if CommandLine.arguments.contains("--workspaces") {
+            if CommandLine.arguments.contains("--review") {
+                Snapshot.writeReview(to: path, size: Self.shotSize())
+            } else if CommandLine.arguments.contains("--workspaces") {
                 Snapshot.writeWorkspaces(to: path, height: Self.shotSize().height,
                                          jump: CommandLine.arguments.contains("--jump"))
             } else if CommandLine.arguments.contains("--board") {

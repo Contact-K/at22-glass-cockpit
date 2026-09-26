@@ -40,6 +40,44 @@ enum Snapshot {
         emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height))")
     }
 
+    /// レビューの画面を焼く。`AT22 --shot <path> W H --review`。差分は実機の git を叩かず、決まった見本を使う
+    @MainActor
+    static func writeReview(to path: String, size: CGSize) {
+        let diff = """
+        diff --git a/Sources/App/Login.swift b/Sources/App/Login.swift
+        --- a/Sources/App/Login.swift
+        +++ b/Sources/App/Login.swift
+        @@ -12,6 +12,8 @@ struct LoginView: View {
+             @State private var email = ""
+        -    @State private var password = ""
+        +    @State private var password = ""
+        +    @State private var failed = false
+             var body: some View {
+                 Form {
+        +            if failed { Text("メールかパスワードが違う") }
+                     TextField("メール", text: $email)
+        diff --git a/Sources/App/Session.swift b/Sources/App/Session.swift
+        new file mode 100644
+        --- /dev/null
+        +++ b/Sources/App/Session.swift
+        @@ -0,0 +1,3 @@
+        +struct Session {
+        +    let token: String
+        +}
+        """
+        var files = Worktree.parseDiff(diff)
+        files.append(Worktree.DiffFile(path: "notes/todo.md", hunks: [Worktree.Hunk(header: "@@ 追跡外の新規ファイル @@",
+            lines: [Worktree.DiffLine(kind: .add, old: nil, new: 1, text: "- ログインの失敗表示")])], isNew: true, untracked: true))
+        let comment = Cockpit.ReviewComment(file: "Sources/App/Login.swift", line: 14, code: "    @State private var failed = false",
+                                            text: "failed ではなく errorMessage: String? にして、理由を出す")
+        let renderer = ImageRenderer(content:
+            ReviewView(cockpit: Cockpit(), preloaded: files, preloadedComments: [comment], scrolls: false)
+                .frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, .dark))
+        renderer.scale = 2
+        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) レビュー")
+    }
+
     /// ワークスペースの木を焼く。`AT22 --shot <path> --workspaces`。
     /// 状態の印（あなた待ち・作業中・失敗・待機）・作成中・作成失敗・Grok の行を1枚に並べる
     @MainActor

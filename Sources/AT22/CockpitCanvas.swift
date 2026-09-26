@@ -52,6 +52,8 @@ struct CockpitView: View {
     @AppStorage("showWorkspaces") private var showWorkspaces = true
     /// ⌘J の移動パレット
     @State private var jumping = false
+    /// レビューの画面（d）。盤面の代わりに出す
+    @State private var reviewing = false
     /// 右側にタスクパネルを表示するか（既定OFF）
     @AppStorage("showTasks") private var showTasks = false
     /// 左側の会話サイドバーの幅（既定 400、範囲 300〜640）
@@ -109,7 +111,7 @@ struct CockpitView: View {
         .focusable()
         .focusEffectDisabled()
         .modifier(CockpitKeys(showConversation: $showConversation, showTasks: $showTasks,
-                              mode: $mode, locked: memoryDirty))
+                              mode: $mode, reviewing: $reviewing, locked: memoryDirty))
         // **`.toolbar` は付けない。** `.windowStyle(.hiddenTitleBar)` を指定しても、
         // ツールバーがあると macOS はタイトルバー帯を出し続ける——自作の `TitleBar` と二重になり、
         // 信号機がそちらへ行くので `TitleBar.trafficLightInset` の 78pt が意味のない空白になる。
@@ -207,9 +209,9 @@ struct CockpitView: View {
                 .frame(width: 6)
             }
             VStack(spacing: 0) {
-                TabBar(cockpit: cockpit, mode: $mode, locked: memoryDirty)
+                TabBar(cockpit: cockpit, mode: $mode, reviewing: $reviewing, locked: memoryDirty)
                 ProgressStripBar(cockpit: cockpit) { showTasks.toggle() }
-                canvas
+                if reviewing { ReviewView(cockpit: cockpit) } else { canvas }
             }
             // タブ行と進行表の帯は地を持たない（沈めた面と罫線だけで出す）ので、
             // 列そのものに地を敷く。敷かないと窓の素の白が透ける

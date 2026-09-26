@@ -82,6 +82,7 @@ struct CockpitKeys: ViewModifier {
     @Binding var showConversation: Bool
     @Binding var showTasks: Bool
     @Binding var mode: CockpitMode
+    @Binding var reviewing: Bool
     /// 壁打ちに未保存があると飛ばさない
     let locked: Bool
 
@@ -89,9 +90,10 @@ struct CockpitKeys: ViewModifier {
         content.onKeyPress(phases: .down) { press in
             guard !locked, press.modifiers.isEmpty else { return .ignored }
             switch press.key {
-            case "a": mode = .work;      return .handled
-            case "b": mode = .structure; return .handled
-            case "c": mode = .memory;    return .handled
+            case "a": mode = .work;      reviewing = false; return .handled
+            case "b": mode = .structure; reviewing = false; return .handled
+            case "c": mode = .memory;    reviewing = false; return .handled
+            case "d": reviewing = true;  return .handled
             default:  return .ignored
             }
         }
@@ -431,6 +433,8 @@ private struct KeyFace: ViewModifier {
 struct TabBar: View {
     let cockpit: Cockpit
     @Binding var mode: CockpitMode
+    /// レビュー。見る軸（モード）とは別の画面なので、モードとは別に持つ
+    @Binding var reviewing: Bool
     /// 壁打ちに未保存があるとタブを止める（既存の規律をそのまま持ってくる）
     let locked: Bool
 
@@ -441,16 +445,43 @@ struct TabBar: View {
             tab(.work, key: "a", slug: "sagyou", stopped: cockpit.stoppedCount)
             tab(.structure, key: "b", slug: "kouzou")
             tab(.memory, key: "c", slug: "kabeuchi")
+            reviewTab
             Spacer(minLength: Palette.Space.s3)
         }
         .padding(.horizontal, Palette.Space.s4)
         .padding(.top, Palette.Space.small)
     }
 
+    /// `d レビュー`。モードの3つと同じ形に並べる
+    private var reviewTab: some View {
+        Button { if !locked { reviewing = true } } label: {
+            VStack(spacing: Palette.Space.s2) {
+                HStack(alignment: .firstTextBaseline, spacing: Palette.Space.s2) {
+                    Text("d")
+                        .font(.system(size: Palette.FontSize.readout, design: .monospaced))
+                        .foregroundStyle(reviewing ? Palette.accentText : Palette.inkTertiary)
+                    Text("レビュー")
+                        .font(.system(size: Palette.FontSize.prose, design: .monospaced))
+                        .tracking(Palette.Tracking.wider)
+                        .foregroundStyle(reviewing ? Palette.ink : Palette.inkTertiary)
+                    Text("rebyuu")
+                        .font(.system(size: Palette.FontSize.label, design: .monospaced))
+                        .foregroundStyle(Palette.inkTertiary)
+                }
+                Rectangle()
+                    .fill(reviewing ? Palette.rule : Color.clear)
+                    .frame(height: Palette.Stroke.rule)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.plain)
+        .opacity(locked && !reviewing ? 0.4 : 1)
+    }
+
     private func tab(_ target: CockpitMode, key: String, slug: String,
                      stopped: Int = 0) -> some View {
-        let active = mode == target
-        return Button { if !locked { mode = target } } label: {
+        let active = mode == target && !reviewing
+        return Button { if !locked { mode = target; reviewing = false } } label: {
             VStack(spacing: Palette.Space.s2) {
                 HStack(alignment: .firstTextBaseline, spacing: Palette.Space.s2) {
                     Text(key)

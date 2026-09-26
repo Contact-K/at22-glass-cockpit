@@ -96,6 +96,7 @@ struct P0SelfCheck {
         worktreesAreSafe()
         workspaceTreePlacesAgents()
         unreadAndTerminal()
+        reviewReadsDiff()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -219,6 +220,76 @@ struct P0SelfCheck {
         let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
         let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
         assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
+    }
+
+    /// レビュー。差分の行番号、追跡外の新規、コメントを1通にまとめる形、コミットと push まで
+    static func reviewReadsDiff() {
+        let sample = """
+        diff --git a/src/a.swift b/src/a.swift
+        index 1..2 100644
+        --- a/src/a.swift
+        +++ b/src/a.swift
+        @@ -10,3 +10,4 @@ func f() {
+         let x = 1
+        -let y = 2
+        +let y = 3
+        +let z = 4
+         return x
+        diff --git a/new.md b/new.md
+        new file mode 100644
+        --- /dev/null
+        +++ b/new.md
+        @@ -0,0 +1 @@
+        +hello
+        \\ No newline at end of file
+        """
+        let files = Worktree.parseDiff(sample)
+        assert(files.map(\.path) == ["src/a.swift", "new.md"], "\(files.map(\.path))")
+        let lines = files[0].hunks[0].lines
+        assert(lines.map(\.kind) == [.context, .remove, .add, .add, .context])
+        assert(lines[0].old == 10 && lines[0].new == 10 && lines[1].old == 11 && lines[1].new == nil
+               && lines[2].new == 11 && lines[3].new == 12 && lines[4].old == 12 && lines[4].new == 13,
+               "行番号がずれた: \(lines.map { ($0.old, $0.new) })")
+        assert(files[0].added == 2 && files[0].removed == 1 && files[1].isNew && files[1].added == 1)
+
+        let message = Cockpit.reviewMessage([
+            Cockpit.ReviewComment(file: "src/a.swift", line: 12, code: "let z = 4", text: "z は要らない"),
+            Cockpit.ReviewComment(file: "new.md", line: nil, code: "", text: "中身が足りない"),
+        ])
+        assert(message.contains("2 件") && message.contains("1. src/a.swift:12\n   > let z = 4\n   z は要らない")
+               && message.contains("2. new.md\n   中身が足りない"), message)
+
+        // 本物の git。基点からの差分（コミット済み＋作業中）と追跡外、コミット、push
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-review-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        let repo = base + "/repo", remote = base + "/remote.git"
+        try! manager.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        let id = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: repo)
+        try! "one\ntwo\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "."], in: repo)
+        _ = try! Worktree.git(id + ["commit", "-qm", "init"], in: repo)
+        _ = try! Worktree.git(["init", "-q", "--bare", remote], in: base)
+        _ = try! Worktree.git(["remote", "add", "origin", remote], in: repo)
+        let made = try! Worktree.add(repo: repo, name: "fix", base: "main")
+        try! "one\nTWO\n".write(toFile: made.path + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(id + ["commit", "-qam", "wip"], in: made.path)
+        try! "one\nTWO\nthree\n".write(toFile: made.path + "/a.txt", atomically: true, encoding: .utf8)
+        try! "fresh\n".write(toFile: made.path + "/fresh.txt", atomically: true, encoding: .utf8)
+        let review = try! Worktree.review(made.path, base: made.baseSHA)
+        let a = review.first { $0.path == "a.txt" }, fresh = review.first { $0.path == "fresh.txt" }
+        assert(a?.added == 2 && a?.removed == 1, "基点からのコミット済み＋作業中が揃っていない: \(String(describing: a))")
+        assert(fresh?.untracked == true && fresh?.added == 2, "追跡外の新規が出ない: \(String(describing: fresh))")
+        assert((try? Worktree.git(["diff", "--cached", "--name-only"], in: made.path))?.isEmpty == true,
+               "レビューでインデックスに触った")
+        _ = try! Worktree.run("/usr/bin/git", id + ["-C", made.path, "add", "-A"], in: made.path)
+        _ = try! Worktree.git(id + ["commit", "-qm", "done"], in: made.path)
+        assert(try! Worktree.review(made.path, base: made.baseSHA).first { $0.path == "fresh.txt" }?.isNew == true,
+               "コミットした新規ファイルが新規として出ない")
+        _ = try! Worktree.push(made.path, branch: made.branch)
+        assert((try? Worktree.git(["branch", "--list", made.branch], in: remote))?.contains("fix") == true,
+               "push した枝がリモートに無い")
     }
 
     /// 未読（見ていない間に起きたこと）と、Terminal で続きを開くコマンドの引用
