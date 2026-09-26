@@ -50,6 +50,8 @@ struct CockpitView: View {
     @AppStorage("showConversation") private var showConversation = true
     /// プロジェクト → ワークスペース → エージェントの木（Orca のサイドバー）
     @AppStorage("showWorkspaces") private var showWorkspaces = true
+    /// ⌘J の移動パレット
+    @State private var jumping = false
     /// 右側にタスクパネルを表示するか（既定OFF）
     @AppStorage("showTasks") private var showTasks = false
     /// 左側の会話サイドバーの幅（既定 400、範囲 300〜640）
@@ -80,6 +82,25 @@ struct CockpitView: View {
 
     var body: some View {
         chassis
+        // ⌘J。どのプロジェクトのどのエージェントへも飛ぶ（人の番が先頭）
+        .overlay(alignment: .top) {
+            if jumping {
+                JumpPalette(cockpit: cockpit,
+                            onPick: { row in Task { await cockpit.open(row); showConversation = true } },
+                            onClose: { jumping = false })
+                    .padding(.top, 90)
+            }
+        }
+        .background {
+            Button("") { jumping.toggle() }
+                .keyboardShortcut("j", modifiers: .command)
+                .opacity(0)
+        }
+        // Dock のバッジ＝人の番で止まっている／見ていない間に何か起きたセッションの数
+        .onChange(of: cockpit.attentionCount, initial: true) { _, count in
+            NSApp.dockTile.badgeLabel = count == 0 ? nil : "\(count)"
+        }
+        .task { cockpit.onAttention = { _, title, body in Notifier.post(title: title, body: body) } }
         // **`onKeyPress` はフォーカスを持つ View にしか来ない。** これが無いと
         // `a` / `b` / `c` も Esc も一生発火せず、`keyboardShortcut` 系（⇧⌘M / ⇧⌘T / ⇧⌘G）
         // だけが効く——「効く鍵と効かない鍵が混ざる」状態になる。

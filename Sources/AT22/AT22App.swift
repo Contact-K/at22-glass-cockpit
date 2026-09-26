@@ -15,7 +15,8 @@ struct AT22App: App {
         // どれも「動かしてみないと分からない」ものだった。目視の前に1枚出せると差分が追える
         if let path = Self.shotPath() {
             if CommandLine.arguments.contains("--workspaces") {
-                Snapshot.writeWorkspaces(to: path, height: Self.shotSize().height)
+                Snapshot.writeWorkspaces(to: path, height: Self.shotSize().height,
+                                         jump: CommandLine.arguments.contains("--jump"))
             } else if CommandLine.arguments.contains("--board") {
                 Snapshot.writeBoard(to: path, size: Self.shotSize(), mode: Self.shotMode(),
                                     transcript: Self.shotTranscript(),

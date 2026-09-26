@@ -95,6 +95,7 @@ struct P0SelfCheck {
         acpSpeaksJSONRPC()
         worktreesAreSafe()
         workspaceTreePlacesAgents()
+        unreadAndTerminal()
         launchLevelTargetsNewProject()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
@@ -218,6 +219,53 @@ struct P0SelfCheck {
         let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
         let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
         assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
+    }
+
+    /// 未読（見ていない間に起きたこと）と、Terminal で続きを開くコマンドの引用
+    static func unreadAndTerminal() {
+        let c = Cockpit()
+        var told: [String] = []
+        c.onAttention = { session, _, body in told.append("\(session):\(body)") }
+        c.selectedSession = "A"
+        c.handle(.turnEnded(tokens: nil), session: "A")
+        c.handle(.turnEnded(tokens: nil), session: "B")
+        c.handle(.approval(Approval(id: "r", session: "C", tool: "Bash", detail: "ls", input: "{}")), session: "C")
+        assert(c.unread == ["B", "C"], "見ているセッションまで未読にした／見ていない方を拾わない: \(c.unread)")
+        assert(told.count == 2 && told[0].hasPrefix("B:"), "\(told)")
+        assert(c.attentionCount == 2)
+        c.selectedSession = "B"
+        assert(!c.unread.contains("B"), "選んでも既読にならない")
+
+        // パスはシェル用に引用する。本物の sh に通して元に戻ること
+        func roundTrip(_ text: String) -> String {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = ["-c", "printf %s " + Cockpit.shellQuote(text)]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            try! task.run()
+            task.waitUntilExit()
+            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        }
+        for tricky in ["/tmp/it's here", #"a "b" $HOME `x` \n"#, "日本語 フォルダ"] {
+            assert(roundTrip(tricky) == tricky, "引用が崩れた: \(tricky) → \(roundTrip(tricky))")
+        }
+        // AppleScript の文字列も本物の osascript に通して元に戻ること
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        let odd = #"cd '/tmp/a "b"' && echo \ok"#
+        script.arguments = ["-e", "return " + Cockpit.appleScriptString(odd)]
+        let out = Pipe()
+        script.standardOutput = out
+        try! script.run()
+        script.waitUntilExit()
+        let back = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .newlines)
+        assert(back == odd, "AppleScript の引用が崩れた: \(back ?? "")")
+
+        c.liveSessions = [LiveSession(id: "S1", name: "s", cwd: "/tmp/it's here", busy: false)]
+        assert(c.terminalCommand(for: "S1") == #"cd '/tmp/it'\''s here' && 'claude' --resume 'S1'"#,
+               c.terminalCommand(for: "S1") ?? "nil")
     }
 
     /// 木の組み立て。セッションは最も深いワークスペースに、人の番が先に並ぶ

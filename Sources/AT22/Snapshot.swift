@@ -43,7 +43,7 @@ enum Snapshot {
     /// ワークスペースの木を焼く。`AT22 --shot <path> --workspaces`。
     /// 状態の印（あなた待ち・作業中・失敗・待機）・作成中・作成失敗・Grok の行を1枚に並べる
     @MainActor
-    static func writeWorkspaces(to path: String, height: CGFloat) {
+    static func writeWorkspaces(to path: String, height: CGFloat, jump: Bool = false) {
         let cockpit = Cockpit()
         let repo = "/Users/you/AT22_Glass_Cockpit"
         let wt = repo + "/.claude/worktrees/"
@@ -67,6 +67,17 @@ enum Snapshot {
             LiveSession(id: "s-grok", name: "grok", cwd: wt + "api-rate-limit-with-a-very-long-name", busy: true),
         ]
         cockpit.selectedSession = "s-work"
+        // 見ていない間に終わった（未読＝太字）
+        cockpit.handle(.turnEnded(tokens: nil), session: "s-main")
+        if jump {
+            let renderer = ImageRenderer(content:
+                JumpPalette(cockpit: cockpit, onPick: { _ in }, onClose: {})
+                    .padding(24)
+                    .background(Palette.field)
+                    .environment(\.colorScheme, .dark))
+            renderer.scale = 2
+            return emit(renderer, to: path, label: "⌘J")
+        }
         let renderer = ImageRenderer(content:
             WorkspaceSidebar(cockpit: cockpit, onOpen: {}, scrolls: false)
                 .frame(height: height)

@@ -284,7 +284,14 @@ final class Cockpit {
     /// ここより前の記録は畳み込みで無視する。実装の区切りで押す「クリア」の実体
     private(set) var clearedAt: Date?
 
-    var selectedSession: String?
+    var selectedSession: String? {
+        // 見たものは既読。未読は「選んでいない間に何か起きた」印なので、選んだ瞬間に消す
+        didSet { if let selectedSession { unread.remove(selectedSession) } }
+    }
+    /// 選んでいない間にターンが終わった・失敗した・承認を求めてきたセッション（サイドバーの太字）
+    private(set) var unread: Set<String> = []
+    /// 人の注意を引く出来事。画面の外（通知）へ渡す口。Cockpit は AppKit を知らない
+    var onAttention: ((_ session: String, _ title: String, _ body: String) -> Void)?
     var liveSessions: [LiveSession] = []
     private(set) var activeSessions: Set<String> = []
     private(set) var recentSessions: [RecentSession] = []
@@ -1070,12 +1077,14 @@ final class Cockpit {
 
         case let .approval(approval):
             approvals.append(approval)
+            noteAttention(session, "承認を待っている — \(approval.detail)")
 
         case let .turnEnded(tokens):
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             streaming[session] = nil
             stopping.remove(session)
             openTurns.remove(session)
+            noteAttention(session, "ターンが終わった")
             if let tokens {
                 Snowman.observe(&readings[session, default: Snowman.Reading()], tokens: tokens)
             }
@@ -1090,6 +1099,7 @@ final class Cockpit {
             // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
             if stopping.remove(session) != nil, reason == "error_during_execution" { break }
             failedTurns.insert(session)
+            noteAttention(session, "失敗した — \(reason)")
             appendLaunchError("失敗: \(reason)")
 
         case let .interruptAcknowledged(requestID, stillQueued, cancelled):
@@ -1126,6 +1136,70 @@ final class Cockpit {
 
     /// 検査・画像焼きから承認の依頼を直接流し込む口
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
+
+    /// 人の注意を引く出来事。見ていないセッションなら未読にし、画面の外（通知）にも渡す
+    private func noteAttention(_ session: String, _ what: String) {
+        guard session != selectedSession else { return }
+        unread.insert(session)
+        onAttention?(session, title(for: session) ?? String(session.prefix(8)), what)
+    }
+
+    /// 人の番で止まっている・見ていない間に何か起きたセッションの数（Dock のバッジ）
+    var attentionCount: Int {
+        Set(approvals.map(\.session))
+            .union(liveSessions.filter { $0.waiting != nil }.map(\.id))
+            .union(unread).count
+    }
+
+    /// 木や ⌘J の行を開く。過去のセッションは読み込み、Codex / Grok の台帳は続きに繋ぐ
+    func open(_ row: AgentRow) async {
+        selectedSession = row.id
+        if let recent = row.recent { await loadSession(recent) }
+        else if let record = row.record { resumeRunRecord(record) }
+    }
+
+    /// Terminal で続きを開くコマンド。**パスはシェル用に引用する**（空白や ' を含むフォルダでも壊れない）
+    func terminalCommand(for session: String) -> String? {
+        guard let cwd = cwd(of: session) else { return nil }
+        let backend = backend(of: session)
+        let exe = Self.shellQuote(found[backend]?.executable.path ?? backend.command)
+        let remote = runRecords.first { $0.id == session }?.threadID
+        let resume: String
+        switch backend {
+        case .claude: resume = "\(exe) --resume \(Self.shellQuote(session))"
+        case .codex:
+            guard let remote else { return nil }
+            resume = "\(exe) resume \(Self.shellQuote(remote))"
+        case .grok:
+            guard let remote else { return nil }
+            resume = "\(exe) -r \(Self.shellQuote(remote))"
+        }
+        return "cd \(Self.shellQuote(cwd)) && \(resume)"
+    }
+
+    nonisolated static func shellQuote(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    nonisolated static func appleScriptString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// Terminal.app で続きを開く（生の TUI が要る時の逃げ道）。**先に AT22 の接続を閉じる**——
+    /// 同じセッションに2つのプロセスが書くと、transcript が混ざる。初回は macOS が操作の許可を訊く
+    func openInTerminal(_ session: String) -> String? {
+        guard let command = terminalCommand(for: session) else { return "このセッションの続きを開く手掛かりが無い" }
+        if let run = runs[session] {
+            run.connection.close()
+            forget(session)
+        }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", "tell application \"Terminal\"", "-e", "activate",
+                          "-e", "do script \(Self.appleScriptString(command))", "-e", "end tell"]
+        do { try task.run() } catch { return "Terminal を開けない: \(error)" }
+        return nil
+    }
 
     /// ターンを開く。前のターンの「失敗」の印はここで消す
     private func beginTurn(_ session: String) {
@@ -1486,6 +1560,7 @@ final class Cockpit {
         let recent: RecentSession?
         /// AT22 の台帳にある Codex / Grok のセッション。押したら続きに繋ぐ
         let record: RunRecord?
+        var unread = false
     }
 
     struct WorkspaceNode: Identifiable {
@@ -1628,7 +1703,8 @@ final class Cockpit {
             rows[workspace, default: []].append(AgentRow(
                 id: session, title: title(for: session) ?? String(session.prefix(8)),
                 backend: backend(of: session), status: status(of: session), recent: nil,
-                record: runs[session] == nil && !liveSessions.contains { $0.id == session } ? record : nil))
+                record: runs[session] == nil && !liveSessions.contains { $0.id == session } ? record : nil,
+                unread: unread.contains(session)))
             placed.insert(session)
         }
         // 過去のセッションは cwd を持たないので、プロジェクトのフォルダ名（slug）で突き合わせる。
@@ -2483,6 +2559,12 @@ final class Cockpit {
                                      busy: (obj["status"] as? String) == "busy",
                                      waiting: Self.waitingLabel(status: obj["status"] as? String,
                                                                 waitingFor: obj["waitingFor"] as? String)))
+        }
+        // 端末で動いているセッションの区切り。AT22 の接続が無いので、状態の変わり目で拾う
+        for session in found where runs[session.id] == nil {
+            let before = liveSessions.first { $0.id == session.id }
+            if session.waiting != nil, before?.waiting == nil { noteAttention(session.id, "承認を待っている") }
+            else if before?.busy == true, !session.busy { noteAttention(session.id, "ターンが終わった") }
         }
         activeSessions = Set(found.map(\.id))
         let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions,

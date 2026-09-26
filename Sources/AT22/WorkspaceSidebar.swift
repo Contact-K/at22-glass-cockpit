@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 // MARK: - ワークスペースの木
 
@@ -184,8 +185,8 @@ struct WorkspaceSidebar: View {
             HStack(spacing: 6) {
                 StatusGlyph(status: row.status)
                 Text(row.title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(row.status == .idle ? CockpitCanvas.dim : Palette.ink)
+                    .font(.system(size: 11, weight: row.unread ? .bold : .regular))
+                    .foregroundStyle(row.status == .idle && !row.unread ? CockpitCanvas.dim : Palette.ink)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if row.backend != .claude {
@@ -201,15 +202,17 @@ struct WorkspaceSidebar: View {
             .background(cockpit.selectedSession == row.id ? CockpitCanvas.agentOn.opacity(0.12) : .clear)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            // 生の TUI が要る時の逃げ道。AT22 の接続は先に閉じる（2つのプロセスで同じ会話を書かない）
+            Button("Terminal で開く") { problem = cockpit.openInTerminal(row.id) }
+        }
     }
 
     // MARK: 操作
 
     private func open(_ row: Cockpit.AgentRow) {
         Task {
-            cockpit.selectedSession = row.id
-            if let recent = row.recent { await cockpit.loadSession(recent) }
-            else if let record = row.record { cockpit.resumeRunRecord(record) }
+            await cockpit.open(row)
             onOpen()
         }
     }
@@ -381,5 +384,118 @@ struct DeleteWorkspaceSheet: View {
         .padding(18)
         .frame(width: 440)
         .task { dirty = await cockpit.dirtyFiles(of: workspace.id) }
+    }
+}
+
+// MARK: - ⌘J
+
+/// どのプロジェクトのどのエージェントへも飛ぶ。**人の番（承認待ち）→ 作業中 → 失敗 → 完了 → 待機**の順に並べ、
+/// 上の6本は ⌘1〜⌘6、Return は先頭。打った文字でエージェント名・ワークスペース・プロジェクトを絞る
+struct JumpPalette: View {
+    let cockpit: Cockpit
+    let onPick: (Cockpit.AgentRow) -> Void
+    let onClose: () -> Void
+
+    @State private var query = ""
+    @FocusState private var focused: Bool
+
+    private struct Hit: Identifiable {
+        let row: Cockpit.AgentRow
+        let place: String
+        var id: String { row.id }
+    }
+
+    private var hits: [Hit] {
+        let all = cockpit.workspaceTree().flatMap { project in
+            project.workspaces.flatMap { workspace in
+                workspace.agents.map { Hit(row: $0, place: project.name + " / " + workspace.name) }
+            }
+        }
+        let words = query.lowercased().split(separator: " ")
+        let matched = words.isEmpty ? all : all.filter { hit in
+            let text = (hit.row.title + " " + hit.place).lowercased()
+            return words.allSatisfy { text.contains($0) }
+        }
+        // 未読は同じ状態の中で先に
+        return matched.sorted { ($0.row.status, $0.row.unread ? 0 : 1) < ($1.row.status, $1.row.unread ? 0 : 1) }
+            .prefix(12).map { $0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("エージェント・ワークスペースを探す", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .padding(12)
+                .focused($focused)
+                .onSubmit { if let first = hits.first { pick(first.row) } }
+            Divider()
+            if hits.isEmpty {
+                Text(cockpit.workspaceTree().isEmpty ? "リポジトリを登録すると、ここに並ぶ" : "当てはまるものが無い")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(CockpitCanvas.dim)
+                    .padding(12)
+            }
+            ForEach(Array(hits.enumerated()), id: \.element.id) { index, hit in
+                Button { pick(hit.row) } label: {
+                    HStack(spacing: 8) {
+                        StatusGlyph(status: hit.row.status)
+                        Text(hit.row.title)
+                            .font(.system(size: 12, weight: hit.row.unread ? .bold : .regular))
+                            .lineLimit(1)
+                        Text(hit.place)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(CockpitCanvas.dim)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        if index < 6 {
+                            Text("⌘\(index + 1)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(CockpitCanvas.dim)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(index < 6 ? KeyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command) : nil)
+            }
+        }
+        .frame(width: 520)
+        .background(CockpitCanvas.background)
+        .clipShape(RoundedRectangle(cornerRadius: Palette.Radius.sm))
+        .overlay(RoundedRectangle(cornerRadius: Palette.Radius.sm).stroke(Palette.border))
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+        .onAppear { focused = true }
+        .onExitCommand { onClose() }
+    }
+
+    private func pick(_ row: Cockpit.AgentRow) {
+        onPick(row)
+        onClose()
+    }
+}
+
+// MARK: - 通知
+
+/// 見ていない間にターンが終わった・承認を求めてきた時の通知。**アプリが前に出ている間は出さない**
+/// （サイドバーの太字と Dock のバッジで足りる）
+enum Notifier {
+    /// 通知は bundle ID のある .app（package.sh で組んだもの）の時だけ。
+    /// `swift run` の素の実行ファイルで通知の口を叩くと落ちる
+    @MainActor
+    static func post(title: String, body: String) {
+        guard Bundle.main.bundleIdentifier != nil, !NSApp.isActive else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
     }
 }
