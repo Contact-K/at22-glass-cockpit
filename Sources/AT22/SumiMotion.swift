@@ -39,7 +39,7 @@ struct DotWipeLayer: View {
         .allowsHitTesting(wipe != nil)
     }
 
-    static func draw(_ ctx: inout GraphicsContext, size: CGSize, wipe: Wipe, elapsed e: Double) {
+    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, wipe: Wipe, elapsed e: Double) {
         let frame = 1.0 / 24
         let covering = e < Wipe.cover + Wipe.hold
         let p: Double
@@ -277,8 +277,8 @@ struct MenuDots: View {
     /// 開ききったか。持ち主が時刻を見て立てる（ここで判定すると、時計を止める合図が body に届かない）
     let settled: Bool
 
-    static let lineX: CGFloat = 286
-    static let tan18 = CGFloat(tan(18 * Double.pi / 180))
+    nonisolated static let lineX: CGFloat = 286
+    nonisolated static let tan18 = CGFloat(tan(18 * Double.pi / 180))
 
     var body: some View {
         Ticker(fps: 30, paused: settled && closing == nil) { now in
@@ -299,7 +299,7 @@ struct MenuDots: View {
         now.timeIntervalSince(opened) > settleTime
     }
 
-    private func draw(_ ctx: inout GraphicsContext, size: CGSize, now: Date) {
+    nonisolated private func draw(_ ctx: inout GraphicsContext, size: CGSize, now: Date) {
         let g: CGFloat = 24, cos18 = CGFloat(cos(18 * Double.pi / 180))
         let t = (now.timeIntervalSince(closing ?? opened)) * 1000
         var y: CGFloat = 0

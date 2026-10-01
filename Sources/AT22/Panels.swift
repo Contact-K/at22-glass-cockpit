@@ -753,6 +753,8 @@ struct StructureScreen: View {
     let cockpit: Cockpit
     let filter: StructFilter
     let width: CGFloat
+    /// 下帯の上で止める。これが無いと ScrollView が窓の下端まで伸び、最後の行が帯の下に潜る
+    let height: CGFloat
     let onOpen: (String) -> Void
 
     @State private var hovered: String?
@@ -781,7 +783,7 @@ struct StructureScreen: View {
             }
             .padding(.top, 36)
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: width, height: height, alignment: .topLeading)
     }
 
     private var filterNote: String {
@@ -914,7 +916,12 @@ struct SparringScreen: View {
                                onSave: { text, expected, overwrite in
                                    cockpit.saveNote(path: node.id, text: text, expectedText: expected, overwrite: overwrite)
                                },
-                               onDirtyChange: { dirty = $0 },
+                               onDirtyChange: { changed in
+                                   dirty = changed
+                                   // 書き始めたらこのノートに留める。既定の「HANDOFF を含む先頭」に任せたままだと、
+                                   // エージェントが新しいノートを足した瞬間に欄が別のノートへ移り、書きかけが消える
+                                   if changed { editing = node.id }
+                               },
                                height: max(160, height - 230))
                         .id(node.id)
                 }

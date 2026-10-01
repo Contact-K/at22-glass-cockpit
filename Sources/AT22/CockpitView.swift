@@ -45,6 +45,8 @@ struct CockpitView: View {
     /// 答えた門の印。会話の流れに `GATE // W6 → ALLOWED` として混ぜる（画面だけの記録）
     @State private var verdicts: [VerdictLine] = []
     @State private var riskyLevel: Gate.Level?
+    @State private var gateArmedAt = Date.distantPast
+    @State private var replySession: String?
     @State private var windowVisible = true
 
     @Environment(\.openSettings) private var openSettings
@@ -76,7 +78,7 @@ struct CockpitView: View {
         // 入力欄に焦点がある間は文字がそちらへ吸われるので、ここへは落ちてこない
         .focusable()
         .focusEffectDisabled()
-        .onKeyPress(phases: .down) { press in handleKey(press) }
+        .onKeyPress(phases: [.down, .repeat]) { press in handleKey(press) }
         .onChange(of: threshold, initial: true) { cockpit.flagReadThreshold = threshold }
         .onChange(of: launcherEnabled) { findCLIs(force: true) }
         .onChange(of: claudePath) { findCLIs(force: true) }
@@ -84,9 +86,14 @@ struct CockpitView: View {
         // 止まっている門が入れ替わったら、答えかけを捨てて新しい門の本文から始める
         .onChange(of: oldestGate?.id, initial: true) {
             gate = GateUI(revised: oldestGate.map { Cockpit.plainLine($0.instruction) } ?? "")
+            // 次の門が出た直後の Enter / 1 は受けない。続けて押すと、見ていない門を許可してしまう
+            gateArmedAt = Date()
         }
-        .onChange(of: lastReplyID) { _, id in
-            guard id != nil, mode == .work, shot == nil else { return }
+        .onChange(of: lastReplyID) { old, id in
+            // セッションを切り替えた・履歴を読んだだけの時は飛ばさない（返答が着いた時だけ）
+            defer { replySession = cockpit.selectedSession }
+            guard old != nil, id != nil, replySession == cockpit.selectedSession,
+                  mode == .work, shot == nil else { return }
             // 返答が着いた。鶴から最後の枠へドットを渡す（v10 の `ask` の後半）
             after(0.06) { fly(from: book.rects["crane"], to: book.rects["c0last"]) }
         }
@@ -137,64 +144,69 @@ struct CockpitView: View {
         let contentW = max(380, w - 780)
 
         ZStack(alignment: .topLeading) {
-            Palette.Light.bg
-            Chassis().fill(Palette.blue, style: FillStyle(eoFill: true))
-            // 右の面。尖りの右側だけを墨流しにする
-            Suminagashi(tank: Ink.tank, paused: !windowVisible || menu?.settled == true || shot != nil)
-                .frame(width: 540, height: max(1, h - 100))
-                .clipShape(InkClip())
-                .offset(x: w - 540, y: 56)
-            Chassis.edge(w: w, h: h).stroke(Palette.white, lineWidth: 3)
-            Chassis.apex(w: w, h: h).stroke(Palette.blue, lineWidth: 3)
+            // 画面の層。メニューが面を覆いきった間・窓が隠れている間は、ここの時計を全部止める
+            ZStack(alignment: .topLeading) {
+                Palette.Light.bg
+                Chassis().fill(Palette.blue, style: FillStyle(eoFill: true))
+                // 右の面。尖りの右側だけを墨流しにする
+                Suminagashi(tank: Ink.tank, paused: !windowVisible || menu?.settled == true || shot != nil)
+                    .frame(width: 540, height: max(1, h - 100))
+                    .clipShape(InkClip())
+                    .offset(x: w - 540, y: 56)
+                Chassis.edge(w: w, h: h).stroke(Palette.white, lineWidth: 3)
+                Chassis.apex(w: w, h: h).stroke(Palette.blue, lineWidth: 3)
 
-            TopBand(cockpit: cockpit, mode: mode, now: now, onGate: { go(.work) },
-                    onNew: { overlay = .newSession })
-                .frame(width: w, height: 56)
+                TopBand(cockpit: cockpit, mode: mode, now: now, onGate: { go(.work) },
+                        onNew: { overlay = .newSession })
+                    .frame(width: w, height: 56)
 
-            Group {
-                switch mode {
-                case .work:
-                    TalkScreen(cockpit: cockpit, headline: Cockpit.headline(rows: actions.rows),
-                               subtitle: subtitle(tasks), showThinking: showThinking,
-                               verdicts: verdicts, gate: $gate, gateFailed: gateFailedFor(oldestGate),
-                               request: oldestGate, gateLabel: Cockpit.gateLabel(chips: snap.chips),
-                               pendingGates: gates.count, trail: trail, ctxAlarm: ctxAlarm,
-                               height: h - 72, width: contentW,
-                               onChoose: { choose($0) },
-                               onRewrite: { issueRewrite() },
-                               onNew: { overlay = .newSession })
-                        .offset(x: 220, y: 72)
-                case .structure:
-                    StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW,
-                                    onOpen: { overlay = .file($0) })
-                        .offset(x: 220, y: 84)
-                case .memory:
-                    SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
-                                   width: contentW, height: h - 84 - 60)
-                        .offset(x: 220, y: 84)
+                Group {
+                    switch mode {
+                    case .work:
+                        TalkScreen(cockpit: cockpit, headline: Cockpit.headline(rows: actions.rows),
+                                   subtitle: subtitle(tasks), showThinking: showThinking,
+                                   verdicts: verdicts, gate: $gate, gateFailed: gateFailedFor(oldestGate),
+                                   request: oldestGate, gateLabel: Cockpit.gateLabel(chips: snap.chips),
+                                   pendingGates: gates.count, trail: trail, ctxAlarm: ctxAlarm,
+                                   height: h - 72, width: contentW, modalOpen: overlay != nil,
+                                   onChoose: { choose($0) },
+                                   onRewrite: { issueRewrite() },
+                                   onNew: { overlay = .newSession })
+                            .offset(x: 220, y: 72)
+                    case .structure:
+                        StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW, height: h - 84 - 60,
+                                        onOpen: { overlay = .file($0) })
+                            .offset(x: 220, y: 84)
+                    case .memory:
+                        SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
+                                       width: contentW, height: h - 84 - 60)
+                            .offset(x: 220, y: 84)
+                    }
                 }
+
+                CraneButton(mode: mode, status: crane, onTap: { openMenu() })
+                    .frame(width: 150, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .padding(.leading, 40)
+                    .padding(.bottom, 64)
+
+                RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
+                            snapshot: snap, tasks: tasks, height: h,
+                            onOpen: { row in
+                                if let path = row.path { overlay = .file(path) }
+                                else if !row.waiting { overlay = .agent(row.id) }
+                                else { go(.work) }
+                            })
+                    .frame(width: 352)
+                    .offset(x: w - 376, y: 76)
+
+                BottomBand(tasks: tasks, actions: actions.rows, busy: busy, width: w,
+                           onTasks: { overlay = overlay == .tasks ? nil : .tasks })
+                    .frame(width: w, height: 44)
+                    .offset(y: h - 44)
+
             }
-
-            CraneButton(mode: mode, status: crane, onTap: { openMenu() })
-                .frame(width: 150, alignment: .leading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .padding(.leading, 40)
-                .padding(.bottom, 64)
-
-            RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
-                        snapshot: snap, tasks: tasks, height: h,
-                        onOpen: { row in
-                            if let path = row.path { overlay = .file(path) }
-                            else if !row.waiting { overlay = .agent(row.id) }
-                            else { go(.work) }
-                        })
-                .frame(width: 352)
-                .offset(x: w - 376, y: 76)
-
-            BottomBand(tasks: tasks, actions: actions.rows, busy: busy, width: w,
-                       onTasks: { overlay = overlay == .tasks ? nil : .tasks })
-                .frame(width: w, height: 44)
-                .offset(y: h - 44)
+            .environment(\.motionPaused, !windowVisible || menu?.settled == true)
 
             if let menu {
                 SumiMenu(state: menu, items: menuLevel(menu.path, snap: snap), crumbs: crumbs(menu.path, snap: snap),
@@ -382,7 +394,8 @@ struct CockpitView: View {
         default: break
         }
         // 門のカードが出ている間だけ ←→ ENTER 1–3 が効く
-        guard mode == .work, oldestGate != nil, !gate.rewriting, wipe == nil else { return .ignored }
+        guard mode == .work, oldestGate != nil, !gate.rewriting, wipe == nil,
+              Date().timeIntervalSince(gateArmedAt) > 0.6 else { return .ignored }
         switch press.key {
         case .rightArrow: gate.choice = (gate.choice + 1) % 3; return .handled
         case .leftArrow: gate.choice = (gate.choice + 2) % 3; return .handled
@@ -470,6 +483,7 @@ struct CockpitView: View {
     private func pickMenu(_ i: Int, snap: CockpitSnapshot) {
         guard let state = menu else { return }
         let level = menuLevel(state.path, snap: snap)
+        let i = min(i, level.count - 1)
         guard level.indices.contains(i) else { return }
         let item = level[i]
         menu?.highlight = i
@@ -497,6 +511,12 @@ struct CockpitView: View {
         case let .note(path):
             if !memoryDirty { editing = path }
             go(.memory, origin: origin, fromMenu: true)
+        case .session, .recent, .codex, .picker where memoryDirty:
+            // 書きかけの記憶ノートはセッションのプロジェクトに属する。切り替えると捨てることになる
+            hideMenu()
+        case .picker:
+            cockpit.selectedSession = nil
+            go(.work, origin: origin, fromMenu: true)
         case let .session(id):
             cockpit.selectedSession = id
             go(.work, origin: origin, fromMenu: true)

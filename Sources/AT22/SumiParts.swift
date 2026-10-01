@@ -6,12 +6,22 @@ private struct FrozenTimeKey: EnvironmentKey {
     static let defaultValue: Date? = nil
 }
 
+private struct MotionPausedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     /// `--shot` が焼く1コマの時刻。**入っている間は TimelineView を作らない**——
     /// `ImageRenderer` は TimelineView の中身を組まないので、時刻を外から渡して1枚で描く
     var frozenTime: Date? {
         get { self[FrozenTimeKey.self] }
         set { self[FrozenTimeKey.self] = newValue }
+    }
+
+    /// 画面が見えていない時（窓が隠れた・メニューが面を覆いきった）。**立っている間は全部の時計が止まる**
+    var motionPaused: Bool {
+        get { self[MotionPausedKey.self] }
+        set { self[MotionPausedKey.self] = newValue }
     }
 }
 
@@ -22,6 +32,7 @@ struct Ticker<Content: View>: View {
     let paused: Bool
     let content: (Date) -> Content
     @Environment(\.frozenTime) private var frozen
+    @Environment(\.motionPaused) private var motionPaused
 
     init(fps: Double, paused: Bool = false, @ViewBuilder content: @escaping (Date) -> Content) {
         self.fps = fps
@@ -33,7 +44,7 @@ struct Ticker<Content: View>: View {
         if let frozen {
             content(frozen)
         } else {
-            TimelineView(.animation(minimumInterval: 1 / fps, paused: paused)) { timeline in
+            TimelineView(.animation(minimumInterval: 1 / fps, paused: paused || motionPaused)) { timeline in
                 content(timeline.date)
             }
         }
@@ -306,10 +317,12 @@ struct InkLoader: View {
     var accent: Color = Palette.pink
 
     @State private var start = Date()
+    /// `done` は1回きり。描き終わったら時計を止める（PLAN の済みの行に並ぶので、回し続けると無駄に食う）
+    @State private var finished = false
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
-        Ticker(fps: 24) { now in
+        Ticker(fps: 24, paused: finished) { now in
             // 焼く時は周期の真ん中（絵がいちばん立っている所）を写す
             let t = frozen != nil ? (Self.period[status] ?? 2.6) * 0.5 : now.timeIntervalSince(start)
             Canvas { ctx, _ in
@@ -317,16 +330,21 @@ struct InkLoader: View {
             }
         }
         .frame(width: 10 * pitch, height: 10 * pitch)
-        .onChange(of: status) { start = Date() }
+        .onChange(of: status) { start = Date(); finished = false }
+        .task(id: status) {
+            guard status == "done" else { return }
+            try? await Task.sleep(for: .seconds((Self.period["done"] ?? 2.2) + 0.1))
+            finished = true
+        }
     }
 
-    static let period: [String: Double] = [
+    nonisolated static let period: [String: Double] = [
         "think": 2.6, "search": 2.8, "write": 2.8, "reply": 2.8, "transfer": 3.2,
         "upload": 2.6, "error": 2.4, "wait": 3.6, "idle": 6.4, "handoff": 3.6,
         "reread": 3.6, "duplicate": 3.6, "done": 2.2, "build": 3.0, "overload": 2.6,
     ]
 
-    static func draw(_ ctx: inout GraphicsContext, status: String, t: Double,
+    nonisolated static func draw(_ ctx: inout GraphicsContext, status: String, t: Double,
                      pitch: CGFloat, ink: Color, accent: Color) {
         let n = 10, m = 4.5, hh = 2.0
         let period = Self.period[status] ?? 2.6
@@ -359,7 +377,7 @@ struct InkLoader: View {
                 for x in 0..<n {
                     let a = mask[y * n + x]
                     var v: Double
-                    if w >= 1 { v = a != 0 ? -1 : 1 } else {
+                    if w >= 1 { v = a != 0 ? -1 : 1 } else if w <= 0 { v = sq(x, y) } else {
                         var d = 1e9
                         for (X, Y) in (a != 0 ? un : lit) {
                             let e = Double((X - x) * (X - x) + (Y - y) * (Y - y))
@@ -393,16 +411,16 @@ struct InkLoader: View {
         }
     }
 
-    private static func fr(_ v: Double) -> Double { v - floor(v) }
-    private static func cl(_ t: Double) -> Double { max(0, min(1, t)) }
-    private static func ss(_ t: Double) -> Double { t * t * (3 - 2 * t) }
-    private static func hsh(_ x: Int, _ y: Int, _ n: Double) -> Double {
+    nonisolated private static func fr(_ v: Double) -> Double { v - floor(v) }
+    nonisolated private static func cl(_ t: Double) -> Double { max(0, min(1, t)) }
+    nonisolated private static func ss(_ t: Double) -> Double { t * t * (3 - 2 * t) }
+    nonisolated private static func hsh(_ x: Int, _ y: Int, _ n: Double) -> Double {
         fr(sin(Double(x) * 12.9898 + Double(y) * 78.233 + n * 37.719) * 43758.5453)
     }
 
     /// 10×10 の絵。0 = 空、1 = 墨、2 = ピンク。q は 0…1 の進み
     // swiftlint:disable:next cyclomatic_complexity function_body_length
-    private static func motif(_ status: String, _ q: Double) -> [UInt8]? {
+    nonisolated private static func motif(_ status: String, _ q: Double) -> [UInt8]? {
         let g = 10
         var mk = [UInt8](repeating: 0, count: g * g)
         func set(_ x: Int, _ y: Int, _ v: UInt8 = 1) {
@@ -607,7 +625,7 @@ struct Mascot: View {
     }
 
     // swiftlint:disable:next function_body_length
-    static func drawCrane(_ ctx: inout GraphicsContext, t: Double, pitch: CGFloat, legs a: Double,
+    nonisolated static func drawCrane(_ ctx: inout GraphicsContext, t: Double, pitch: CGFloat, legs a: Double,
                           lookRight: Bool, pose: Pose?, ink: Color, accent: Color) {
         let p = max(2, pitch.rounded()), s = 8 * p, h = p / 2, q = p / 4
         let lx: CGFloat = lookRight ? 1 : -1, ly: CGFloat = 0

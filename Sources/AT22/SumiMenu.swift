@@ -37,6 +37,8 @@ struct MenuItem {
         case note(String)
         case session(String)
         case recent(RecentSession)
+        /// セッションの選び口（01 TALK の一覧）へ戻る
+        case picker
         case codex(Cockpit.CodexRecord)
         case newSession
         case agent(String)
@@ -74,7 +76,9 @@ struct MenuItem {
 
         var sessions: [MenuItem] = [MenuItem(en: "New session", jp: "新しく起こす",
                                              desc: launcherReady ? "claude / codex を起こす" : "設定で連携を入にすると使える",
-                                             action: .newSession)]
+                                             action: .newSession),
+                                    MenuItem(en: "All sessions", jp: "一覧から選ぶ", desc: "実行中・履歴・Codex を全部並べる",
+                                             action: .picker)]
         sessions += cockpit.liveSessions.prefix(12).map { live in
             MenuItem(en: String(live.id.prefix(8)).uppercased(), jp: cockpit.title(for: live.id) ?? live.name,
                      desc: (live.busy ? "実行中 · " : "") + (live.cwd as NSString).lastPathComponent,
@@ -227,8 +231,10 @@ struct SumiMenu: View {
 
     /// 選んだ項目を大きく、離れるほど小さく。全体を縦の中央に置き、線に沿って右へずらす
     private var placed: [Slot] {
+        // 一覧が縮んだ時に、選んでいた番号が外へはみ出さないように詰める（v10 の `Math.min(mh, len-1)`）
+        let highlight = min(state.highlight, max(0, items.count - 1))
         let sizes: [(CGFloat, CGFloat, Int)] = items.indices.map { i in
-            let d = abs(i - state.highlight)
+            let d = abs(i - highlight)
             let f: CGFloat = d == 0 ? (state.path.isEmpty ? 112 : 96) : d == 1 ? 44 : 34
             return (f, d == 0 ? f * 1.12 + 40 : f * 1.32, d)
         }
@@ -274,7 +280,7 @@ struct SumiMenu: View {
         }
         .overlay(alignment: .trailing) {
             if on {
-                Blade(trigger: "\(state.highlight)-\(state.path)")
+                Blade(trigger: "\(i)-\(state.path)")
                     .frame(width: 150, height: 4)
                     .offset(x: 156)
             }
@@ -404,7 +410,7 @@ struct Late: ViewModifier {
 private struct StepIn: ViewModifier {
     let delay: Double
     let trigger: Int
-    @State private var k = 3
+    @State private var k = 0
     @Environment(\.frozenTime) private var frozen
 
     func body(content: Content) -> some View {

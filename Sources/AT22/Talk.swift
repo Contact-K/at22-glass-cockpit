@@ -21,6 +21,8 @@ struct TalkScreen: View {
     let ctxAlarm: Bool
     let height: CGFloat
     let width: CGFloat
+    /// 板が開いている間は ⌘Return を板の側（「起こす」）に譲る
+    let modalOpen: Bool
     let onChoose: (Int) -> Void
     let onRewrite: () -> Void
     let onNew: () -> Void
@@ -55,6 +57,7 @@ struct TalkScreen: View {
                 input
             }
             .frame(width: width, alignment: .topLeading)
+            .onChange(of: cockpit.selectedSession) { failed = false }
         }
     }
 
@@ -88,7 +91,8 @@ struct TalkScreen: View {
                 }
                 .scrollIndicators(.never)
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: items.count) { scrollDown(proxy) }
+                .onChange(of: items.last?.id) { scrollDown(proxy) }
+                .onChange(of: cockpit.streaming.count) { scrollDown(proxy) }
                 .onChange(of: request?.id) { scrollDown(proxy) }
                 .onChange(of: gate.rewriting) { scrollDown(proxy) }
                 .onChange(of: cockpit.isWorking(cockpit.selectedSession)) { scrollDown(proxy) }
@@ -273,7 +277,7 @@ struct TalkScreen: View {
                     .textFieldStyle(.plain)
                     .font(.bodyJP(16))
                     .foregroundStyle(Palette.Light.fg)
-                    .onSubmit { if !working { send() } }
+                    .onSubmit { if !working && !empty { send() } }
             }
             Button { working ? interrupt() : send() } label: {
                 Text(working ? "止める ■" : "送る ↵").font(.mono(11)).tracking(0.9)
@@ -285,7 +289,7 @@ struct TalkScreen: View {
             }
             .buttonStyle(PressStyle())
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!cockpit.canSend(to: cockpit.selectedSession) && !working || (!working && empty))
+            .disabled(!cockpit.canSend(to: cockpit.selectedSession) && !working || (!working && empty) || modalOpen)
             .help(working ? "生成を止める（セッションは終わらない）" : "送る（Return / ⌘Return）")
         }
         .frame(height: 48)
@@ -429,6 +433,8 @@ private struct GateCard: View {
                     .background(Palette.Light.bg2)
                     .overlay(Rectangle().stroke(Palette.Light.fg, lineWidth: 1))
                     .onSubmit(onRewrite)
+                    // 書換欄に焦点がある間は Esc が根まで来ないので、欄の側で畳む
+                    .onExitCommand { gate.rewriting = false }
             }
             HStack(spacing: 8) {
                 Button("書き換えて発行 ↵", action: onRewrite)
