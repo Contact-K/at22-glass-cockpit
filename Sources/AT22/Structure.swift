@@ -176,13 +176,21 @@ enum Structure {
         }
 
         // 3. ノートがどのソースの話をしているか。ファイル名そのものか、宣言している型名で拾う
+        // ソースごとの名前はノートの輪の外で1回だけ引く。輪の中で `owner` を毎回なめると
+        // ノート × ソース × 宣言名 になり、md の多いプロジェクトで走査が終わらなくなる
+        var owned: [String: [String]] = [:]
+        for (name, source) in owner { owned[source, default: []].append(name) }
+        let named: [(source: String, file: String, stem: String, head: String)] = contents.keys.map {
+            let file = ($0 as NSString).lastPathComponent
+            return ($0, file, (file as NSString).deletingPathExtension, self.words(in: file).first ?? file)
+        }
         for (notePath, text) in notes {
             let words = Set(self.words(in: text))
-            for (source, _) in contents {
-                let file = (source as NSString).lastPathComponent
-                let stem = (file as NSString).deletingPathExtension
-                let named = text.contains(file) || words.contains(stem)
-                let byType = !named && (owner.contains { $0.value == source && words.contains($0.key) })
+            for (source, file, stem, head) in named {
+                // ponytail: 本文の全文検索は、ファイル名の頭の語がノートに出ている時だけ。
+                // 「xCockpit.swift」の中の「Cockpit.swift」は拾わなくなる
+                let named = words.contains(stem) || (words.contains(head) && text.contains(file))
+                let byType = !named && (owned[source]?.contains(where: words.contains) ?? false)
                 if named || byType {
                     graph.notedBy[source, default: []].insert(notePath)
                     graph.mentions[notePath, default: []].insert(source)

@@ -921,13 +921,13 @@ struct SparringScreen: View {
                                    // 書き始めたらこのノートに留める。既定の「HANDOFF を含む先頭」に任せたままだと、
                                    // エージェントが新しいノートを足した瞬間に欄が別のノートへ移り、書きかけが消える
                                    if changed { editing = node.id }
-                               },
-                               height: max(160, height - 230))
+                               })
                         .id(node.id)
                 }
             }
         }
-        .frame(width: width, alignment: .leading)
+        // 欄は残りの高さを取る。固定の引き算だと、見出しの折り返しや札の段数で SAVE が下帯の下へ潜る
+        .frame(width: width, height: height, alignment: .topLeading)
     }
 }
 
@@ -936,7 +936,6 @@ private struct NoteEditor: View {
     let node: Memory.Node
     let onSave: (String, String, Bool) -> NoteSaveResult
     let onDirtyChange: (Bool) -> Void
-    let height: CGFloat
 
     @State private var text = ""
     @State private var loaded = ""
@@ -962,7 +961,7 @@ private struct NoteEditor: View {
                 }
             }
             .foregroundStyle(Palette.Light.fg)
-            .frame(height: height)
+            .frame(minHeight: 160, maxHeight: .infinity)
             .background(Palette.Light.bg)
             .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
 

@@ -3,6 +3,34 @@
 `docs/design/sumi-v10/AT22 Cockpit Sumi v10.dc.html` を、`PLAN.md` の段 0–5 の順に実装した。
 今の筐体（黒い金属・レール・会話サイドバー・Canvas 盤面・エゴビュー）は全部消し、v10 の画面に置き換えた。
 
+## Mac で通した結果（2026-10-02 追記）
+
+**ビルド済み。** 下の §0 の「未ビルド」はクラウドで書いた時点の話。この Mac（Swift 6.3）で通した:
+
+| 何を | 結果 |
+|---|---|
+| `swift build`（debug / release） | 通る。**警告 0** |
+| p0 ＋ 実 transcript のリプレイ | `p0: ok` |
+| `--shot` work / structure / memory（1440×900）と work（1200×760） | 焼けて、v10 の形で出ている |
+| CPU（release・窓が前面・何も起きていない） | 30% 前後（墨流し 30Hz と SwiftUI の描画）。窓を隠すと 3–7% |
+
+直したもの:
+
+- **メニューからセッションを替えられなかった**（`CockpitView.swift` `perform`）。
+  `case .session, .recent, .codex, .picker where memoryDirty:` の `where` は最後の `.picker` にしか掛からず、
+  セッション・履歴・codex の選択が常に「書きかけあり」の枝に入ってメニューが閉じるだけだった。switch の外へ出した
+- **構造の走査が終わらず CPU 100% で回り続けていた**（`Structure.build` の 3.。v10 より前からあった）。
+  ノート × ソース × 宣言名の三重の輪を、ソースごとの名前を先に引く形にした。4 分で終わらなかったものが数秒で終わる
+- **壁打ちの編集欄が下帯の下へ潜って SAVE が見えなかった**（`Panels.swift` `SparringScreen`）。
+  `height - 230` の引き算をやめて残りの高さを取らせた
+- 窓を 1200 幅まで縮めると門の `Allow` / `Rewrite` が `All…` と切れた → 字を縮める（`Talk.swift`）
+
+**まだ目で見ていないもの:** 動き全部（メニュー、DotWipe、決定のドット、墨流しの対流、鶴）。
+このセッションには画面収録の権限が無く `screencapture` が撮れなかった。§4 の 2・3・5〜11 は人の目で。
+B 案（`claude/sumi-v10-impl`、PR #2）は Mac でビルドが通らなかったので閉じた。
+
+---
+
 ## 0. 最初に読むこと
 
 **未ビルド。** このセッションは Linux（クラウド）で、`swift build` も `--shot` も回していない。

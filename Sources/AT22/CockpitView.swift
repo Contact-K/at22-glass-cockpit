@@ -502,6 +502,14 @@ struct CockpitView: View {
     /// 葉を押した。タブへ移るものは DotWipe で、それ以外はその場で済ませて閉じる
     private func perform(_ action: MenuItem.Action) {
         let origin = CGPoint(x: 500, y: 450)
+        // 書きかけの記憶ノートはセッションのプロジェクトに属する。切り替えると捨てることになる。
+        // `case a, b where c` の `where` は最後の1つにしか掛からないので、switch の外で見る
+        if memoryDirty {
+            switch action {
+            case .session, .recent, .codex, .picker: hideMenu(); return
+            default: break
+            }
+        }
         switch action {
         case let .tab(to):
             go(to, origin: origin, fromMenu: true)
@@ -511,9 +519,6 @@ struct CockpitView: View {
         case let .note(path):
             if !memoryDirty { editing = path }
             go(.memory, origin: origin, fromMenu: true)
-        case .session, .recent, .codex, .picker where memoryDirty:
-            // 書きかけの記憶ノートはセッションのプロジェクトに属する。切り替えると捨てることになる
-            hideMenu()
         case .picker:
             cockpit.selectedSession = nil
             go(.work, origin: origin, fromMenu: true)

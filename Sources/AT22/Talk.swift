@@ -402,6 +402,7 @@ private struct GateCard: View {
         return VStack(alignment: .leading, spacing: 3) {
             Text("#\(i + 1)").font(.mono(10)).tracking(1)
             Text(en).font(.display(on ? 30 : 24)).foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+                .lineLimit(1).minimumScaleFactor(0.6)
             Text(jp).font(.bodyJP(11))
         }
         .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg2)
