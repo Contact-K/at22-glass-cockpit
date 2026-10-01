@@ -2223,3 +2223,214 @@ final class Cockpit {
         return out.sorted { $0.name < $1.name }
     }
 }
+
+// MARK: - Sumi v10 の画面が読む純関数
+
+/// ACTIONS 欄の1行。「誰が・何を・どこに」を1行に畳んだもの。
+/// **SwiftUI を通さずに作る**ので、p0 から並べ方と枝の記号を検査できる
+struct ActionRow: Identifiable, Equatable {
+    let id: String            // エージェントID。門の行は門のID
+    let label: String         // C0 / W1 / W2 …
+    var branch: String        // │（司令塔自身）/ ├ / └（配下の最後）
+    let verb: String          // WRITE / READ / THINK / WAIT / IDLE / DONE
+    let jp: String            // 書込中 / 読取中 / 考え中 / 門で待機 …
+    let loader: String        // InkLoader の状態名（write / search / think / wait / idle / done）
+    let file: String          // いま触っているファイル名。触っていなければ「していること」
+    let path: String?         // FILE の吹き出しを開く先。触っていなければ nil
+    let note: String          // +42 −7 / 41 calls / 12s
+    let waiting: Bool         // 門で止まっている行。ピンクの四角が点滅する
+    /// 書込以外か。墨流しに落とす墨の色がこれで決まる（書込＝青、それ以外＝ピンク）
+    var accent: Bool { verb != "WRITE" }
+}
+
+/// 05 PLAN の窓。**いま動いている所が必ず入る**ように切り取った5行
+struct PlanWindow: Equatable {
+    var rows: [RoadmapTask] = []
+    /// 進行中の番号。無ければ nil
+    var current: Int?
+    var total = 0
+    var done = 0
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.rows.map(\.id) == b.rows.map(\.id) && a.current == b.current
+            && a.total == b.total && a.done == b.done
+    }
+}
+
+extension Cockpit {
+
+    /// 参照回数の点の上限。設定画面の Stepper の上限もこれ（盤面を消したので置き場をここへ移した）
+    nonisolated static let maxReadTicks = 6
+
+    /// 1行に押し込む用に Markdown の記号と改行を潰す。
+    /// codex に渡すプロンプトは md なので、生のままだと `##` や `**` が門の本文に混ざって読めない。
+    /// （`CockpitLayout` を消したのでここへ移した。中身は同じ）
+    nonisolated static func plainLine(_ raw: String) -> String {
+        var out = ""
+        var atLineStart = true
+        for ch in raw {
+            if ch == "\n" || ch == "\r" || ch == "\t" {
+                if !out.isEmpty, out.last != " " { out.append(" ") }
+                atLineStart = true
+                continue
+            }
+            // 行頭の見出し・箇条書き・引用の印だけ落とす（文中の記号は残す）
+            if atLineStart, ch == "#" || ch == ">" || ch == "-" || ch == "*" || ch == " " { continue }
+            atLineStart = false
+            if ch == "`" || ch == "*" || ch == "_" { continue }
+            out.append(ch)
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 書込量の重み 0–5。02 STRUCTURE の流し組みで**字の大きさ**になる（16 + w×4 pt）。
+    ///
+    /// 旧 `CockpitLayout.writeTier` の切れ目（1 / 10 / 100）をそのまま下3段に使い、
+    /// 字で量を語れるように上を2段足した。
+    /// ponytail: 切れ目は経験則。300 と 1000 は「1セッションでよく書かれた」の実感値
+    nonisolated static func writeWeight(added: Int, removed: Int) -> Int {
+        let lines = max(0, added) + max(0, removed)
+        switch lines {
+        case ..<1:       return 0
+        case 1..<10:     return 1
+        case 10..<100:   return 2
+        case 100..<300:  return 3
+        case 300..<1000: return 4
+        default:         return 5
+        }
+    }
+
+    /// エージェントの呼び名。司令塔は C0、配下は W1, W2 …。
+    ///
+    /// **番号は ID の並びで振る。** チップの並び（労働量順）で振ると、
+    /// 働くたびに W2 と W3 が入れ替わって名前が定まらない。
+    /// ponytail: 起きた順ではない。起きた順に揃えるなら台帳の parentCall の発行時刻で並べ直す
+    nonisolated static func agentLabels(_ chips: [AgentChip]) -> [String: String] {
+        var out: [String: String] = [:]
+        let workers = chips.filter { $0.depth > 0 }.map(\.id).sorted()
+        for chip in chips where chip.depth == 0 { out[chip.id] = "C0" }
+        for (i, id) in workers.enumerated() { out[id] = "W\(i + 1)" }
+        return out
+    }
+
+    /// 門が起こそうとしている相手の呼び名。**まだ起きていない**ので台帳には居ない——
+    /// 次に振られる番号を先回りして当てる（v10 の「Wake W6?」）
+    nonisolated static func gateLabel(chips: [AgentChip], index: Int = 0) -> String {
+        "W\(chips.filter { $0.depth > 0 }.count + 1 + index)"
+    }
+
+    /// 04 ACTIONS に出す行。**最大4行**。
+    ///
+    /// 選ぶ順: 門で待っているもの → 動いているもの → 止まっているがまだ終わっていないもの。
+    /// 終わったものは出さず、件数だけ `doneCount` で返す（欄の下端の `+2 DONE`）。
+    /// 並べる順は指揮系統: 司令塔自身の行（│）を先に、配下を後に、門の行を最後に置き、
+    /// 配下の最後の1行だけ └ にする
+    nonisolated static func actionRows(chips: [AgentChip], gates: [Gate.Request],
+                                       cells: [FileCell] = [], now: Date = Date(),
+                                       limit: Int = 4) -> (rows: [ActionRow], doneCount: Int) {
+        let labels = agentLabels(chips)
+        let byPath = Dictionary(cells.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        func row(_ chip: AgentChip) -> ActionRow {
+            let name = chip.target.map { ($0 as NSString).lastPathComponent }
+            let cell = chip.target.flatMap { byPath[$0] }
+            let lines = cell.map { "+\($0.added) −\($0.removed)" }
+            let (verb, jp, loader): (String, String, String) = {
+                if chip.done { return ("DONE", "終了", "done") }
+                guard chip.busy else { return ("IDLE", "待機", "idle") }
+                switch chip.kind {
+                case .write?: return ("WRITE", "書込中", "write")
+                case .read?:  return ("READ", "読取中", "search")
+                case nil:     return ("THINK", "考え中", "think")
+                }
+            }()
+            return ActionRow(id: chip.id, label: labels[chip.id] ?? "W?",
+                             branch: chip.depth == 0 ? "│" : "├",
+                             verb: verb, jp: jp, loader: loader,
+                             file: name ?? plainLine(chip.doing),
+                             path: chip.target,
+                             note: verb == "WRITE" ? (lines ?? "±0") : "\(chip.work) calls",
+                             waiting: false)
+        }
+
+        let waiting = gates.enumerated().map { i, gate in
+            ActionRow(id: gate.id, label: gateLabel(chips: chips, index: i), branch: "├",
+                      verb: "WAIT", jp: "門で待機", loader: "wait",
+                      file: gate.to.isEmpty ? gate.call : gate.to, path: nil,
+                      note: "\(Int(gate.waited(now: now)))s", waiting: true)
+        }
+        let busy = chips.filter { $0.busy && !$0.done }.map(row)
+        let resting = chips.filter { !$0.busy && !$0.done }.map(row)
+        let picked = Array((waiting + busy + resting).prefix(limit))
+
+        // 並べ直し: 司令塔 → 配下 → 門
+        let root = picked.filter { $0.branch == "│" }
+        let workers = picked.filter { $0.branch != "│" && !$0.waiting }
+        var ordered = root + workers + picked.filter(\.waiting)
+        if let last = ordered.lastIndex(where: { $0.branch != "│" }) { ordered[last].branch = "└" }
+        return (ordered, chips.filter(\.done).count)
+    }
+
+    /// 05 PLAN の5行（下帯のティックは同じ関数を `size: 21` で呼ぶ）。
+    ///
+    /// 窓は**最初の未完了から**始める。残りが窓に満たない時は、手前の完了で埋めて
+    /// いつも同じ行数を保つ——行数が揺れると欄の高さが揺れる
+    nonisolated static func planWindow(tasks: [RoadmapTask], size: Int = 5) -> PlanWindow {
+        var window = PlanWindow()
+        window.total = tasks.count
+        window.done = tasks.filter { $0.status == .completed }.count
+        window.current = tasks.first { $0.status == .inProgress }?.number
+        guard !tasks.isEmpty, size > 0 else { return window }
+        let first = tasks.firstIndex { $0.status != .completed } ?? tasks.count
+        let start = max(0, min(first, tasks.count - size))
+        window.rows = Array(tasks[start..<min(tasks.count, start + size)])
+        return window
+    }
+
+    /// 01 TALK の大見出し。「W5 writes. W6 waits for you.」型の定型文。
+    ///
+    /// 英語が主・日本語が従（SUMI_ の規律）。**動いている者と待っている者だけ**を主語にする——
+    /// 止まっている者まで並べると、見出しが一覧になって目に入らない
+    nonisolated static func headline(rows: [ActionRow]) -> String {
+        let waiting = rows.filter(\.waiting).map(\.label)
+        let moving = rows.filter { !$0.waiting && $0.verb != "IDLE" && $0.verb != "DONE" }
+        let verbs: [String: String] = ["WRITE": "writes", "READ": "reads", "THINK": "thinks"]
+
+        var parts: [String] = []
+        if moving.count == 1, let one = moving.first {
+            parts.append("\(one.label) \(verbs[one.verb] ?? "works").")
+        } else if moving.count == 2 {
+            parts.append("\(moving[0].label) and \(moving[1].label) are both at work.")
+        } else if moving.count > 2 {
+            parts.append("\(moving.count) agents are at work.")
+        }
+        if waiting.count == 1 { parts.append("\(waiting[0]) waits for you.") }
+        else if waiting.count > 1 { parts.append("\(waiting.count) wait for you.") }
+        return parts.isEmpty ? "All quiet. Ask C0." : parts.joined(separator: " ")
+    }
+
+    /// 司令塔の1ターンの足跡。`C0 // READ → WRITE → REPLY` と、参照したファイル名。
+    ///
+    /// 渡すのは**そのターンの間に司令塔が触った記録**（時刻順）。同じ動作が続いたら1つに畳み、
+    /// 長すぎる時は直近の3つだけを残す。参照は書いたものを先に、最大3件
+    nonisolated static func turnTrail(_ touches: [(path: String, kind: TouchKind)],
+                                      replied: Bool = true) -> (label: String, refs: [String]) {
+        var steps: [String] = []
+        for touch in touches {
+            let step = touch.kind == .write ? "WRITE" : "READ"
+            if steps.last != step { steps.append(step) }
+        }
+        if steps.count > 3 { steps = Array(steps.suffix(3)) }
+        if replied { steps.append("REPLY") }
+        if steps.isEmpty { steps = ["THINK"] }
+
+        var refs: [String] = []
+        let ordered = touches.filter { $0.kind == .write } + touches.filter { $0.kind == .read }
+        for touch in ordered {
+            let name = (touch.path as NSString).lastPathComponent
+            if !refs.contains(name) { refs.append(name) }
+            if refs.count == 3 { break }
+        }
+        return ("C0 // " + steps.joined(separator: " → "), refs)
+    }
+}
