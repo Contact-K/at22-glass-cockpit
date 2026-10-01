@@ -83,6 +83,10 @@ rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/AT22" "$APP/Contents/MacOS/AT22"
 cp "$ROOT/Resources/AT22.icns" "$APP/Contents/Resources/AT22.icns"
+# 書体。SwiftPM の resources: は使わず、Palette.registerFonts が Contents/Resources/Fonts から起動時に登録する。
+# 青柳衡山T（AoyagiKouzanT.ttf）は人が置くまで無い。無ければ游明朝に落ちて動く
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp "$ROOT"/Resources/Fonts/*.otf "$ROOT"/Resources/Fonts/*.ttf "$ROOT"/Resources/Fonts/*.txt "$APP/Contents/Resources/Fonts/" 2>/dev/null || true
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
