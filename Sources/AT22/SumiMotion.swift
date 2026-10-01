@@ -360,7 +360,18 @@ final class InkTank {
     private var pending: [(due: Date, x: Float, y: Float, r: Float, accent: Bool, amount: Float)] = []
     private(set) var image: CGImage?
 
-    init(width: CGFloat = 540, height: CGFloat = 800, res: Int = 96) {
+    /// v10 の格子は 96。**`swift run`（デバッグビルド）だけ 48 に落とす**——
+    /// 実測（Linux・同じコード）で 96 格子の1コマが release 2.5ms に対し debug 56ms、
+    /// 初回の温め（40 コマ）が debug だと 2 秒かかって最初の描画が止まる
+    #if DEBUG
+    static let defaultRes = 48
+    static let warmup = 10
+    #else
+    static let defaultRes = 96
+    static let warmup = 40
+    #endif
+
+    init(width: CGFloat = 540, height: CGFloat = 800, res: Int = InkTank.defaultRes) {
         let rows = max(8, Int(jsRound(Double(CGFloat(res) * height / width))))
         let count = (res + 2) * (rows + 2)
         n = res
@@ -377,7 +388,7 @@ final class InkTank {
         // 種: 差し色は高く浮かべ、墨は低く沈める
         for _ in 0..<3 { drop(x: .random(in: 0.15...0.9), y: .random(in: 0.15...0.4), r: .random(in: 0.18...0.26), accent: true, amount: 0.7) }
         for _ in 0..<4 { drop(x: .random(in: 0.1...0.9), y: .random(in: 0.6...0.9), r: .random(in: 0.2...0.3), accent: false, amount: 0.9) }
-        for _ in 0..<40 { step() }
+        for _ in 0..<Self.warmup { step() }
         paint()
     }
 
