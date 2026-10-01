@@ -14,26 +14,20 @@ struct AT22App: App {
         // 半透明の二重掛けで線が消える・暗い地の上で沈む——この筐体でいちばん多い壊れ方は
         // どれも「動かしてみないと分からない」ものだった。目視の前に1枚出せると差分が追える
         if let path = Self.shotPath() {
-            if CommandLine.arguments.contains("--board") {
-                Snapshot.writeBoard(to: path, size: Self.shotSize(), mode: Self.shotMode(),
-                                    transcript: Self.shotTranscript())
-            } else {
-                Snapshot.write(to: path, size: Self.shotSize(), transcript: Self.shotTranscript(),
-                               gate: CommandLine.arguments.contains("--gate"))
-            }
+            Snapshot.write(to: path, size: Self.shotSize(), mode: Self.shotMode(),
+                           transcript: Self.shotTranscript(), gate: CommandLine.arguments.contains("--gate"))
             exit(0)
         }
+        // 書体は SwiftPM の `resources:` を通さず、起動時にこのプロセスへ登録する（Palette.registerFonts）
+        Palette.registerFonts()
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。
         // ponytail: 開発中に `swift run` で直接動かすための1行。配布物はこれに頼っていない——
         // package.sh が Info.plist と .icns 入りの AT22.app を組むので、バンドル内では重複した無害な指定
         NSApplication.shared.setActivationPolicy(.regular)
 
-        // **筐体は暗い金属で固定する。** これを入れるまでアプリはシステムの外観に従っていて、
-        // ライトモードの機械ではウィンドウのタイトルバー帯・設定画面・Picker / TextEditor /
-        // alert が全部白いまま、カーボン黒の盤面の上に乗っていた。
-        // `Snapshot` だけが `.environment(\.colorScheme, .dark)` を掛けていたので、
-        // **焼いた PNG は正しく見えて実機だけが壊れている**という見落としが起きていた
-        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        // **外観は明るい側で固定する。** Sumi v10 は白地が主の面なので、システムがダークでも
+        // Picker / TextEditor / alert が白地の上で黒く浮かないようにする（`Snapshot` も .light で焼く）
+        NSApplication.shared.appearance = NSAppearance(named: .aqua)
     }
 
     private static func shotPath() -> String? {
@@ -42,7 +36,7 @@ struct AT22App: App {
         return args[i + 1]
     }
 
-    /// `--board` の時にどの軸で焼くか
+    /// `--mode work|structure|memory` でどの画面を焼くか
     private static func shotMode() -> CockpitMode {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--mode"), i + 1 < args.count,
@@ -74,17 +68,16 @@ struct AT22App: App {
                     watcher.start()
                     NSApp.activate(ignoringOtherApps: true)
                 }
-                // 解説画面は幅640未満で左右の列と中央のハブが重なる（当たり判定は行しか知らない）。
-                // 余白ぶんを足した下限を窓に持たせて、そこへ行かせない。
-                // 左レール（56pt）が横幅を食うぶん、下限もそれだけ上げてある
-                .frame(minWidth: 720 + ModeRail.width, minHeight: 420)
-                // 窓の地を筐体と同じカーボン黒にする。`.hiddenTitleBar` で中身は上端まで届くが、
-                // 窓自体の地が明るいままだと信号機のまわりだけが白く抜ける
-                .containerBackground(Palette.field, for: .window)
+                // v10 は 1440×900。左の会話（220 + 380）と右の列（376）と五角形の尖りが
+                // 重ならない幅、ACTIONS と PLAN が重ならない高さを下限にする
+                .frame(minWidth: 1200, minHeight: 760)
+                // 窓の地は青帯と同じ青。`.hiddenTitleBar` で中身は上端まで届くが、
+                // 窓自体の地が違う色だと信号機のまわりだけが抜ける
+                .containerBackground(Palette.blue, for: .window)
         }
-        .defaultSize(width: 1100, height: 780)
-        // 筐体を自前で描くので、システムのタイトルバーは畳む。
-        // **信号機だけは OS が同じ位置に描き続ける**ので、TitleBar は左端を空けてある
+        .defaultSize(width: 1440, height: 900)
+        // 帯を自前で描くので、システムのタイトルバーは畳む。
+        // **信号機だけは OS が同じ位置に描き続ける**ので、TopBand は左端 78pt を空けてある
         .windowStyle(.hiddenTitleBar)
 
         // ⌘, で開く。しきい値は環境と使い方で最適値が動くので、外から変えられるようにしておく
@@ -97,7 +90,7 @@ struct AT22App: App {
 private struct ThresholdSettings: View {
     let cockpit: Cockpit
 
-    /// 上限は参照の点が縦に収まる数（CockpitLayout.maxReadTicks）に合わせる。
+    /// 上限は参照の点の上限（Cockpit.maxReadTicks）に合わせる。
     /// ここを超えると点が埋まりきったまま増えず、「あと何回でフラグか」が読めなくなる
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     /// 連携機能は既定オフ。**入れただけで LLM を起こすアプリにはしない**
@@ -110,7 +103,7 @@ private struct ThresholdSettings: View {
         Form {
             Section {
                 Stepper("フラグを立てる参照回数: \(threshold)回",
-                        value: $threshold, in: 2...CockpitLayout.maxReadTicks)
+                        value: $threshold, in: 2...Cockpit.maxReadTicks)
                 note("同じエージェントがこの回数以上読み、一度も書いていないファイルに橙を立てる。"
                      + "セル右端の丸もこの数で埋まりきる。"
                      + "実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）。")
@@ -148,12 +141,11 @@ private struct ThresholdSettings: View {
     private func chapter(_ number: String, _ title: String) -> some View {
         HStack(spacing: Palette.Space.s2) {
             Text(number)
-                .font(.system(size: Palette.FontSize.label, design: .monospaced))
-                .foregroundStyle(Palette.inkTertiary)
-            Text(title)
-                .font(.system(size: Palette.FontSize.label, design: .monospaced))
-                .tracking(Palette.Tracking.wider)
-                .foregroundStyle(Palette.inkSecondary)
+                .font(Palette.mono(11))
+                .foregroundStyle(Palette.pink)
+            Text("// " + title)
+                .caps(11)
+                .foregroundStyle(Palette.Light.fg2)
         }
     }
 
@@ -167,10 +159,10 @@ private struct ThresholdSettings: View {
     private func found(_ name: String, _ path: String?) -> some View {
         HStack(spacing: Palette.Space.s2) {
             Image(systemName: path == nil ? "xmark.circle" : "checkmark.circle")
-                .foregroundStyle(path == nil ? CockpitCanvas.error : Palette.success)
+                .foregroundStyle(path == nil ? Palette.danger : Palette.success)
             Text(path ?? "\(name) が見つからない。下の欄に絶対パスを書く")
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(path == nil ? CockpitCanvas.error : Palette.inkSecondary)
+                .foregroundStyle(path == nil ? Palette.danger : Palette.Light.fg2)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)

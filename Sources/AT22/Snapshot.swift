@@ -10,55 +10,30 @@ import AppKit
 /// この筐体で多い壊れ方——半透明を二重に掛けて線が消える、暗い地の上で沈む、
 /// 余白の取り違えで区画が重なる——は、どれも組んだ結果を見ないと分からない。
 ///
-/// 動いている層（ビーム・脈打つランプ・虹）は時刻で見た目が変わるので、
+/// 動き（墨のローダー・鶴・墨流し・遷移）は時刻で見た目が変わるので、
 /// **焼いた瞬間の1コマ**しか写らない。動きそのものはここでは確かめられない。
 enum Snapshot {
 
+    /// `AT22 --shot <path> [幅 高さ] [--mode work|structure|memory] [--transcript <jsonl>] [--gate]`。
+    ///
+    /// **時刻を固定して焼く。** ImageRenderer は TimelineView / ScrollView / TextField の中身を組まないので、
+    /// 根に `shotTime` を渡すと、動く部品は全部その1コマを直接組み、会話ログは素の VStack に、
+    /// 入力欄は置き字に替わる（`SumiClock` と `Talk.log` を参照）。墨流しは初回の 40 歩を進めた絵になる
     @MainActor
-    static func write(to path: String, size: CGSize, transcript: String? = nil, gate: Bool = false) {
+    static func write(to path: String, size: CGSize, mode: CockpitMode = .work,
+                      transcript: String? = nil, gate: Bool = false) {
+        Palette.registerFonts()
         let cockpit = Cockpit()
-        // 空のまま焼くと外枠しか写らない。実 transcript を1本流し込むと、
-        // エージェントの行・ファイルの格子・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit)
+            CockpitView(cockpit: cockpit, shotTime: Date(), mode: mode)
                 .frame(width: size.width, height: size.height)
-                .environment(\.colorScheme, .dark))
-        // Retina で焼く。1px の縁と工具目は等倍だと潰れて「あるのか無いのか」が読めない
+                .environment(\.colorScheme, .light))
+        // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない
         renderer.scale = 2
-        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height))")
-    }
-
-    /// 盤面だけを焼く。`AT22 --shot <path> --board [--mode work|structure|memory]`。
-    ///
-    /// `CockpitView` ごと焼くと**盤面が写らない**——`TimelineView` と `ScrollView` は
-    /// `ImageRenderer` の中で中身を組まない。ここは同じ `CockpitCanvas.draw` を
-    /// 時刻を固定して直接呼ぶので、行・格子・門・凡例がそのまま出る。
-    /// 代わりに外枠は写らないので、外枠は `--shot` の方で見る
-    @MainActor
-    static func writeBoard(to path: String, size: CGSize, mode: CockpitMode, transcript: String?) {
-        let cockpit = Cockpit()
-        if let transcript { feed(cockpit, from: transcript) }
-
-        let now = Date()
-        let snapshot = cockpit.snapshot(now: now, mode: mode)
-        let layout = CockpitLayout.compute(snapshot, width: size.width)
-        let height = max(size.height, layout.contentHeight)
-
-        let renderer = ImageRenderer(content:
-            Canvas { context, canvasSize in
-                CockpitCanvas.draw(&context, size: canvasSize, layout: layout,
-                                   snapshot: snapshot, now: now, mode: mode,
-                                   structure: cockpit.structure, hovered: nil,
-                                   layer: .both, steady: now)
-            }
-            .frame(width: size.width, height: height)
-            .background(Palette.field)
-            .environment(\.colorScheme, .dark))
-        renderer.scale = 2
-        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(height)) 盤面(\(mode.rawValue))")
+        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) \(mode.rawValue)")
     }
 
     @MainActor
@@ -80,7 +55,7 @@ enum Snapshot {
     }
 
     /// 門を1つ立てた状態にする。**門は実際に止まっている時にしか出ない**ので、
-    /// 明るいパネルの見え方（暗い地の上で1枚だけ浮いているか）はこれが無いと確かめられない
+    /// 門のカード・上帯の門の札・ACTIONS の WAIT 行の見え方はこれが無いと確かめられない
     @MainActor
     private static func stopOneGate(_ cockpit: Cockpit) {
         let issuer = cockpit.snapshot(now: Date(), mode: .work).chips.first?.id ?? ""

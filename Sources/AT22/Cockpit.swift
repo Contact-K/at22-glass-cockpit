@@ -2223,3 +2223,187 @@ final class Cockpit {
         return out.sorted { $0.name < $1.name }
     }
 }
+
+// MARK: - Sumi v10 の画面に渡す形（純関数）
+
+/// 04 // ACTIONS の1行。**誰が・何を・どこに**を1行で語る。
+/// v10 の行は `├ W5 ◼ WRITE 書込中 → CockpitCanvas.swift` の形
+struct ActionRow: Equatable, Sendable {
+    let key: String       // エージェントID か門のパス。決定のドットの行き先を引くのに使う
+    let id: String        // 行頭の短縮ID（C0 / W1… / G1…）
+    let branch: String    // 枝の罫（├ │ └）
+    let verb: String      // WRITE / READ / THINK / WAIT / IDLE
+    let jp: String
+    let loader: String    // InkLoader の状態名
+    let file: String      // → の右に出す名前
+    let path: String?     // 絶対パス。押すと // FILE を開く
+    let note: String      // 右端の小さな数字
+    let wait: Bool        // 門で待っている（ピンクの点滅）
+    /// 墨流しに落とす色。書込だけが青、他はピンク（v10 の `data-acc`）
+    let accent: Bool
+}
+
+extension Cockpit {
+
+    /// ACTIONS に並べる上限。v10 のパネルは 4 行で PLAN と重ならない高さに決めてある
+    nonisolated static let actionLimit = 4
+    /// PLAN に並べる行数
+    nonisolated static let planRows = 5
+    /// 参照の点の上限。設定画面の Stepper の上限でもある（旧 `CockpitLayout.maxReadTicks`）
+    nonisolated static let maxReadTicks = 6
+
+    /// ACTIONS の行を選ぶ。**門待ち → 動いている → 起きているだけ** の順で最大4行。
+    /// 終わったものは行にせず、下の帯の `+N DONE` に数だけ出す。
+    ///
+    /// 短縮IDは表示中のチップの並び（司令塔が C0、残りが W1 から）で振る——
+    /// 行に出なかったものも番号を飛ばさないので、行が入れ替わっても同じ者は同じ番号のまま
+    nonisolated static func actionRows(chips: [AgentChip], gates: [Gate.Request],
+                                       now: Date) -> (rows: [ActionRow], done: [String]) {
+        var shortID: [String: String] = [:]
+        var worker = 0
+        for chip in chips {
+            if chip.depth == 0 { shortID[chip.id] = "C0" } else { worker += 1; shortID[chip.id] = "W\(worker)" }
+        }
+
+        var picked: [(row: ActionRow, root: Bool)] = []
+        for (i, gate) in gates.sorted(by: { $0.issued < $1.issued }).enumerated() {
+            let to = gate.to.isEmpty ? gate.call : gate.to
+            picked.append((ActionRow(key: gate.id, id: "G\(i + 1)", branch: "",
+                                     verb: "WAIT", jp: "門で待機", loader: "wait",
+                                     file: plainLine(to), path: nil,
+                                     note: "\(Int(gate.waited(now: now)))s",
+                                     wait: true, accent: true), false))
+        }
+        let live = chips.filter { !$0.done }
+        // 動いている中でも、ファイルを触っている者を考えているだけの者より先に出す
+        let busy = live.filter(\.busy).sorted {
+            ($0.target != nil) != ($1.target != nil) ? $0.target != nil : $0.lastAt > $1.lastAt
+        }
+        let idle = live.filter { !$0.busy }.sorted { $0.lastAt > $1.lastAt }
+        for chip in busy + idle {
+            let id = shortID[chip.id] ?? "W"
+            let target = chip.target.map { ($0 as NSString).lastPathComponent }
+            let verb: String, jp: String, loader: String
+            switch (chip.busy, chip.kind) {
+            case (true, .write?): (verb, jp, loader) = ("WRITE", "書込中", "write")
+            case (true, .read?):  (verb, jp, loader) = ("READ", "読取中", "search")
+            case (true, nil):     (verb, jp, loader) = ("THINK", "考え中", "think")
+            case (false, _):      (verb, jp, loader) = ("IDLE", "待機", "idle")
+            }
+            picked.append((ActionRow(key: chip.id, id: id, branch: "", verb: verb, jp: jp,
+                                     loader: loader,
+                                     file: target ?? plainLine(chip.doing),
+                                     path: chip.busy ? chip.target : nil,
+                                     note: "\(chip.work) calls",
+                                     wait: false, accent: verb != "WRITE"), chip.depth == 0))
+        }
+        picked = Array(picked.prefix(actionLimit))
+
+        // 枝の罫。司令塔自身の行は縦棒、配下は ├ で最後の1本だけ └
+        let lastChild = picked.lastIndex { !$0.root }
+        let rows = picked.enumerated().map { i, item -> ActionRow in
+            let r = item.row
+            let branch = item.root ? "│" : (i == lastChild ? "└" : "├")
+            return ActionRow(key: r.key, id: r.id, branch: branch, verb: r.verb, jp: r.jp,
+                             loader: r.loader, file: r.file, path: r.path, note: r.note,
+                             wait: r.wait, accent: r.accent)
+        }
+        let done = chips.filter(\.done).compactMap { shortID[$0.id] }
+        return (rows, done)
+    }
+
+    /// PLAN に出す5行。**いま動いている1件を先頭に**、続きを下へ並べる。
+    /// 後ろが足りない時は済んだ分を上に足して、常に5行を埋める
+    nonisolated static func planWindow(tasks: [RoadmapTask], size: Int = planRows) -> [RoadmapTask] {
+        guard !tasks.isEmpty else { return [] }
+        let head = tasks.firstIndex { $0.status == .inProgress }
+            ?? tasks.firstIndex { $0.status == .pending }
+            ?? tasks.count
+        let start = max(0, min(head, tasks.count - size))
+        return Array(tasks[start..<min(tasks.count, start + size)])
+    }
+
+    /// 01 // TALK の大見出し。v10 の `W5 rewrites the legend. W6 waits for you.` を
+    /// 実データで組める定型に落としたもの（何を書いているかの英語化はしない）
+    nonisolated static func headline(rows: [ActionRow], hasSession: Bool) -> String {
+        guard hasSession else { return "Pick a session to begin." }
+        func names(_ ids: [String]) -> String {
+            let unique = ids.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            if unique.count <= 1 { return unique.first ?? "" }
+            return unique.dropLast().joined(separator: ", ") + " and " + unique.last!
+        }
+        let writers = rows.filter { $0.verb == "WRITE" }.map(\.id)
+        let waiting = rows.filter(\.wait).map(\.id)
+        let thinking = rows.filter { $0.verb == "THINK" || $0.verb == "READ" }.map(\.id)
+        var parts: [String] = []
+        if !writers.isEmpty { parts.append(names(writers) + (Set(writers).count > 1 ? " write." : " writes.")) }
+        if !waiting.isEmpty { parts.append(names(waiting) + (Set(waiting).count > 1 ? " wait" : " waits") + " for you.") }
+        if parts.isEmpty, !thinking.isEmpty {
+            parts.append(names(thinking) + (Set(thinking).count > 1 ? " are" : " is") + " at work.")
+        }
+        return parts.isEmpty ? "All quiet." : parts.joined(separator: " ")
+    }
+
+    /// 返答の枠の頭に出す `C0 // SEARCH → THINK → REPLY`。
+    /// 何を経て返したかは、直前の人の発言からこの返答までに起きたことで決める
+    nonisolated static func turnTrail(agent: String = "C0", read: Bool, thought: Bool,
+                                      wrote: Bool) -> String {
+        var steps: [String] = []
+        if read { steps.append("SEARCH") }
+        if thought { steps.append("THINK") }
+        if wrote { steps.append("WRITE") }
+        steps.append("REPLY")
+        return agent + " // " + steps.joined(separator: " → ")
+    }
+
+    /// 02 // STRUCTURE の流し組みで字を育てる段階（0–5）。
+    /// 旧 `CockpitLayout.writeTier` の「1 / 10 / 100 行」の区切りを5段に割り直したもの
+    nonisolated static func writeWeight(added: Int, removed: Int) -> Int {
+        switch added + removed {
+        case ..<1:       return 0
+        case 1..<10:     return 1
+        case 10..<50:    return 2
+        case 50..<100:   return 3
+        case 100..<300:  return 4
+        default:         return 5
+        }
+    }
+
+    /// 「熱い所」（二重下線）の境目の量。**絶対量ではなく表示中の上位2%**。
+    /// 絶対値で決めると、大きく書いた日は画面じゅうが熱くなって目印にならない
+    /// （旧 `CockpitLayout.hugeThreshold` をそのまま移した）
+    nonisolated static func hotThreshold(_ snapshot: CockpitSnapshot) -> Int {
+        let volumes = snapshot.cards.flatMap(\.files)
+            .map { $0.added + $0.removed }
+            .filter { $0 >= 100 }              // 最低でも 100 行の量は要る
+            .sorted(by: >)
+        guard !volumes.isEmpty else { return .max }
+        let count = max(1, Int((Double(volumes.count) * 0.02).rounded(.up)))
+        let threshold = volumes[min(count, volumes.count) - 1]
+        // 上位2%を「値」で切るので、境目に同点が並ぶとその分だけ増える。
+        // 塊が画面の1割を超えたら熱い所は無しにする——何もかもが熱くては目印にならない
+        let tied = volumes.prefix { $0 >= threshold }.count
+        let allowed = max(count, Int((Double(volumes.count) * 0.1).rounded(.up)))
+        return tied > allowed ? .max : threshold
+    }
+
+    /// 1行に押し込む用に Markdown の記号と改行を潰す（旧 `CockpitLayout.plainLine`）。
+    /// codex に渡すプロンプトは md なので、生のままだと `##` や `**` が行に混ざって読めない
+    nonisolated static func plainLine(_ raw: String) -> String {
+        var out = ""
+        var atLineStart = true
+        for ch in raw {
+            if ch == "\n" || ch == "\r" || ch == "\t" {
+                if !out.isEmpty, out.last != " " { out.append(" ") }
+                atLineStart = true
+                continue
+            }
+            // 行頭の見出し・箇条書き・引用の印だけ落とす（文中の記号は残す）
+            if atLineStart, ch == "#" || ch == ">" || ch == "-" || ch == "*" || ch == " " { continue }
+            atLineStart = false
+            if ch == "`" || ch == "*" || ch == "_" { continue }
+            out.append(ch)
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+}
