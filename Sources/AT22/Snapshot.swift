@@ -3,62 +3,33 @@ import AppKit
 
 // MARK: - 見え方を1枚に焼く
 
-/// 画面を開かずに筐体を PNG へ出す。`AT22 --shot <path> [幅 高さ]`。
+/// 画面を開かずに PNG へ出す。`AT22 --shot <path> [幅 高さ] [--mode work|structure|memory]`。
 ///
-/// **これは検査であって機能ではない。** 引き継ぎ 2026-08-04 §1 が
-/// 「見え方を継続的に確かめる手段がまだ無い／同じ失敗が繰り返されている」と書いていた穴を埋める。
-/// この筐体で多い壊れ方——半透明を二重に掛けて線が消える、暗い地の上で沈む、
-/// 余白の取り違えで区画が重なる——は、どれも組んだ結果を見ないと分からない。
+/// **これは検査であって機能ではない。** 組んだ結果を見ないと分からない壊れ方——
+/// 区画の重なり、字の溢れ、色の取り違え——を、窓を開く前に1枚で確かめる。
 ///
-/// 動いている層（ビーム・脈打つランプ・虹）は時刻で見た目が変わるので、
-/// **焼いた瞬間の1コマ**しか写らない。動きそのものはここでは確かめられない。
+/// `ImageRenderer` は `TimelineView` / `ScrollView` / `TextField` の中身を組まない。
+/// なので `CockpitView(shot:)` に**固定の時刻**を渡し、時計を回す部品は全部その1コマで描き、
+/// 会話のログは素の VStack に、入力欄は文字だけに差し替えて焼く。
+/// 動き（墨流し・ドット・InkLoader）は1コマしか写らない
 enum Snapshot {
 
     @MainActor
-    static func write(to path: String, size: CGSize, transcript: String? = nil, gate: Bool = false) {
+    static func write(to path: String, size: CGSize, mode: CockpitMode = .work,
+                      transcript: String? = nil, gate: Bool = false) {
         let cockpit = Cockpit()
-        // 空のまま焼くと外枠しか写らない。実 transcript を1本流し込むと、
-        // エージェントの行・ファイルの格子・門まで入った本物の1コマになる
+        // 空のまま焼くとセッションの選び口しか写らない。実 transcript を1本流し込むと、
+        // ACTIONS の行・会話・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit)
+            CockpitView(cockpit: cockpit, shot: Date(), shotMode: mode)
                 .frame(width: size.width, height: size.height)
-                .environment(\.colorScheme, .dark))
-        // Retina で焼く。1px の縁と工具目は等倍だと潰れて「あるのか無いのか」が読めない
+                .environment(\.colorScheme, .light))
+        // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない
         renderer.scale = 2
-        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height))")
-    }
-
-    /// 盤面だけを焼く。`AT22 --shot <path> --board [--mode work|structure|memory]`。
-    ///
-    /// `CockpitView` ごと焼くと**盤面が写らない**——`TimelineView` と `ScrollView` は
-    /// `ImageRenderer` の中で中身を組まない。ここは同じ `CockpitCanvas.draw` を
-    /// 時刻を固定して直接呼ぶので、行・格子・門・凡例がそのまま出る。
-    /// 代わりに外枠は写らないので、外枠は `--shot` の方で見る
-    @MainActor
-    static func writeBoard(to path: String, size: CGSize, mode: CockpitMode, transcript: String?) {
-        let cockpit = Cockpit()
-        if let transcript { feed(cockpit, from: transcript) }
-
-        let now = Date()
-        let snapshot = cockpit.snapshot(now: now, mode: mode)
-        let layout = CockpitLayout.compute(snapshot, width: size.width)
-        let height = max(size.height, layout.contentHeight)
-
-        let renderer = ImageRenderer(content:
-            Canvas { context, canvasSize in
-                CockpitCanvas.draw(&context, size: canvasSize, layout: layout,
-                                   snapshot: snapshot, now: now, mode: mode,
-                                   structure: cockpit.structure, hovered: nil,
-                                   layer: .both, steady: now)
-            }
-            .frame(width: size.width, height: height)
-            .background(Palette.field)
-            .environment(\.colorScheme, .dark))
-        renderer.scale = 2
-        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(height)) 盤面(\(mode.rawValue))")
+        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) \(mode.rawValue)")
     }
 
     @MainActor
@@ -80,7 +51,7 @@ enum Snapshot {
     }
 
     /// 門を1つ立てた状態にする。**門は実際に止まっている時にしか出ない**ので、
-    /// 明るいパネルの見え方（暗い地の上で1枚だけ浮いているか）はこれが無いと確かめられない
+    /// 門のカードと上帯の札の見え方はこれが無いと確かめられない
     @MainActor
     private static func stopOneGate(_ cockpit: Cockpit) {
         let issuer = cockpit.snapshot(now: Date(), mode: .work).chips.first?.id ?? ""
@@ -107,11 +78,11 @@ enum Snapshot {
         }
         cockpit.selectedSession = session
         // 記憶DBと門は毎秒の周回が拾うもので、流し込みだけでは空のまま。
-        // ここを通さないと壁打ちが「3見出しだけ」に焼けて、実機の見え方を代弁しない。
+        // ここを通さないと壁打ちが空に焼けて、実機の見え方を代弁しない。
         //
         // **`housekeeping()` ごと呼んではいけない。** あれは `autoHideIdleAgents` を含むので、
         // 過去の transcript を流し込むとエージェントが軒並み「古い」と判定されて全部畳まれ、
-        // 帯が空になる。構造の走査は `Task.detached` なので、どのみち焼く前に返ってこない
+        // ACTIONS が空になる。構造の走査は `Task.detached` なので、どのみち焼く前に返ってこない
         cockpit.refreshMemory()
         cockpit.refreshGates()
         print("AT22: \(path) を流し込んだ")

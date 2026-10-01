@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/CockpitLayout.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -27,10 +27,6 @@ struct P0SelfCheck {
         ordersCardsMainThenSubThenNotes()
         structureStaysInsideTheSelectedProject()
         beamSurvivesFastTools()
-        agentRowsHangFromTheRail()
-        gateShowsAsPaperAndRow()
-        writeVolumeTicks()
-        writeTierStacksDotsUnderlineRainbow()
         flattensMarkdownForOneLine()
         readsMemoryDatabase()
         loadsMemoryDirectory()
@@ -53,10 +49,6 @@ struct P0SelfCheck {
         readsPendingGates()
         gateVerdictWritesOnlyInsideMemory()
         approvalLevelDecidesWhatStops()
-        stoppedOrderParksOnTheLine()
-        hugeStaysRareWhenVolumesTie()
-        stillAndLiveLayersSplitTheScreen()
-        hugeIsRelative()
         recordsWriteMoment()
         agentHierarchy()
         asyncLaunchIsNotCompletion()
@@ -66,20 +58,14 @@ struct P0SelfCheck {
         backgroundAgentEndsOnItsOwnTurn()
         roleFallsBackToDescription()
         shortensModelNames()
-        laysOutWithoutOverlap()
-        longNamesStayInsideCards()
         tailsAppendsAcrossPartialLines()
         initialBudgetPrefersNewest()
         showsWriteHistoryOnDemand()
         buildsRoadmapFromTaskTools()
         roadmapSurvivesClearAndFolds()
         listsEveryTaskIncludingDone()
-        readTicksFillTowardFlag()
-        clicksResolveToWhatWasDrawn()
-        egoViewFramesOneFile()
-        cellsKeepTheSameSizeInBothModes()
+        flagFollowsTunedThreshold()
         classifiesFilesByCategory()
-        cellsCarryTheirCategory()
         hoverLightsRelatedFiles()
         buildsDependencyGraphFromSymbols()
         labelsAgentWhenMetaArrivesLate()
@@ -88,6 +74,12 @@ struct P0SelfCheck {
         chipDetailsListWhatItTouched()
         mcpWorkerSurvivesLongFlight()
         foldsChipsOverTheLimit()
+        writeWeightStepsAtFixedLines()
+        agentLabelsFollowIdsAndGateTakesTheNext()
+        actionRowsPutGatesLastAndCapAtFour()
+        planWindowStartsAtFirstUnfinished()
+        headlineNamesWhoMovesAndWhoWaits()
+        turnTrailCollapsesRepeatsAndListsWritesFirst()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
         print("p0: ok")
@@ -386,14 +378,6 @@ struct P0SelfCheck {
                && untouched.removed == 0 && untouched.state == .idle,
                "未接触セルに作業量か状態が混ざった")
 
-        let layout = CockpitLayout.compute(structure, width: 900)
-        // 構造画面はエージェントの帯を持たない。空けるのは章見出し（03 構造）と凡例の1行ぶんだけ
-        assert(layout.cards[0].rect.minY == CockpitLayout.margin + CockpitLayout.agentHeader,
-               "構造画面がチップ帯の高さを取っている (実際: \(layout.cards[0].rect.minY))")
-        let first = layout.cards[0].cells[0]
-        assert(layout.file(at: CGPoint(x: first.rect.midX, y: first.rect.midY)) == first.cell.id,
-               "構造画面のセルをクリックできない")
-
         // 最終接触が同じでも辞書順に依存せず、パスで安定すること
         let tied = Cockpit()
         tied.adopt(Structure.build([
@@ -625,14 +609,6 @@ struct P0SelfCheck {
         assert(snap.chips.first?.depth == 0, "司令塔が先頭")
         assert(snap.chips.map(\.depth) == snap.chips.map(\.depth).sorted(), "階層順に並ぶ")
 
-        // レイアウトでは階層が深いほど右に下がり、行も分かれる
-        let layout = CockpitLayout.compute(snap, width: 1100)
-        let root = layout.chips.first { $0.chip.id == "S1" }!
-        let child = layout.chips.first { $0.chip.id == "sub1" }!
-        assert(child.rect.minX > root.rect.minX, "子は右に下がる")
-        assert(child.rect.minY > root.rect.maxY - 1, "子は下の行に来る")
-        assert(layout.chipRect(forAgent: "S1") != nil, "親子線を引くためチップ矩形が取れる")
-
         // フラグの主語も役割名になる
         let f = Cockpit()
         f.apply([.agentMeta(agent: "sub1", session: "S1", role: "実装", depth: 1, parentCall: "toolu_T1")])
@@ -739,111 +715,6 @@ struct P0SelfCheck {
         chip = c.snapshot(now: t0.addingTimeInterval(62), mode: .work).chips.first { $0.id == "grepper" }
         assert(chip?.busy == false, "終了したら脈打たせない")
         assert(chip?.done == true)
-    }
-
-    /// エージェントの帯は**司令塔の箱＋縦1本の点線レール＋行**。
-    ///
-    /// ビーム（チップとファイルを結ぶ折れ線）はここで検査していたが、帯とファイル帯を
-    /// 1本の罫で断ち切る形にしたので線の通る道が無くなった。関係は文字で語る——
-    /// 行の「いま何をしているか」とセルのタグの2つが唯一の手掛かりになったので、
-    /// **その2つが同じファイルを指していること**をこちらで見る
-    static func agentRowsHangFromTheRail() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 9_000_000)
-        // 司令塔はセッションIDそのものがエージェントID（深さ0になる条件）
-        c.apply([.agentActivity(agent: "S1", session: "S1", model: "opus-5", at: t0)])
-        for i in 1...3 {
-            c.apply([.agentMeta(agent: "w\(i)", session: "S1", role: "Phase \(i)",
-                                depth: 1, parentCall: "s\(i)"),
-                     .agentSpawn(call: "s\(i)", by: "S1", session: "S1", type: "Explore",
-                                 title: "Phase \(i)", at: t0),
-                     .agentActivity(agent: "w\(i)", session: "S1", model: "haiku-4.5", at: t0)])
-        }
-        c.apply(write("w2", "/proj/src/Target.swift", "e1", at: t0.addingTimeInterval(1)))
-
-        let snap = c.snapshot(now: t0.addingTimeInterval(2), mode: .work)
-        let layout = CockpitLayout.compute(snap, width: 1100)
-
-        let roots = layout.chips.filter(\.isRoot)
-        let rows = layout.chips.filter { !$0.isRoot }
-        assert(!roots.isEmpty, "司令塔の箱が出ていない")
-        assert(rows.count >= 3, "行が出ていない (実際: \(rows.count))")
-
-        // 箱は左端、行はレールより右。読む順が上から下の1方向に揃っていること
-        assert(roots[0].rect.minX == CockpitLayout.margin, "箱が左端に無い")
-        assert(roots[0].rect.width <= CockpitLayout.rootCardWidth, "箱が広がった")
-        for row in rows {
-            assert(row.rect.minX > layout.railX,
-                   "行がレールより左に出た (行 \(row.rect.minX) / レール \(layout.railX))")
-            assert(row.rect.height == CockpitLayout.rowHeight, "行の高さが揃っていない")
-        }
-
-        // レールは箱の下から最後の行まで通っていること
-        assert(layout.railTop >= roots[0].rect.maxY, "レールが箱の中から生えている")
-        assert(layout.railBottom >= rows.last!.rect.minY, "レールが最後の行まで届いていない")
-        assert(layout.railX > roots[0].rect.minX && layout.railX < roots[0].rect.maxX,
-               "レールが箱の真下から降りていない")
-
-        // 行同士が重ならない（重なると当たり判定がどちらに転ぶか読めない）
-        for (a, b) in zip(rows, rows.dropFirst()) {
-            assert(a.rect.maxY <= b.rect.minY + 0.5, "行が重なった")
-        }
-
-        // 番号は上から W1、W2 …。飛ぶと「何体目か」が読めない
-        assert(rows.prefix(3).map(\.shortID) == ["W1", "W2", "W3"],
-               "行の番号が順になっていない (実際: \(rows.prefix(3).map(\.shortID)))")
-
-        // ビームを外したので、触っているファイルは行の meta が唯一の手掛かり。
-        // ここが空だと、どのエージェントが何を触っているか画面から辿れなくなる
-        let worker = layout.chips.first { $0.chip.id == "w2" }
-        assert(worker?.chip.target == "/proj/src/Target.swift",
-               "行が触っている先を持っていない (実際: \(worker?.chip.target ?? "nil"))")
-        assert(worker?.doing.contains("Target.swift") == true,
-               "行にファイル名が出ていない (実際: \(worker?.doing ?? "nil"))")
-        assert(worker?.doing.contains("編集") == true, "読み書きの別が出ていない")
-
-        // 触っていない行は、それまでの内訳に落ちる（ファイル軸に載らない作業はそこにしか出ない）
-        let idle = layout.chips.first { $0.chip.id == "w1" }
-        assert(idle?.chip.target == nil, "この行は何も触っていない前提")
-        assert(idle?.doing.contains("Target.swift") != true, "触っていない行に他人のファイルが出た")
-    }
-
-    /// 止まった門は**紙と行の両方**で出る。紙だけだと何が止まったのか読めず、
-    /// 行だけだとレールのどこで止まっているのか分からない
-    static func gateShowsAsPaperAndRow() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 9_100_000)
-        c.apply([.agentActivity(agent: "boss", session: "S1", model: "opus-5", at: t0)])
-        let snap = CockpitSnapshot(
-            mode: .work,
-            chips: c.snapshot(now: t0.addingTimeInterval(1), mode: .work).chips,
-            cards: [], flagCount: 0, readThreshold: 3, hiddenChips: 0,
-            gates: [Gate.Request(id: "/m/gate/g1.md", call: "c1", by: "boss",
-                                 to: "検査ワーカー", risk: "high", issued: t0,
-                                 instruction: "p0-selfcheck に凡例の検査を足す")])
-        let layout = CockpitLayout.compute(snap, width: 1100)
-
-        guard let paper = layout.paper(forGate: "/m/gate/g1.md"),
-              let hit = layout.rect(forGate: "/m/gate/g1.md") else {
-            fatalError("門の紙が置かれていない")
-        }
-        assert(paper.size == CockpitLayout.gatePaper, "紙の寸法が変わった (実際: \(paper.size))")
-        // 紙はレールの右横に立つ。行の上に載ると行の字と重なる
-        assert(paper.minX > layout.railX, "紙がレールの左に出た")
-        assert(paper.maxX < CockpitLayout.margin + CockpitLayout.rowOffset,
-               "紙が行の欄に食い込んだ")
-
-        // 紙と行のどちらを押しても門が開く
-        assert(hit.contains(CGPoint(x: paper.midX, y: paper.midY)), "紙を押しても開かない")
-        let row = layout.chips.first { $0.gate }
-        assert(row != nil, "止まった相手の行が出ていない")
-        assert(hit.contains(CGPoint(x: row!.rect.midX, y: row!.rect.midY)), "行を押しても開かない")
-        assert(row?.role.contains("検査") == true,
-               "行に相手の名前が出ていない (実際: \(row?.role ?? "nil"))")
-        assert(row?.badge == "待機", "止まった行のバッジが待機になっていない")
-
-        // 帯の高さが紙を含んでいること。含まないと下のカードに紙が被る
-        assert(layout.busY >= paper.maxY, "紙が帯からはみ出した")
     }
 
     /// Read も Edit も 0.1 秒で終わるので、開始と完了が同じ取り込みバッチで届く。
@@ -959,33 +830,6 @@ struct P0SelfCheck {
         }.first
         assert(action?.1 == "Grep drawGates", "実際: \(action?.1 ?? "無し")")
         assert(action?.0 == .search, "Grep が検索に数えられていない")
-    }
-
-    /// 書き込み量は 点 → 下線 → 虹 の順に足す。点だけだと3段で頭打ちになり、
-    /// 100行と1000行が同じ見え方になっていた
-    static func writeTierStacksDotsUnderlineRainbow() {
-        typealias Tier = CockpitLayout.WriteTier
-        func tier(_ n: Int, huge: Bool = false) -> Tier { CockpitLayout.writeTier(n, huge: huge) }
-
-        assert(tier(0) == .none, "未変更に装飾を付けた")
-        assert(tier(0, huge: true) == .none, "触っていないのに虹を掛けた")
-        assert(tier(1) == .small && tier(9) == .small)
-        assert(tier(10) == .medium && tier(99) == .medium)
-        assert(tier(100) == .large && tier(9999) == .large)
-        assert(tier(120, huge: true) == .huge, "上位2%が虹にならない")
-
-        // 段が上がるほど印が増える。下の段の印が消えてはいけない
-        assert(tier(5).underline == nil, "T1 に下線が付いた（点だけの段）")
-        assert(tier(50).underline?.double == false, "T2 は細い1本")
-        assert(tier(500).underline?.double == false, "T3 は太い1本")
-        assert(tier(500).underline!.thickness > tier(50).underline!.thickness,
-               "T3 が T2 より太くない")
-        assert(tier(500, huge: true).underline?.double == true, "T4 が二重下線でない")
-        assert(!tier(500).rainbow && tier(500, huge: true).rainbow, "虹が最上段だけになっていない")
-
-        // 点の本数は従来どおり。下線は「重ねる印」で、量そのものは点が持つ
-        assert(CockpitLayout.writeTicks(5) == 1 && CockpitLayout.writeTicks(50) == 2
-               && CockpitLayout.writeTicks(500) == 3, "点の段が変わった")
     }
 
     /// 記憶DB。既存の書式を読み、人間が開いたノートだけ編集する
@@ -1153,7 +997,9 @@ struct P0SelfCheck {
         let cockpit = Cockpit(projectsRoot: projects)
         cockpit.selectedSession = session
         cockpit.refreshMemory()
-        assert(cockpit.memoryDirectory()?.standardizedFileURL == memory.standardizedFileURL,
+        // URL 同士ではなくパスで比べる。Linux の Foundation は実在するディレクトリに
+        // appendingPathComponent すると末尾に / を足すので、同じ場所でも URL が一致しない
+        assert(cockpit.memoryDirectory()?.standardizedFileURL.path == memory.standardizedFileURL.path,
                "保存の錨が実 memory/ を向いていない")
 
         let outside = base.appendingPathComponent("outside.md")
@@ -1162,6 +1008,10 @@ struct P0SelfCheck {
                "memory/ 外へ書けた")
         assert((try? String(contentsOf: outside, encoding: .utf8)) == "外", "置き場の外を書き換えた")
 
+        // 実の置換（`FileManager.replaceItemAt`）を通す保存は macOS だけで見る。
+        // Linux の swift-corelibs-foundation では元が実在しても「ファイルが無い」で必ず失敗するため
+        // （アプリは macOS 専用。下の注入した置換・競合・リンク抜けの検査は Linux でも通す）
+        #if os(macOS)
         let edited = original.replacingOccurrences(of: "変更前", with: "変更後")
         assert(cockpit.saveNote(path: note.path, text: edited, expectedText: original) == .saved,
                "memory/ 内を保存できない")
@@ -1184,6 +1034,10 @@ struct P0SelfCheck {
         assert(cockpit.saveNote(path: note.path, text: forced,
                                 expectedText: edited, overwrite: true) == .saved,
                "明示した上書きが働かない")
+        #else
+        // 置換を通さなかったので、ノートは原文のまま。以降はこれを基準版にする
+        let forced = original
+        #endif
 
         // 置換が返したURLの内容が違えば、実在していても成功にしない
         cockpit.replaceNoteForProbe = { original, _ in
@@ -1268,30 +1122,6 @@ struct P0SelfCheck {
                "書いたセッションか状態が出ていない (実際: \(a.trace))")
         assert(!a.trace.contains("→") && !a.trace.contains("繋がる"),
                "リンクの繋がりを表示している (実際: \(a.trace))")
-
-        // 字下げは描画位置と幅に効き、深くても右端を越えない
-        let layout = CockpitLayout.compute(snap, width: 1100)
-        assert(layout.cards.count == 1, "描画でも1列になっていない")
-        let card = layout.cards[0]
-        assert(card.rect.maxX <= 1100 - CockpitLayout.margin + 0.5, "カードが画面幅を超えた")
-        // セルは3行ぶん
-        for box in card.cells {
-            assert(box.rect.height == CockpitLayout.noteCellHeight, "壁打ちのセルが3行ぶんでない")
-        }
-
-        let cells = card.cells
-        assert(cells[1].rect.minX > cells[0].rect.minX
-               && cells[4].rect.minX > cells[3].rect.minX,
-               "字下げが描画の x に効いていない")
-        assert(cells.allSatisfy { $0.rect.maxX <= cells[0].rect.maxX + 0.5 },
-               "字下げた行が右端をはみ出した")
-
-        // 狭い幅で壊れた深さが来ても、120pt の下限がカード外へ押し出さない
-        var narrowSnapshot = snap
-        narrowSnapshot.cards[0].files[4].indent = 20
-        let narrow = CockpitLayout.compute(narrowSnapshot, width: 320).cards[0]
-        assert(narrow.cells.allSatisfy { $0.rect.maxX <= narrow.rect.maxX - CockpitLayout.cardPad + 0.5 },
-               "狭い幅で字下げの最小幅がカードを越えた")
 
         // 記憶DB が空でも成立する（まだ1本も書かれていない状態が普通にある）
         let fresh = Cockpit()
@@ -1507,28 +1337,6 @@ struct P0SelfCheck {
         let emptyChips = empty.snapshot(now: now, mode: .work).chips
         assert(!emptyChips.isEmpty && emptyChips.allSatisfy { $0.share == 0 },
                "消費0件のときにshareが0以外になった、または割り算で落ちた")
-
-        // chipTrailing: 表示に出す割合の丸め・しきい値を固定する。
-        // ここに置くのは、割合ロジックの置き場所（CockpitLayout）が p0-selfcheck の
-        // 検査対象だとコメントで明示されているのと、直前で share の値そのものを作っているため
-        func chip(share: Double, model: String = "opus-5", work: Int = 3) -> AgentChip {
-            AgentChip(id: "x", role: "role", model: model, depth: 0, parent: nil,
-                      work: work, doing: "", done: false, busy: false,
-                      target: nil, kind: nil, lastAt: .distantPast,
-                      instruction: "", counts: [], spent: share > 0 ? 1 : 0, share: share)
-        }
-        let sixtyTwo = CockpitLayout.chipTrailing(chip(share: 0.62))
-        assert(sixtyTwo.contains("62%"), "62%の表示が出ない。実際: \(sixtyTwo)")
-
-        let underOnePercent = CockpitLayout.chipTrailing(chip(share: 0.004))
-        assert(!underOnePercent.contains("%"), "1%未満なのに%が出た。実際: \(underOnePercent)")
-
-        let rounded = CockpitLayout.chipTrailing(chip(share: 0.015))
-        assert(rounded.contains("2%"), "四捨五入が崩れた。実際: \(rounded)")
-
-        let bare = chip(share: 0, model: "", work: 0)
-        assert(CockpitLayout.chipTrailing(bare).isEmpty,
-               "modelが空・workが0なのに何か出た。実際: \(CockpitLayout.chipTrailing(bare))")
     }
 
     /// `share` の分母は「表示中のチップ」ではなく「そのセッションの全履歴」（畳んだ分・消した分も含む）。
@@ -2100,9 +1908,13 @@ struct P0SelfCheck {
         // 承認モードもファイルが正。書けて、読み戻せる
         assert(cockpit.setGateLevel(.each) == .saved, "承認モードを書けない")
         assert(Gate.level(memoryRoot: memory) == .each, "書いた承認モードを読み戻せない")
-        // 二度目は既にあるファイルへの上書きになる（新規作成の経路を通らない）
+        // 二度目は既にあるファイルへの上書きになる（新規作成の経路を通らない）。
+        // 上書きは `FileManager.replaceItemAt` を通るので macOS だけで見る——
+        // Linux の swift-corelibs-foundation では元が実在しても「ファイルが無い」で必ず失敗する
+        #if os(macOS)
         assert(cockpit.setGateLevel(.auto) == .saved, "承認モードを変えられない")
         assert(Gate.level(memoryRoot: memory) == .auto, "変えた承認モードが残っていない")
+        #endif
 
         // 門は記憶DBの一覧に出さない。答えられない場所に並べても邪魔になるだけ
         cockpit.refreshMemory()
@@ -2152,80 +1964,10 @@ struct P0SelfCheck {
         assert(Gate.level(memoryRoot: memory) == .auto, "末尾の改行で読めなくなった")
     }
 
-    /// 止まった指示は**線の上に停まる**。押せなければ司令塔は永久に待つので、
-    /// 矩形を必ず持つことと、どこにも重ならないことの両方を見る
-    static func stoppedOrderParksOnTheLine() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 60_000_000)
-        c.apply([.agentActivity(agent: "S1", session: "S1", model: "opus-5", at: t0)])
-        c.apply([.agentMeta(agent: "w0", session: "S1", role: "ワーカー", depth: 1, parentCall: "call0"),
-                 .agentSpawn(call: "call0", by: "S1", session: "S1", type: "Explore",
-                             title: "依存を洗う", at: t0),
-                 .agentActivity(agent: "w0", session: "S1", model: "haiku-4.5", at: t0)])
-        c.apply(read("w0", "/proj/App.swift", "r1", at: t0))
-
-        func gate(_ id: String, by: String, at: TimeInterval = 0) -> Gate.Request {
-            Gate.Request(id: id, call: id, by: by, to: "Explore", risk: "high",
-                         issued: t0.addingTimeInterval(at), instruction: "依存を洗ってください")
-        }
-        c.loadGatesForProbe([gate("/g/a.md", by: "S1"),
-                             gate("/g/b.md", by: "S1", at: 1),
-                             gate("/g/orphan.md", by: "まだ画面に居ない")])
-        let snap = c.snapshot(now: t0.addingTimeInterval(2), mode: .work)
-        let layout = CockpitLayout.compute(snap, width: 1100)
-
-        // 全部が矩形を持つ。相手が分からない門も捨てない（捨てると向こうが待ち続ける）
-        for g in snap.gates {
-            assert(layout.rect(forGate: g.id) != nil, "門 \(g.id) が押せない")
-            assert(layout.paper(forGate: g.id) != nil, "門 \(g.id) の紙が置かれていない")
-        }
-        let a = layout.paper(forGate: "/g/a.md")!
-        let b = layout.paper(forGate: "/g/b.md")!
-        let orphan = layout.paper(forGate: "/g/orphan.md")!
-
-        // 紙はレールの右横に立つ。行の欄に食い込むと行の字と重なる
-        for r in [a, b, orphan] {
-            assert(r.minX > layout.railX, "紙がレールの左に出た (\(r))")
-            assert(r.maxX < CockpitLayout.margin + CockpitLayout.rowOffset,
-                   "紙が行の欄に食い込んだ (\(r))")
-        }
-
-        // 門は縦に積む。相手が分かるかどうかに関わらず順に並ぶ
-        assert(!a.intersects(b), "同じ相手の門が重なった")
-        assert(!a.intersects(orphan) && !b.intersects(orphan), "迷子の門が他と重なった")
-        for r in [a, b, orphan] {
-            assert(r.minX >= 0 && r.maxX <= 1100 + 0.01, "紙が画面の外 (\(r))")
-            assert(r.size == CockpitLayout.gatePaper, "紙の寸法が変わった")
-        }
-
-        // 押した点が正しい門に当たる。**紙と行のどちらでも開く**
-        assert(layout.gate(at: CGPoint(x: a.midX, y: a.midY)) == "/g/a.md", "紙を押しても当たらない")
-        assert(layout.gate(at: CGPoint(x: a.minX - 40, y: a.midY)) != "/g/a.md", "紙の左で当たった")
-        let rows = layout.chips.filter(\.gate)
-        assert(rows.count == snap.gates.count, "止まった相手の行が足りない (実際: \(rows.count))")
-        for row in rows {
-            assert(layout.gate(at: CGPoint(x: row.rect.midX, y: row.rect.midY)) != nil,
-                   "行を押しても門が開かない")
-        }
-
-        // 帯が伸びて下のカードに被らない。被ると紙もカードも読めなくなる
-        let cards = layout.cards.map(\.rect)
-        assert(!cards.isEmpty, "カードが1枚も出ていない（この検査が空回りしている）")
-        for r in [a, b, orphan] {
-            for card in cards { assert(!r.intersects(card), "紙がカードに被った (\(r) / \(card))") }
-        }
-
-        // 作業モード以外には出さない。線を出していない場所に紙だけが浮く
-        assert(CockpitLayout.compute(c.snapshot(now: t0, mode: .structure), width: 1100)
-                .gates.isEmpty, "構造モードに門が出た")
-        assert(CockpitLayout.compute(c.snapshot(now: t0, mode: .memory), width: 1100)
-                .gates.isEmpty, "壁打ちモードに門が出た")
-    }
-
     /// 指示は Markdown で来る（codex に渡すプロンプトは実測5000字近い md）。    /// 指示は Markdown で来る（codex に渡すプロンプトは実測5000字近い md）。
     /// 1行に押し込む場所で生の記号が出ると読めない
     static func flattensMarkdownForOneLine() {
-        func plain(_ s: String) -> String { CockpitLayout.plainLine(s) }
+        func plain(_ s: String) -> String { Cockpit.plainLine(s) }
         assert(plain("## 工程A: MCP の連携") == "工程A: MCP の連携", "実際: \(plain("## 工程A: MCP の連携"))")
         assert(plain("- **受け入れ基準**を満たす") == "受け入れ基準を満たす",
                "実際: \(plain("- **受け入れ基準**を満たす"))")
@@ -2238,39 +1980,6 @@ struct P0SelfCheck {
         assert(plain("A-B の対応") == "A-B の対応", "文中のハイフンまで消した")
         assert(plain("5 * 3 の計算") == "5 3 の計算" || plain("5 * 3 の計算").contains("3"),
                "実際: \(plain("5 * 3 の計算"))")
-    }
-
-    /// 「特大」は絶対量ではなく表示中の上位2%。
-    /// 絶対値で決めると、大きく書いた日は画面じゅうが特大になって目印にならない
-    static func hugeIsRelative() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 18_000_000)
-        // 100行以上が20ファイル。上位2% ＝ 1ファイルだけが特大
-        for i in 0..<20 {
-            c.apply(write("a", "/p/dir/F\(i).swift", "e\(i)", at: t0.addingTimeInterval(Double(i)),
-                          added: 100 + i * 10))
-        }
-        var snap = c.snapshot(now: t0.addingTimeInterval(30), mode: .work)
-        var layout = CockpitLayout.compute(snap, width: 1200)
-        var huge = layout.cards.flatMap(\.cells).filter(\.huge)
-        assert(huge.count == 1, "上位2%は1ファイル (実際: \(huge.count))")
-        assert(huge[0].cell.name == "F19.swift", "一番書かれたものが特大 (実際: \(huge[0].cell.name))")
-
-        // 全部が小さければ誰も特大にならない
-        let small = Cockpit()
-        for i in 0..<20 {
-            small.apply(write("a", "/p/dir/S\(i).swift", "s\(i)", at: t0, added: 5))
-        }
-        snap = small.snapshot(now: t0.addingTimeInterval(30), mode: .work)
-        layout = CockpitLayout.compute(snap, width: 1200)
-        huge = layout.cards.flatMap(\.cells).filter(\.huge)
-        assert(huge.isEmpty, "100行未満しか無ければ特大は出ない (実際: \(huge.count))")
-
-        // 1つだけ巨大なら、それが特大
-        small.apply(write("a", "/p/dir/Big.swift", "big", at: t0.addingTimeInterval(40), added: 900))
-        layout = CockpitLayout.compute(small.snapshot(now: t0.addingTimeInterval(50), mode: .work), width: 1200)
-        huge = layout.cards.flatMap(\.cells).filter(\.huge)
-        assert(huge.count == 1 && huge[0].cell.name == "Big.swift", "実際: \(huge.map(\.cell.name))")
     }
 
     /// 起動時に遡れる量が足りないと、参照回数が黙って減ってフラグが消える。
@@ -2317,84 +2026,6 @@ struct P0SelfCheck {
         }
         loose.poll(initial: true)
         assert(all.count == 3, "予算が足りれば全部読む (実際: \(all.count))")
-    }
-
-    static func laysOutWithoutOverlap() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 5_000_000)
-        for i in 0..<14 {
-            c.apply(write("agent\(i % 3)", "/proj/src/dir\(i % 4)/File\(i)Name.swift", "e\(i)",
-                          at: t0.addingTimeInterval(Double(i))))
-        }
-        let snap = c.snapshot(now: t0.addingTimeInterval(20), mode: .work)
-        let layout = CockpitLayout.compute(snap, width: 1100)
-
-        assert(layout.chips.count == 3)
-        assert(layout.cards.count == 4, "ディレクトリ4つ (実際: \(layout.cards.count))")
-        assert(layout.contentHeight > layout.busY, "高さが出ている")
-
-        // セルは全部カードの内側に収まっていること
-        for card in layout.cards {
-            for box in card.cells {
-                assert(card.rect.contains(box.rect),
-                       "セル \(box.cell.name) がカード \(card.title) からはみ出している")
-            }
-        }
-        // カード同士が重なっていないこと
-        for (i, a) in layout.cards.enumerated() {
-            for b in layout.cards[(i + 1)...] {
-                assert(!a.rect.intersects(b.rect), "カード \(a.title) と \(b.title) が重なっている")
-            }
-        }
-        // ビームの行き先が引けること
-        let target = snap.chips.compactMap(\.target).first
-        if let target { assert(layout.rect(forFile: target) != nil, "ビームの行き先が見つからない") }
-
-        // 幅を狭めると折り返して縦に伸びる
-        let narrow = CockpitLayout.compute(snap, width: 500)
-        assert(narrow.contentHeight > layout.contentHeight, "狭い幅では縦に伸びる")
-
-        // 全角ファイル名でも幅を2文字分として数えている
-        assert(CockpitLayout.textWidth("あい") > CockpitLayout.textWidth("ai"))
-    }
-
-    /// 長いファイル名・長いディレクトリ名でカードを突き抜けないこと。
-    /// セル幅を名前の実寸から決めていた頃はここで破綻していた
-    static func longNamesStayInsideCards() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 7_000_000)
-        let longDir = "/Users/someone/.claude/jobs/7e04693d-3b1a-4111-a60d-df295e96d95f/tasks"
-        c.apply(write("a", longDir + "/AT22 (アットデュエット) オーケストレーターソフト(仮称).md", "e1",
-                      at: t0, added: 1234))
-        c.apply(write("a", longDir + "/b.txt", "e2", at: t0.addingTimeInterval(1)))
-        c.apply(read("a", "/p/x.md", "r1", at: t0.addingTimeInterval(2)))
-
-        for width in [420.0, 700.0, 1400.0] {
-            let snap = c.snapshot(now: t0.addingTimeInterval(60), mode: .work)
-            let layout = CockpitLayout.compute(snap, width: width)
-            for card in layout.cards {
-                assert(card.rect.width <= width - CockpitLayout.margin,
-                       "カードが画面幅を超えた (幅 \(width))")
-                for box in card.cells {
-                    assert(card.rect.contains(box.rect),
-                           "幅 \(width) でセル \(box.display) がカードからはみ出した")
-                    // 省略後の文字列が、左右のティック欄を除いたセル内に収まっていること
-                    let used = CockpitLayout.textWidth(box.display) + CockpitLayout.tickColumn * 2
-                    assert(used <= box.rect.width, "文字がセル幅を超えた: \(box.display)")
-                }
-                assert(CockpitLayout.textWidth(card.title) <= card.rect.width,
-                       "カード名がカード幅を超えた: \(card.title)")
-            }
-        }
-
-        // 省略の仕方：ファイル名は中央を削って拡張子を残す
-        let short = CockpitLayout.truncateMiddle("VeryLongFileNameIndeed.swift", toWidth: 90)
-        assert(short.contains("…") && short.hasSuffix("t"), "中央省略で末尾が残る (実際: \(short))")
-        assert(CockpitLayout.textWidth(short) <= 90)
-        // ディレクトリ名は頭を削って深い方を残す
-        let dir = CockpitLayout.truncateHead("…/7e04693d-3b1a-4111-a60d-df295e96d95f/tasks", toWidth: 80)
-        assert(dir.hasPrefix("…") && dir.hasSuffix("tasks"), "頭省略で末尾が残る (実際: \(dir))")
-        assert(CockpitLayout.textWidth(dir) <= 80)
     }
 
     /// 書かれた瞬間だけ光の帯を流すので、書き込み時刻が要る
@@ -2589,40 +2220,6 @@ struct P0SelfCheck {
         assert(lateEvents.count == 2, "起動時の遡り読みで件数が合わない (実際: \(lateEvents.count))")
     }
 
-    /// 書き込み量はティックの本数で表す。下線の長さで表すと
-    /// ファイル名の長さが量として紛れ込むので、段階は固定寸法で数えられること
-    static func writeVolumeTicks() {
-        assert(CockpitLayout.writeTicks(0) == 0, "未変更は0本")
-        assert(CockpitLayout.writeTicks(1) == 1)
-        assert(CockpitLayout.writeTicks(9) == 1, "T1 は 1–9 行")
-        assert(CockpitLayout.writeTicks(10) == 2, "T2 は 10–99 行")
-        assert(CockpitLayout.writeTicks(99) == 2)
-        assert(CockpitLayout.writeTicks(100) == 3, "T3 は 100 行以上")
-        assert(CockpitLayout.writeTicks(9999) == CockpitLayout.maxTicks, "上限を超えない")
-
-        // 名前の長さは本数に影響しない（下線案を却下した理由）
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 16_000_000)
-        c.apply(write("a", "/p/a.ts", "e1", at: t0, added: 620))
-        c.apply(write("a", "/p/ApplicationCoordinatorWithAVeryLongName.ts", "e2", at: t0, added: 4))
-        let files = Dictionary(uniqueKeysWithValues:
-            c.snapshot(now: t0.addingTimeInterval(1), mode: .work).cards.flatMap(\.files).map { ($0.name, $0) })
-        assert(CockpitLayout.writeTicks(files["a.ts"]!.added) == 3, "短い名前でも大量なら3本")
-        assert(CockpitLayout.writeTicks(files["ApplicationCoordinatorWithAVeryLongName.ts"]!.added) == 1,
-               "長い名前でも少量なら1本")
-
-        // ティック欄のぶんセルが広がり、名前が押し出されてもはみ出さない
-        let layout = CockpitLayout.compute(c.snapshot(now: t0.addingTimeInterval(1), mode: .work), width: 900)
-        for card in layout.cards {
-            for box in card.cells {
-                assert(card.rect.contains(box.rect), "ティック追加でセルがはみ出した: \(box.display)")
-                // 左（書き込み量）と右（参照回数）の2欄ぶん
-                let used = CockpitLayout.tickColumn * 2 + CockpitLayout.textWidth(box.display)
-                assert(used <= box.rect.width, "ティック込みで文字が溢れた: \(box.display)")
-            }
-        }
-    }
-
     // MARK: 進行表
 
     /// TaskCreate の本文は tool_use 側、番号は結果側に来る。
@@ -2809,27 +2406,10 @@ struct P0SelfCheck {
     }
 
     /// 参照回数は「企画書を何度も読み返している」に気づくためのもの。
-    /// フラグ（しきい値以上＋編集ゼロ）が立つ前に、埋まっていく過程が見えること
-    static func readTicksFillTowardFlag() {
-        assert(CockpitLayout.readTicks(0, threshold: 3) == 0, "読んでいなければ0個")
-        assert(CockpitLayout.readTicks(1, threshold: 3) == 1)
-        assert(CockpitLayout.readTicks(2, threshold: 3) == 2)
-        assert(CockpitLayout.readTicks(3, threshold: 3) == 3, "しきい値で埋まりきる")
-        assert(CockpitLayout.readTicks(99, threshold: 3) == 3, "埋まりきったら増えない")
+    /// しきい値は設定画面から変えられるので、変えた値でフラグが立つこと
+    /// （点の数え方は盤面ごと消えたので、ここにはフラグ側だけが残る）
+    static func flagFollowsTunedThreshold() {
         // しきい値を変えたら追従する（外から変えられる値なので固定してはいけない）
-        assert(CockpitLayout.readTicks(4, threshold: 5) == 4)
-        assert(CockpitLayout.readTicks(9, threshold: 5) == 5)
-        assert(CockpitLayout.readTicks(1, threshold: 0) == 1, "0でも1個は出す（0除算・不可視を避ける）")
-
-        // しきい値は設定画面から変えられるので、点がセルの高さを超えないこと
-        assert(CockpitLayout.readTicks(99, threshold: 99) == CockpitLayout.maxReadTicks,
-               "上限を超えて積んでいる")
-        let n = CGFloat(CockpitLayout.maxReadTicks)
-        let stack = n * CockpitLayout.tickSize + (n - 1) * CockpitLayout.tickGap
-        assert(stack <= CockpitLayout.cellHeight,
-               "点の列がセルからはみ出す (\(stack) > \(CockpitLayout.cellHeight))")
-
-        // フラグ側も同じしきい値で動くこと（点だけ埋まって橙が立たない、の逆も無い）
         let tuned = Cockpit()
         let t1 = Date(timeIntervalSince1970: 22_500_000)
         tuned.flagReadThreshold = 5
@@ -2837,26 +2417,23 @@ struct P0SelfCheck {
         var cell = tuned.snapshot(now: t1.addingTimeInterval(60), mode: .work).cards
             .flatMap(\.files).first { $0.id == "/p/spec.md" }!
         assert(cell.state != .flagged, "しきい値5なのに4回で立った")
-        assert(CockpitLayout.readTicks(cell.reads, threshold: 5) == 4)
         tuned.apply(read("a", "/p/spec.md", "q4", at: t1.addingTimeInterval(5)))
         cell = tuned.snapshot(now: t1.addingTimeInterval(60), mode: .work).cards
             .flatMap(\.files).first { $0.id == "/p/spec.md" }!
         assert(cell.state == .flagged, "しきい値に届いたのに立たない")
-        assert(CockpitLayout.readTicks(cell.reads, threshold: 5) == 5, "埋まりきりとフラグがずれている")
 
-        // 実際のセルに乗り、埋まりきった時にフラグと一致すること
+        // 既定のしきい値（3回）でも同じ
         let c = Cockpit()
         let t0 = Date(timeIntervalSince1970: 22_000_000)
         for i in 0..<3 { c.apply(read("a", "/p/spec.md", "r\(i)", at: t0.addingTimeInterval(Double(i)))) }
         c.apply(read("a", "/p/other.md", "r9", at: t0))
 
-        let snap = c.snapshot(now: t0.addingTimeInterval(60), mode: .work)
-        let boxes = Dictionary(uniqueKeysWithValues:
-            CockpitLayout.compute(snap, width: 900).cards.flatMap(\.cells).map { ($0.cell.id, $0) })
-        assert(boxes["/p/spec.md"]!.readTicks == 3, "3回読んだのに埋まっていない")
-        assert(boxes["/p/spec.md"]!.cell.state == .flagged, "埋まりきったのにフラグが立っていない")
-        assert(boxes["/p/other.md"]!.readTicks == 1)
-        assert(boxes["/p/other.md"]!.cell.state != .flagged, "1回でフラグが立った")
+        let files = Dictionary(uniqueKeysWithValues:
+            c.snapshot(now: t0.addingTimeInterval(60), mode: .work).cards.flatMap(\.files).map { ($0.id, $0) })
+        assert(files["/p/spec.md"]?.reads == 3 && files["/p/spec.md"]?.state == .flagged,
+               "3回読んだのにフラグが立っていない")
+        assert(files["/p/other.md"]?.reads == 1 && files["/p/other.md"]?.state != .flagged,
+               "1回でフラグが立った")
     }
 
     /// meta.json は .jsonl より後に書かれることがある（実測 273体中62体、遅れの中央値341秒）。
@@ -2948,117 +2525,6 @@ struct P0SelfCheck {
         assert(rel("/p/nope.swift").isEmpty, "知らないパスで落ちる")
         // 自分自身は関係先に入れない（入れると「起点」と「関係先」の塗り分けが崩れる）
         assert(!rel("/p/Engine.swift").contains("/p/Engine.swift"))
-    }
-
-    /// エゴビュー。グリッドに辺を敷き詰めず、押した1件のまわりだけを開く。
-    /// 幾何が崩れると箱と曲線が繋がらないので、寸法は純関数のうちに押さえる
-    static func egoViewFramesOneFile() {
-        let graph = Structure.build([
-            "/p/src/Model.swift":  "/// 台帳。全部ここを通る\nstruct Ledger {}\nlet h = Helper()",
-            "/p/src/A.swift":      "let a = Ledger()",
-            "/p/src/B.swift":      "let b = Ledger()",
-            "/p/src/Helper.swift": "struct Helper {}",
-            "/p/README.md":        "Model.swift が台帳を持つ",
-        ])
-        let size = CGSize(width: 1200, height: 760)
-        let hubPath = "/p/src/Model.swift"
-        let view = CockpitLayout.ego(path: hubPath, graph: graph, lastEdit: 87, size: size)
-        let hub = view.panels[0]
-
-        // 左＝呼ばれている元とノート、中央＝そのファイル、右＝呼んでいる先
-        let ins = view.relations.filter { $0.marker == .calledBy || $0.marker == .note }
-        let outs = view.relations.filter { $0.marker == .calling }
-        assert(ins.count == 3, "呼ばれている元2件とノート1件 (実際: \(ins.count))")
-        assert(outs.count == 1, "呼んでいる先 (実際: \(outs.count))")
-        for r in ins { assert(r.rect.maxX < hub.minX, "左の列がハブに被った") }
-        for r in outs { assert(r.rect.minX > hub.maxX, "右の列がハブに被った") }
-        assert(hub.minX >= 0 && hub.maxX <= size.width, "ハブが画面外")
-
-        // 矢印。向きが呼び出しの向きと一致すること
-        assert(view.links.count == ins.count + outs.count, "矢印の数が行と合わない")
-        for link in view.links {
-            switch link.marker {
-            case .calling:
-                assert(link.from.x >= hub.maxX && link.to.x > link.from.x,
-                       "呼んでいる先の矢がハブから出ていない")
-            case .calledBy, .note:
-                // 左の列はハブより左なので、こちらも左から右へ進んでハブの左端に刺さる。
-                // 向きの違いは矢の位置（ハブ側か行側か）で出る
-                assert(link.to.x <= hub.minX && link.to.x > link.from.x,
-                       "呼ばれている元の矢がハブに入っていない")
-            default: assert(false, "印の無い行に矢を引いた")
-            }
-        }
-
-        // 余白＝ハブの下。解説と数値がそこに入り、ハブや左右の列と重ならない
-        assert(view.memoTop > hub.maxY, "解説がハブに被った")
-        assert(view.memo.joined().contains("台帳"), "解説が出ていない (実際: \(view.memo))")
-        assert(view.stats.count == 3)
-        assert(view.stats[0].value == "1", "定義された型 (実際: \(view.stats[0].value))")
-        assert(view.stats[1].value == "2", "被参照 (実際: \(view.stats[1].value))")
-        assert(view.stats[2].value == "+87", "直近の編集 (実際: \(view.stats[2].value))")
-        assert(CockpitLayout.ego(path: hubPath, graph: graph, lastEdit: nil, size: size)
-                .stats[2].value == "—", "編集が無い時に数字を捏造している")
-        for stat in view.stats {
-            assert(stat.rect.minY > hub.maxY, "数値タイルがハブに被った")
-            for r in ins { assert(stat.rect.minX > r.rect.maxX, "数値タイルが左の列に被った") }
-            for r in outs { assert(stat.rect.maxX < r.rect.minX, "数値タイルが右の列に被った") }
-        }
-
-        // ノートは依存グラフに混ぜない。混ぜると README が全ファイルを呼んでいることになる
-        assert(graph.dependsOn["/p/README.md"] == nil)
-        assert(view.relations.contains { $0.marker == .note && $0.label.hasSuffix(".md") },
-               "関連ノートが出ていない")
-        assert(view.relations.contains { $0.marker == .calledBy && $0.label == "A" },
-               "呼ばれている元が拡張子付きのまま出ている")
-
-        // 中央のハブ・数値タイル・解説の本文は押しても閉じない。
-        // 一番ボタンに見えるハブを押すと画面ごと消える、が一番いらつく
-        assert(view.holdsFocus(at: CGPoint(x: hub.midX, y: hub.midY)), "ハブを押すと閉じる")
-        for stat in view.stats {
-            assert(view.holdsFocus(at: CGPoint(x: stat.rect.midX, y: stat.rect.midY)),
-                   "数値タイルを押すと閉じる")
-        }
-        if !view.memo.isEmpty {
-            assert(view.holdsFocus(at: CGPoint(x: view.stats[0].rect.minX + 4, y: view.memoTop)),
-                   "解説の本文を押すと閉じる")
-        }
-        // 何も無い余白は閉じてよい（そこが唯一の閉じ方）
-        assert(!view.holdsFocus(at: CGPoint(x: 4, y: size.height - 4)), "余白でも閉じない")
-        // 行の上は「飛ぶ」が優先。閉じ判定に食われない
-        for row in view.relations where !row.path.isEmpty {
-            let p = CGPoint(x: row.rect.midX, y: row.rect.midY)
-            assert(view.file(at: p) != nil, "行が引けない")
-        }
-
-        // 押した先へ飛べる。押せない行（残件数）は飛ばない
-        for row in view.relations where !row.path.isEmpty {
-            assert(graph.files.contains(row.path), "実在しないパスへ飛ぶ行: \(row.path)")
-            assert(view.file(at: CGPoint(x: row.rect.midX, y: row.rect.midY)) == row.path,
-                   "行の中心を押しても引けない: \(row.label)")
-        }
-        assert(view.file(at: CGPoint(x: 2, y: 2)) == nil, "余白が当たっている")
-        let next = view.relations.first { $0.marker == .calledBy }!.path
-        let jumped = CockpitLayout.ego(path: next, graph: graph, lastEdit: nil, size: size)
-        assert(jumped.name == (next as NSString).lastPathComponent, "飛んだ先が違う")
-        assert(jumped.relations.contains { $0.marker == .calling }, "飛んだ先の関係が組み直されていない")
-
-        // 片側の上限と残件数
-        var many: [String: String] = ["/p/Hub.swift": "struct Hub {}"]
-        for i in 0..<12 { many["/p/User\(i).swift"] = "let x = Hub()" }
-        let big = Structure.build(many)
-        let wide = CockpitLayout.ego(path: "/p/Hub.swift", graph: big, lastEdit: nil, size: size)
-        assert(wide.relations.filter { $0.marker == .calledBy }.count == CockpitLayout.egoMaxSide)
-        assert(wide.relations.contains { $0.path.isEmpty && $0.label.contains("他") }, "残件数が出ない")
-        assert(wide.links.count == CockpitLayout.egoMaxSide, "押せない行にも矢を引いた")
-
-        // 折り返しは省略しない
-        let long = String(repeating: "あ", count: 60)
-        let wrapped = CockpitLayout.wrap(long, toWidth: 170, size: 14, maxLines: 10)
-        assert(wrapped.count > 1 && !wrapped.contains { $0.contains("…") }, "折り返しで削っている")
-        assert(CockpitLayout.wrap(String(repeating: "い", count: 900),
-                                  toWidth: 170, size: 14, maxLines: 10).count == 10, "行数の上限が効かない")
-        assert(CockpitLayout.wrap("", toWidth: 170, size: 14, maxLines: 10).isEmpty)
     }
 
     // MARK: MCP・詳細・履歴セッション
@@ -3222,10 +2688,6 @@ struct P0SelfCheck {
                && files[0].reads == 2 && files[0].writes == 1, "実際: \(files)")
         assert(c.writeHistory(of: "/p/App.swift").count == 1)
         assert(c.touchedFiles(by: "nobody").isEmpty, "触っていないエージェントにファイルが出た")
-        let layout = CockpitLayout.compute(c.snapshot(now: t0.addingTimeInterval(3), mode: .work), width: 900)
-        let chip = layout.chips.first { $0.chip.id == "worker" }!
-        assert(layout.chip(at: CGPoint(x: chip.rect.midX, y: chip.rect.midY)) == "worker",
-               "描いたチップを押しても引けない")
 
         c.selectedSession = "S2"
         files = c.touchedFiles(by: "worker")
@@ -3247,13 +2709,6 @@ struct P0SelfCheck {
         let snap = c.snapshot(now: t0.addingTimeInterval(1), mode: .work)
         assert(snap.chips.count == Cockpit.maxChips && snap.hiddenChips == 1,
                "上限と畳んだ数が違う: \(snap.chips.count) / \(snap.hiddenChips)")
-        let layout = CockpitLayout.compute(snap, width: 900)
-        guard let summary = layout.chips.last, summary.chip.id.isEmpty else {
-            fatalError("他N体のチップが無い")
-        }
-        assert(summary.role == "他 1 体")
-        assert(layout.chip(at: CGPoint(x: summary.rect.midX, y: summary.rect.midY)) == nil,
-               "まとめチップが押せてしまう")
 
         let exact = Cockpit()
         for i in 0..<Cockpit.maxChips {
@@ -3367,31 +2822,6 @@ struct P0SelfCheck {
                "一括読み込みの末尾上限が効いていない")
     }
 
-    /// 一覧のセルはモードで寸法を変えない。解説は解説画面に置いたので2行ぶんの高さは要らない。
-    /// 高さが変わると、モードを切り替えるたびに並びが飛んで目が迷子になる
-    static func cellsKeepTheSameSizeInBothModes() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 24_000_000)
-        c.adopt(Structure.build([
-            "/p/App.swift":   "/// 入口。ここから始まる\nstruct App {}",
-            "/p/Other.swift": "struct Other {}",
-        ]))
-        c.apply(write("a", "/p/App.swift", "w1", at: t0, added: 5))
-
-        func heights(_ mode: CockpitMode) -> [CGFloat] {
-            CockpitLayout.compute(c.snapshot(now: t0.addingTimeInterval(1), mode: mode), width: 900)
-                .cards.flatMap(\.cells).map(\.rect.height)
-        }
-        assert(heights(.work) == [CockpitLayout.cellHeight], "作業モードの寸法が変わった")
-        assert(Set(heights(.structure)) == [CockpitLayout.cellHeight],
-               "構造モードだけセルの高さが違う (実際: \(Set(heights(.structure))))")
-
-        // 解説は一覧に出さない。出す場所は解説画面だけ
-        let view = CockpitLayout.ego(path: "/p/App.swift", graph: c.structure,
-                                     lastEdit: nil, size: CGSize(width: 1200, height: 700))
-        assert(view.memo.joined().contains("入口"), "解説画面から解説が消えた")
-    }
-
     /// `FileCategory.classify` の判定表そのものを固定する。実装がどう書かれているかではなく
     /// この表を検査する——実装が表からズレたら、書き方に関係なくここで落ちるのが正しい
     static func classifiesFilesByCategory() {
@@ -3439,83 +2869,6 @@ struct P0SelfCheck {
         assert(FileCategory.allCases.allSatisfy { !$0.title.isEmpty }, "title が空のケースがある")
         assert(Set(FileCategory.allCases.map(\.rawValue)).count == FileCategory.allCases.count,
                "rawValue が重複している")
-    }
-
-    /// `CockpitLayout.compute` が作る `CellBox` にカテゴリが載ることを、レイアウト経由で確認する。
-    /// `CellBox` の生成箇所は通常のカード折り返し（作業/構造モード）と、壁打ちモード専用の
-    /// 1列レイアウト（`placeCard`）の2箇所に分かれているので、片方だけ直す事故を防ぐため両方通す
-    static func cellsCarryTheirCategory() {
-        // 作業モード：実際にファイルを触らせて通常のカード折り返し経路を通す
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 26_000_000)
-        c.apply(write("a", "/p/src/Impl.swift", "w1", at: t0))
-        c.apply(write("a", "/p/docs/README.md", "w2", at: t0.addingTimeInterval(1)))
-
-        let workSnap = c.snapshot(now: t0.addingTimeInterval(2), mode: .work)
-        let workBoxes = Dictionary(uniqueKeysWithValues:
-            CockpitLayout.compute(workSnap, width: 900).cards.flatMap(\.cells).map { ($0.cell.id, $0) })
-        assert(workBoxes["/p/src/Impl.swift"]?.category == .source,
-               "作業モードで .swift のセルが .source になっていない (実際: \(workBoxes["/p/src/Impl.swift"]?.category.rawValue ?? "nil"))")
-        assert(workBoxes["/p/docs/README.md"]?.category == .note,
-               "作業モードで .md のセルが .note になっていない (実際: \(workBoxes["/p/docs/README.md"]?.category.rawValue ?? "nil"))")
-
-        // 壁打ちモード：`placeCard` の1列経路。記憶DB以外のカードは出ないので、
-        // 材料を直接 CockpitSnapshot に載せてこの経路だけを狙って通す
-        var memorySnap = CockpitSnapshot()
-        memorySnap.mode = .memory
-        memorySnap.cards = [DirCard(id: "db:test", dir: "記憶", files: [
-            FileCell(id: "/m/Note.swift", name: "Note.swift", lastAt: t0),
-            FileCell(id: "/m/Note.md", name: "Note.md", lastAt: t0),
-        ])]
-        let memoryBoxes = Dictionary(uniqueKeysWithValues:
-            CockpitLayout.compute(memorySnap, width: 900).cards.flatMap(\.cells).map { ($0.cell.id, $0) })
-        assert(memoryBoxes["/m/Note.swift"]?.category == .source,
-               "壁打ちモードで .swift のセルが .source になっていない (実際: \(memoryBoxes["/m/Note.swift"]?.category.rawValue ?? "nil"))")
-        assert(memoryBoxes["/m/Note.md"]?.category == .note,
-               "壁打ちモードで .md のセルが .note になっていない (実際: \(memoryBoxes["/m/Note.md"]?.category.rawValue ?? "nil"))")
-    }
-
-    /// クリックの当たり判定。GUI を動かさずに検査できるよう純関数に出してあるので、
-    /// 「押したのに違うものが開く／何も開かない」はここで落ちる
-    static func clicksResolveToWhatWasDrawn() {
-        let c = Cockpit()
-        let t0 = Date(timeIntervalSince1970: 23_000_000)
-        for i in 1...4 {
-            c.apply([.taskDeclared(call: "c\(i)", session: "S1", subject: "Phase \(i): 何かをする",
-                                   activeForm: "Phase \(i) 中", detail: "詳細", at: t0),
-                     .taskNumbered(call: "c\(i)", id: "\(i)")])
-        }
-        c.apply([.taskStatus(session: "S1", id: "1", status: .inProgress, at: t0)])
-        for i in 0..<6 {
-            c.apply(write("a", "/p/dir\(i % 2)/File\(i).swift", "e\(i)",
-                          at: t0.addingTimeInterval(Double(i))))
-        }
-        c.apply(read("a", "/p/docs/spec.md", "r1", at: t0.addingTimeInterval(9)))
-
-        let snap = c.snapshot(now: t0.addingTimeInterval(10), mode: .work)
-        let layout = CockpitLayout.compute(snap, width: 900)
-        assert(!layout.cards.isEmpty, "検査の前提が組めていない")
-
-        // 描いた矩形の真ん中を押したら、それが返ること。
-        // **進行表は当たり判定を持たない**——最上段の帯は SwiftUI の部品になったので、
-        // Canvas の座標には出てこない（押せるのはファイル・チップ・門の3つだけ）
-        for card in layout.cards {
-            for box in card.cells {
-                let hit = layout.file(at: CGPoint(x: box.rect.midX, y: box.rect.midY))
-                assert(hit == box.cell.id, "セルの中心が引けない: \(box.cell.name) → \(hit ?? "nil")")
-            }
-        }
-
-        // 何も無いところは nil。押すたびに前の吹き出しが閉じる
-        let empty = CGPoint(x: 5, y: layout.busY + 2)
-        assert(layout.file(at: empty) == nil, "余白がどれかに当たっている")
-
-        // 帯に出す並びは、一覧の実体から必ず引けること（引けないと押した先が空になる）
-        let strip = Cockpit.progressStrip(c.allTasks(session: "S1"))
-        let ids = Set(c.allTasks(session: "S1").map(\.id))
-        for task in strip.recent + strip.upcoming + [strip.current].compactMap({ $0 }) {
-            assert(ids.contains(task.id), "帯に実体が無いID: \(task.id)")
-        }
     }
 
     // MARK: コード構造
@@ -3611,7 +2964,7 @@ struct P0SelfCheck {
         }
         assert(real.scanned >= 5, "自分の Sources を読めていない (実際: \(real.scanned))")
         assert(has("Cockpit.swift", "Transcript.swift"), "既知の依存が出ていない")
-        assert(has("CockpitLayout.swift", "Cockpit.swift"), "既知の依存が出ていない")
+        assert(has("Cockpit.swift", "Gate.swift"), "既知の依存が出ていない")
         // AT22App.swift は起点なので誰からも使われない。ここに逆向きの辺が出たら誤検出が混ざっている。
         // （以前は Structure.swift の「辺ゼロ」を見ていたが、そのファイルのコメントが
         //   他ファイルの型名に言及した途端に辺が立って落ちた。コメントも語として拾う仕様どおりの挙動で、
@@ -3624,8 +2977,8 @@ struct P0SelfCheck {
         let notes = real.notes
         assert(notes.count == real.scanned, "役割の付いていないファイルがある")
         assert(notes.values.allSatisfy { !$0.headline.isEmpty }, "見出しが空のファイルがある")
-        assert(notes.first { $0.key.hasSuffix("CockpitLayout.swift") }?.value.memo
-                .contains("画面の座標") == true, "人が書いた説明を拾えていない")
+        assert(notes.first { $0.key.hasSuffix("Category.swift") }?.value.memo
+                .contains("6種類に分類") == true, "人が書いた説明を拾えていない")
         // MARK の後ろの `///` はその型の説明であってファイルの説明ではない。取り違えると別物を見せる
         assert(notes.first { $0.key.hasSuffix("Transcript.swift") }?.value.memo.isEmpty == true,
                "MARK の後ろの型コメントをファイルの説明として拾っている")
@@ -3698,9 +3051,8 @@ struct P0SelfCheck {
         // 録画された最後の触り時点から見る（実時刻だと全部アイドルになって状態が検査できない）
         let snap = cockpit.snapshot(now: latest, mode: .work)
         let files = snap.cards.flatMap(\.files)
-        let layout = CockpitLayout.compute(snap, width: 1100)
         print("p0: \(sources.count)本 \(totalLines)行 / 参照 \(reads) / 書き込み \(writes) / 完了 \(finished)")
-        print("p0: カード \(snap.cards.count) / ファイル \(files.count) / エージェント \(snap.chips.count) / フラグ \(snap.flagCount) / 高さ \(Int(layout.contentHeight))")
+        print("p0: カード \(snap.cards.count) / ファイル \(files.count) / エージェント \(snap.chips.count) / フラグ \(snap.flagCount)")
         for chip in snap.chips {
             let parent = chip.parent.map { " ←親 \($0.suffix(6))" } ?? ""
             let state = chip.done ? "終了" : (chip.busy ? "稼働" : "待機")
@@ -3747,111 +3099,169 @@ struct P0SelfCheck {
         assert(reads + writes > 0, "実 transcript から触りが1件も拾えていない")
         assert(!files.isEmpty, "ファイルが1つも出ていない")
         assert(finished > 0, "tool_result で閉じられた触りが1件も無い")
-        for card in layout.cards {
-            for box in card.cells {
-                assert(card.rect.contains(box.rect), "実データでセルがカードからはみ出した: \(box.cell.name)")
-            }
+    }
+
+    // MARK: Sumi v10 の画面が読む純関数
+
+    /// v10 の検査用チップ。`buildChips` を通さず、並べ方だけを見たい時に直接作る
+    static func v10Chip(_ id: String, depth: Int, busy: Bool = false, done: Bool = false,
+                        target: String? = nil, kind: TouchKind? = nil, work: Int = 0,
+                        doing: String = "") -> AgentChip {
+        AgentChip(id: id, role: depth == 0 ? "司令塔" : "Explore", model: "opus-5", depth: depth,
+                  parent: depth == 0 ? nil : "S1", work: work, doing: doing, done: done, busy: busy,
+                  target: target, kind: kind, lastAt: .distantPast,
+                  instruction: "", counts: [], spent: 0, share: 0)
+    }
+
+    /// 書込量の重みは足し算した行数で6段。切れ目の両側を固定する——
+    /// ずれると 02 STRUCTURE の字の大きさが黙って変わる
+    static func writeWeightStepsAtFixedLines() {
+        let table: [(Int, Int, Int)] = [
+            (0, 0, 0), (1, 0, 1), (9, 0, 1), (10, 0, 2), (99, 0, 2), (100, 0, 3),
+            (299, 0, 3), (300, 0, 4), (999, 0, 4), (1000, 0, 5), (99_999, 0, 5),
+            (5, 5, 2),    // 足して10行。削除も書込量に入る
+            (-5, 0, 0),   // 負の値は0に寄せる（壊れた差分で字が縮まない）
+        ]
+        for (added, removed, expected) in table {
+            let w = Cockpit.writeWeight(added: added, removed: removed)
+            assert(w == expected, "+\(added) −\(removed) は \(expected) のはずが \(w)")
         }
     }
 
-    /// 「特大＝上位2%」は値で切ると同点で崩れる。同じ量のファイルが並ぶと
-    /// 画面じゅうが虹になり、虹は常時アニメーションなので描画も道連れで重くなる
-    static func hugeStaysRareWhenVolumesTie() {
-        func snap(_ volumes: [Int]) -> CockpitSnapshot {
-            var s = CockpitSnapshot()
-            let cells = volumes.enumerated().map { i, v in
-                FileCell(id: "/p/F\(i).swift", name: "F\(i).swift", touched: true,
-                         added: v, removed: 0, lastAt: Date())
-            }
-            s.cards = [DirCard(id: "/p", dir: "p", files: cells)]
-            return s
-        }
-        func hugeCount(_ volumes: [Int]) -> Int {
-            let t = CockpitLayout.hugeThreshold(snap(volumes))
-            return volumes.filter { $0 >= t }.count
-        }
-
-        // 全部が同じ量なら特大は0件。何もかもが特大では目印にならない
-        assert(hugeCount(Array(repeating: 500, count: 48)) == 0,
-               "同点で画面じゅうが特大になった (\(hugeCount(Array(repeating: 500, count: 48)))件)")
-        // 頭だけ抜けていれば、その1本だけ
-        assert(hugeCount([900] + Array(repeating: 500, count: 47)) == 1,
-               "突出した1本を特大にできていない")
-        // 100行未満は母数にすら入らない（T3 の量が要る）
-        assert(hugeCount(Array(repeating: 20, count: 40)) == 0, "小さい書き込みが特大になった")
-        // 母数が2%に満たない時は最大の1本だけ
-        assert(hugeCount([800, 300]) == 1, "母数が少ない時に特大が出ない/増えすぎた")
-        assert(hugeCount([]) == 0)
-        // 同点が上位に固まっていても、切る位置の外に出た分は特大にしない
-        assert(hugeCount([700, 700, 700] + Array(repeating: 150, count: 97)) == 3,
-               "上位2%（3件）を超えて特大が出た (\(hugeCount([700, 700, 700] + Array(repeating: 150, count: 97)))件)")
+    /// 呼び名は ID の並びで振る。チップの並び（労働量順）で振ると W2 と W3 が入れ替わる。
+    /// 門の相手はまだ台帳に居ないので、次の番号を先回りで当てる
+    static func agentLabelsFollowIdsAndGateTakesTheNext() {
+        let chips = [v10Chip("S1", depth: 0), v10Chip("zz", depth: 1), v10Chip("aa", depth: 1)]
+        let labels = Cockpit.agentLabels(chips)
+        assert(labels == ["S1": "C0", "aa": "W1", "zz": "W2"],
+               "呼び名が ID 順になっていない (実際: \(labels))")
+        assert(Cockpit.gateLabel(chips: chips) == "W3", "門の相手が次の番号にならない")
+        assert(Cockpit.gateLabel(chips: chips, index: 1) == "W4", "2つ目の門が同じ番号を名乗った")
+        assert(Cockpit.gateLabel(chips: []) == "W1")
     }
 
-    /// 画面を「止まっている層（3fps）」と「動く層（30fps）」に割る。
-    /// 文字はほぼ全部が止まっている側に居ないと、分けた意味が無い
-    static func stillAndLiveLayersSplitTheScreen() {
-        let now = Date(timeIntervalSince1970: 70_000_000)
-        func cell(_ name: String, state: FileState = .idle, wroteAgo: TimeInterval? = nil,
-                  huge: Bool = false) -> CockpitLayout.CellBox {
-            var c = FileCell(id: "/p/" + name, name: name, touched: true, lastAt: now)
-            c.state = state
-            if let ago = wroteAgo { c.lastWriteAt = now.addingTimeInterval(-ago) }
-            return CockpitLayout.CellBox(cell: c, display: name, note: "", trace: "",
-                                         readTicks: 0, rect: .zero, huge: huge, category: .other)
-        }
+    /// 04 ACTIONS は最大4行。門 → 動いている → 止まっている の順で選び、
+    /// 並べるのは 司令塔（│）→ 配下 → 門、配下の最後だけ └。終わったものは数だけ返す
+    static func actionRowsPutGatesLastAndCapAtFour() {
+        let t0 = Date(timeIntervalSince1970: 80_000_000)
+        let chips = [
+            v10Chip("S1", depth: 0, busy: true, work: 7, doing: "## 計画を**読む**"),
+            v10Chip("w-a", depth: 1, busy: true, target: "/p/App.swift", kind: .write, work: 3),
+            v10Chip("w-b", depth: 1, work: 2, doing: "待機中"),
+            v10Chip("w-c", depth: 1, done: true, work: 9),
+            v10Chip("w-d", depth: 1, busy: true, target: "/p/Spec.md", kind: .read, work: 41),
+        ]
+        let gate = Gate.Request(id: "/m/gate/g1.md", call: "c1", by: "S1", to: "Explore",
+                                risk: "high", issued: t0, instruction: "依存を洗う")
+        let cells = [FileCell(id: "/p/App.swift", name: "App.swift", touched: true,
+                              added: 12, removed: 3, lastAt: t0)]
+        let (rows, doneCount) = Cockpit.actionRows(chips: chips, gates: [gate], cells: cells,
+                                                   now: t0.addingTimeInterval(12))
+        // 門と動いている3つで4行が埋まり、止まっている w-b は落ちる
+        assert(rows.map(\.id) == ["S1", "w-a", "w-d", "/m/gate/g1.md"],
+               "選ぶ順か並べる順が違う (実際: \(rows.map(\.id)))")
+        assert(rows.map(\.branch) == ["│", "├", "├", "└"], "枝の記号が違う (実際: \(rows.map(\.branch)))")
+        assert(rows.map(\.verb) == ["THINK", "WRITE", "READ", "WAIT"], "実際: \(rows.map(\.verb))")
+        assert(rows.map(\.label) == ["C0", "W1", "W4", "W5"], "実際: \(rows.map(\.label))")
+        assert(doneCount == 1, "終わったものの件数が違う (実際: \(doneCount))")
+        assert(!rows.contains { $0.id == "w-c" }, "終わったチップを行に出した")
 
-        // 動く側：書込中・読取中・虹・掃引の途中
-        assert(CockpitLayout.moves(cell("w", state: .writing), steady: now))
-        assert(CockpitLayout.moves(cell("r", state: .reading), steady: now))
-        assert(CockpitLayout.moves(cell("h", huge: true), steady: now), "虹は止まらないので動く側")
-        assert(CockpitLayout.moves(cell("s", wroteAgo: 0.1), steady: now), "掃引の最中が止まる側に落ちた")
-        // 止まる側：何も起きていない・掃引が終わった・フラグだけ
-        assert(!CockpitLayout.moves(cell("i"), steady: now))
-        assert(!CockpitLayout.moves(cell("old", wroteAgo: CockpitLayout.sweepDuration + 0.1), steady: now),
-               "掃引が終わったセルが動く側に残った")
-        assert(!CockpitLayout.moves(cell("f", state: .flagged), steady: now),
-               "フラグは静止しているのに動く側へ入れた")
-        // 未来に書かれた記録（時計のずれ）で掃引を始めない
-        assert(!CockpitLayout.moves(cell("future", wroteAgo: -5), steady: now))
+        let write = rows[1]
+        assert(write.file == "App.swift" && write.path == "/p/App.swift" && write.note == "+12 −3",
+               "書込の行が触っている先と量を持っていない (実際: \(write.file) / \(write.note))")
+        assert(!write.accent && rows[2].accent, "書込だけが青、他はピンクになっていない")
+        assert(rows[2].note == "41 calls")
+        assert(rows[0].file == "計画を読む" && rows[0].path == nil,
+               "触っていない行は「していること」を1行にして出す (実際: \(rows[0].file))")
+        let waiting = rows[3]
+        assert(waiting.waiting && waiting.file == "Explore" && waiting.note == "12s",
+               "門の行が待ち時間か相手を持っていない (実際: \(waiting.file) / \(waiting.note))")
 
-        // どちらの層も、担当する要素をちょうど1回ずつ描く（重ねても足りなくてもいけない）
-        for moving in [true, false] {
-            let drawn = [CockpitLayout.Layer.still, .live].filter {
-                CockpitLayout.draws($0, moving: moving)
+        // 門が無ければ配下の最後が └。止まっている行は動いている行の後ろに付く
+        let calm = Cockpit.actionRows(chips: chips, gates: [], now: t0).rows
+        assert(calm.map(\.id) == ["S1", "w-a", "w-d", "w-b"], "実際: \(calm.map(\.id))")
+        assert(calm.map(\.branch) == ["│", "├", "├", "└"], "実際: \(calm.map(\.branch))")
+        assert(calm[1].note == "±0", "量の分からない書込が空欄になった")
+        assert(calm[3].verb == "IDLE")
+
+        // 司令塔が居なくても └ は配下の最後に付く。何も無ければ空
+        let workersOnly = Cockpit.actionRows(chips: [chips[1], chips[4]], gates: [], now: t0).rows
+        assert(workersOnly.map(\.branch) == ["├", "└"], "実際: \(workersOnly.map(\.branch))")
+        let empty = Cockpit.actionRows(chips: [], gates: [], now: t0)
+        assert(empty.rows.isEmpty && empty.doneCount == 0)
+    }
+
+    /// 05 PLAN の窓は最初の未完了から5行。残りが足りなければ手前の完了で埋めて行数を保つ
+    static func planWindowStartsAtFirstUnfinished() {
+        let t0 = Date(timeIntervalSince1970: 81_000_000)
+        func tasks(_ statuses: [TaskStatus]) -> [RoadmapTask] {
+            statuses.enumerated().map { i, status in
+                RoadmapTask(id: "S1#\(i + 1)", session: "S1", number: i + 1, subject: "工程\(i + 1)",
+                            activeForm: "工程\(i + 1)中", detail: "", status: status, at: t0)
             }
-            assert(drawn.count == 1, "\(moving ? "動く" : "止まる")要素を描く層が\(drawn.count)個ある")
         }
-        assert(CockpitLayout.draws(.both, moving: true) && CockpitLayout.draws(.both, moving: false),
-               "1枚で描く時に抜けが出る")
+        let c: TaskStatus = .completed, p: TaskStatus = .pending, r: TaskStatus = .inProgress
 
-        // 丸めた時刻は刻みの幅で1つずつ進み、同じ刻みの中では動かない
-        let step = CockpitLayout.steadyStep
-        let a = CockpitLayout.steadyDate(now.addingTimeInterval(0.01))
-        let b = CockpitLayout.steadyDate(now.addingTimeInterval(step * 0.9))
-        let c2 = CockpitLayout.steadyDate(now.addingTimeInterval(step * 1.1))
-        assert(a == b, "同じ刻みの中で止まっている層を描き直している")
-        assert(c2 > a, "刻みをまたいでも止まっている層が更新されない")
-        // 1970年からの秒数は10桁あり、倍精度の刻みは 1e-7 前後。1/3 秒を測るには十分で、
-        // ここを 1e-9 で見ると丸め誤差だけで落ちる
-        assert(abs(c2.timeIntervalSince(a) - step) < 1e-6, "刻みの幅が steadyStep と違う")
+        let early = Cockpit.planWindow(tasks: tasks([c, r, p, p, p, p, p, p]))
+        assert(early.rows.map(\.number) == [2, 3, 4, 5, 6], "最初の未完了から始まらない (実際: \(early.rows.map(\.number)))")
+        assert(early.current == 2 && early.total == 8 && early.done == 1)
 
-        // 実データ相当の場面で、文字を持つセルの大半が止まっている側に居ること
-        let cockpit = Cockpit()
-        var events: [TranscriptEvent] = []
-        for i in 0..<400 {
-            let at = now.addingTimeInterval(-800 + Double(i) * 2)
-            events.append(.touchStarted(id: "t\(i)", session: "S", agent: "A",
-                                        path: "/p/dir\(i % 6)/F\(i % 60).swift",
-                                        kind: i % 5 == 0 ? .write : .read, at: at))
-            events.append(.touchFinished(id: "t\(i)", added: 3 + (i % 37) * 5, removed: i % 11,
-                                         at: at.addingTimeInterval(0.1)))
+        // 残りが2行しかない時は、手前の完了3行で埋めて5行を保つ
+        let late = Cockpit.planWindow(tasks: tasks([c, c, c, c, c, c, r, p]))
+        assert(late.rows.map(\.number) == [4, 5, 6, 7, 8], "完了で埋め戻していない (実際: \(late.rows.map(\.number)))")
+        assert(late.current == 7 && late.done == 6)
+
+        // 全部終わっていても窓は空にならない。進行中が無ければ current は nil
+        let finished = Cockpit.planWindow(tasks: tasks(Array(repeating: c, count: 8)))
+        assert(finished.rows.map(\.number) == [4, 5, 6, 7, 8] && finished.current == nil && finished.done == 8)
+
+        // 進行中が無く未着手だけでも、未着手の先頭から
+        let idle = Cockpit.planWindow(tasks: tasks([c, c, p, p, p, p, p]))
+        assert(idle.rows.first?.number == 3 && idle.current == nil, "実際: \(idle.rows.map(\.number))")
+
+        // 窓より少なければ全部、無ければ空。下帯は同じ関数を size: 21 で呼ぶ
+        assert(Cockpit.planWindow(tasks: tasks([c, r, p])).rows.count == 3)
+        let none = Cockpit.planWindow(tasks: [])
+        assert(none.rows.isEmpty && none.total == 0 && none.current == nil)
+        assert(Cockpit.planWindow(tasks: tasks(Array(repeating: p, count: 30)), size: 21).rows.count == 21)
+    }
+
+    /// 01 TALK の大見出しは、動いている者と待っている者だけを主語にした定型文
+    static func headlineNamesWhoMovesAndWhoWaits() {
+        func row(_ label: String, _ verb: String, waiting: Bool = false) -> ActionRow {
+            ActionRow(id: label, label: label, branch: "├", verb: verb, jp: "", loader: "",
+                      file: "", path: nil, note: "", waiting: waiting)
         }
-        cockpit.apply(events)
-        let layout = CockpitLayout.compute(cockpit.snapshot(now: now, mode: .work), width: 1100)
-        let cells = layout.cards.flatMap(\.cells)
-        let moving = cells.filter { CockpitLayout.moves($0, steady: now) }.count
-        assert(cells.count > 20, "母数が足りず判定になっていない")
-        assert(Double(moving) / Double(cells.count) < 0.2,
-               "動く側に寄りすぎて分けた意味が無い (\(moving)/\(cells.count))")
+        let one = Cockpit.headline(rows: [row("W1", "WRITE"), row("W2", "WAIT", waiting: true)])
+        assert(one == "W1 writes. W2 waits for you.", "実際: \(one)")
+        assert(Cockpit.headline(rows: []) == "All quiet. Ask C0.")
+        assert(Cockpit.headline(rows: [row("W1", "IDLE"), row("W2", "DONE")]) == "All quiet. Ask C0.",
+               "止まっている者を主語にした")
+        assert(Cockpit.headline(rows: [row("C0", "THINK"), row("W1", "READ")])
+               == "C0 and W1 are both at work.")
+        assert(Cockpit.headline(rows: [row("C0", "THINK"), row("W1", "READ"), row("W2", "WRITE"),
+                                       row("W3", "WAIT", waiting: true), row("W4", "WAIT", waiting: true)])
+               == "3 agents are at work. 2 wait for you.")
+    }
+
+    /// 司令塔の1ターンの足跡。続いた動作は1つに畳み、REPLY で閉じ、参照は書いた先から3件まで
+    static func turnTrailCollapsesRepeatsAndListsWritesFirst() {
+        let touches: [(path: String, kind: TouchKind)] = [
+            ("/p/A.swift", .read), ("/p/B.swift", .read), ("/p/C.swift", .write),
+            ("/p/C.swift", .write), ("/p/A.swift", .read), ("/p/D.swift", .read),
+        ]
+        let trail = Cockpit.turnTrail(touches)
+        assert(trail.label == "C0 // READ → WRITE → READ → REPLY", "実際: \(trail.label)")
+        assert(trail.refs == ["C.swift", "A.swift", "B.swift"],
+               "書いた先が先頭にない／3件を超えた／重複した (実際: \(trail.refs))")
+
+        // 長すぎる時は直近の3つ
+        let long = Cockpit.turnTrail([("/p/A", .read), ("/p/B", .write), ("/p/C", .read), ("/p/D", .write)])
+        assert(long.label == "C0 // WRITE → READ → WRITE → REPLY", "実際: \(long.label)")
+
+        assert(Cockpit.turnTrail([("/p/A", .read), ("/p/B", .read)]).label == "C0 // READ → REPLY")
+        assert(Cockpit.turnTrail([]).label == "C0 // REPLY")
+        let silent = Cockpit.turnTrail([], replied: false)
+        assert(silent.label == "C0 // THINK" && silent.refs.isEmpty, "実際: \(silent.label)")
     }
 }
