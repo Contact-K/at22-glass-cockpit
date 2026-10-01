@@ -322,3 +322,317 @@ struct MenuDots: View {
         }
     }
 }
+
+// MARK: - 墨流し
+
+/// Stam の Stable Fluids（半ラグランジュの移流＋ヤコビ反復の射影）に渦の閉じ込めを足した、
+/// 静かな水槽に落とした水彩の墨（`components/Suminagashi.js` の写し）。
+///
+/// 重い墨（青）は沈み、差し色（ピンク）は浮く。濃さを 紙 → 墨 → 濃い墨 の3段に写す。
+/// 30Hz の固定刻みで進め、窓が隠れている間は呼ばれないので止まる。
+///
+/// ponytail: CPU の配列で 96 格子。重ければ Metal へ
+///
+/// 隔離は付けない（画面の body からしか触らないので、1つの隔離の中に留まる）。
+/// 付けると deinit から升を解放できなくなる
+final class InkTank {
+    let n: Int          // 横の升
+    let m: Int          // 縦の升
+    private let s: Int, size: Int
+    private var u, v, u0, v0, d1, d2, d0, p, div, curl, grain: UnsafeMutablePointer<Float>
+    private var pixels: [UInt8]
+
+    // v10 の値: res 96 / spread 0.08 / drop-every 7、ほかは部品の既定
+    private let speed: Float = 0.35, dissolve: Float = 0.9993, spread: Float = 0.08
+    private let sink: Float = 0.05, viscosity: Float = 0.997, strength: Float = 1
+    private let curlStrength: Float = 0.18, brush: Float = 0.045, dropEvery: Double = 7
+
+    private let ink: (Float, Float, Float) = (0x12, 0x12, 0xEE)
+    private let accent: (Float, Float, Float) = (0xFF, 0x3D, 0xCC)
+    private let paper: (Float, Float, Float) = (0xFF, 0xFF, 0xFF)
+
+    private var lastStep: Date?
+    private var acc: Double = 0
+    private var dropClock: Double = 0
+    private var phase: Float = 0
+    private var ax: Float = 0.5, ay: Float = 0.5
+    private var hover: (Float, Float)?
+    private var pending: [(due: Date, x: Float, y: Float, r: Float, accent: Bool, amount: Float)] = []
+    private(set) var image: CGImage?
+
+    init(width: CGFloat = 540, height: CGFloat = 800, res: Int = 96) {
+        let rows = max(8, Int(jsRound(Double(CGFloat(res) * height / width))))
+        let count = (res + 2) * (rows + 2)
+        n = res
+        m = rows
+        s = res + 2
+        size = count
+        func alloc() -> UnsafeMutablePointer<Float> { .allocate(capacity: count) }
+        u = alloc(); v = alloc(); u0 = alloc(); v0 = alloc(); d1 = alloc(); d2 = alloc()
+        d0 = alloc(); p = alloc(); div = alloc(); curl = alloc(); grain = alloc()
+        pixels = [UInt8](repeating: 255, count: res * rows * 4)
+        for buf in [u, v, u0, v0, d1, d2, d0, p, div, curl] { buf.initialize(repeating: 0, count: size) }
+        for k in 0..<size { grain[k] = Float.random(in: -0.03...0.03) }
+
+        // 種: 差し色は高く浮かべ、墨は低く沈める
+        for _ in 0..<3 { drop(x: .random(in: 0.15...0.9), y: .random(in: 0.15...0.4), r: .random(in: 0.18...0.26), accent: true, amount: 0.7) }
+        for _ in 0..<4 { drop(x: .random(in: 0.1...0.9), y: .random(in: 0.6...0.9), r: .random(in: 0.2...0.3), accent: false, amount: 0.9) }
+        for _ in 0..<40 { step() }
+        paint()
+    }
+
+    deinit {
+        for buf in [u, v, u0, v0, d1, d2, d0, p, div, curl, grain] { buf.deallocate() }
+    }
+
+    @inline(__always) private func ix(_ i: Int, _ j: Int) -> Int { i + s * j }
+
+    /// 進める。**呼ばれた分しか進まない**——隠れている間に溜めた時間は捨てる（追いつこうとしない）
+    func frame(at now: Date) -> CGImage? {
+        for item in pending where item.due <= now {
+            drop(x: item.x, y: item.y, r: item.r, accent: item.accent, amount: item.amount)
+        }
+        pending.removeAll { $0.due <= now }
+        let tick = 1.0 / 30
+        let elapsed = lastStep.map { now.timeIntervalSince($0) } ?? tick
+        lastStep = now
+        acc = min(acc + max(0, elapsed), tick * 1.5)
+        if acc >= tick {
+            acc -= tick
+            step()
+            paint()
+        }
+        return image
+    }
+
+    /// 1行ぶんの墨を垂らす。10滴を 90ms おきに、少しずつ下へずらして落とす（v10 の `drip`）
+    func drip(x: Float, y: Float, accent: Bool, amount: Float, after delay: Double, now: Date = Date()) {
+        for i in 0..<10 {
+            pending.append((now.addingTimeInterval(delay + Double(i) * 0.09),
+                            x + .random(in: -0.005...0.005), y + Float(i) * 0.0025,
+                            0.03 + Float(i) * 0.002, accent, amount * 0.09))
+        }
+    }
+
+    /// ホバーでそっと掻き回す（墨は足さない）
+    func hover(x: Float, y: Float) {
+        if let last = hover { stir(x: x, y: y, px: last.0, py: last.1, accent: false, amount: 0) }
+        hover = (x, y)
+    }
+
+    func endHover() { hover = nil }
+
+    /// 1滴。柔らかいガウスの雲と、外へのかすかな押し
+    func drop(x: Float, y: Float, r: Float, accent: Bool, amount: Float) {
+        let gi = Int(jsRound(Double(x) * Double(n))), gj = Int(jsRound(Double(y) * Double(m)))
+        let rr = max(2, Int(jsRound(Double(r) * Double(min(n, m)))))
+        let e = Int(ceil(Double(rr) * 1.4))
+        for a in -e...e {
+            for b in -e...e {
+                let i = gi + a, j = gj + b
+                guard i >= 1, i <= n, j >= 1, j <= m else { continue }
+                let dist = Float(hypot(Double(a), Double(b))), q = dist / Float(rr)
+                let k = ix(i, j)
+                if q < 1.4 {
+                    let w = amount * exp(-q * q * 2.2)
+                    if accent { d2[k] = min(1.4, d2[k] + w) } else { d1[k] = min(1.4, d1[k] + w) }
+                }
+                if q < 1.6, dist > 0.5 {
+                    let imp = 0.012 * strength * exp(-(q - 0.9) * (q - 0.9) * 3)
+                    u[k] += imp * Float(a) / dist
+                    v[k] += imp * Float(b) / dist
+                }
+            }
+        }
+    }
+
+    private func stir(x: Float, y: Float, px: Float, py: Float, accent: Bool, amount: Float) {
+        let gi = max(1, min(n, Int(jsRound(Double(x * Float(n)))))), gj = max(1, min(m, Int(jsRound(Double(y * Float(m))))))
+        let rb = max(3, Int(jsRound(Double(Float(n) * brush)))), sg = Float(rb * rb) * 0.35
+        let dx = max(-0.12, min(0.12, (x - px) * strength * 4)), dy = max(-0.12, min(0.12, (y - py) * strength * 4))
+        for a in -rb...rb {
+            for b in -rb...rb {
+                let i = gi + a, j = gj + b
+                guard i >= 1, i <= n, j >= 1, j <= m else { continue }
+                let w = exp(-Float(a * a + b * b) / sg), k = ix(i, j)
+                u[k] += dx * w
+                v[k] += dy * w
+                guard amount > 0 else { continue }
+                if accent { d2[k] = min(1.4, d2[k] + amount * w) } else { d1[k] = min(1.4, d1[k] + amount * w) }
+            }
+        }
+    }
+
+    private func bnd(_ x: UnsafeMutablePointer<Float>) {
+        for i in 1...n { x[ix(i, 0)] = x[ix(i, 1)]; x[ix(i, m + 1)] = x[ix(i, m)] }
+        for j in 1...m { x[ix(0, j)] = x[ix(1, j)]; x[ix(n + 1, j)] = x[ix(n, j)] }
+    }
+
+    private func project() {
+        let fn = Float(n)
+        for j in 1...m {
+            for i in 1...n {
+                div[ix(i, j)] = -0.5 * (u[ix(i + 1, j)] - u[ix(i - 1, j)] + v[ix(i, j + 1)] - v[ix(i, j - 1)]) / fn
+                p[ix(i, j)] = 0
+            }
+        }
+        for _ in 0..<14 {
+            for j in 1...m {
+                for i in 1...n {
+                    p[ix(i, j)] = (div[ix(i, j)] + p[ix(i - 1, j)] + p[ix(i + 1, j)] + p[ix(i, j - 1)] + p[ix(i, j + 1)]) / 4
+                }
+            }
+            bnd(p)
+        }
+        for j in 1...m {
+            for i in 1...n {
+                u[ix(i, j)] -= 0.5 * fn * (p[ix(i + 1, j)] - p[ix(i - 1, j)])
+                v[ix(i, j)] -= 0.5 * fn * (p[ix(i, j + 1)] - p[ix(i, j - 1)])
+            }
+        }
+        bnd(u); bnd(v)
+    }
+
+    private func vorticity(_ eps: Float) {
+        for j in 1...m {
+            for i in 1...n {
+                curl[ix(i, j)] = 0.5 * (v[ix(i + 1, j)] - v[ix(i - 1, j)] - (u[ix(i, j + 1)] - u[ix(i, j - 1)]))
+            }
+        }
+        for j in 2..<m {
+            for i in 2..<n {
+                let gx = 0.5 * (abs(curl[ix(i + 1, j)]) - abs(curl[ix(i - 1, j)]))
+                let gy = 0.5 * (abs(curl[ix(i, j + 1)]) - abs(curl[ix(i, j - 1)]))
+                let len = (gx * gx + gy * gy).squareRoot() + 1e-5, c = curl[ix(i, j)]
+                u[ix(i, j)] += eps * (gy / len) * c
+                v[ix(i, j)] -= eps * (gx / len) * c
+            }
+        }
+    }
+
+    private func advect(_ d: UnsafeMutablePointer<Float>, _ src: UnsafeMutablePointer<Float>, _ dt: Float, _ decay: Float) {
+        let fn = Float(n)
+        for j in 1...m {
+            for i in 1...n {
+                let x = max(0.5, min(fn + 0.5, Float(i) - dt * fn * u[ix(i, j)]))
+                let y = max(0.5, min(Float(m) + 0.5, Float(j) - dt * fn * v[ix(i, j)]))
+                let i0 = Int(x), j0 = Int(y), i1 = i0 + 1, j1 = j0 + 1
+                let s1 = x - Float(i0), s0 = 1 - s1, t1 = y - Float(j0), t0 = 1 - t1
+                d[ix(i, j)] = decay * (s0 * (t0 * src[ix(i0, j0)] + t1 * src[ix(i0, j1)])
+                                     + s1 * (t0 * src[ix(i1, j0)] + t1 * src[ix(i1, j1)]))
+            }
+        }
+        bnd(d)
+    }
+
+    private func diffuse(_ d: UnsafeMutablePointer<Float>, _ k: Float) {
+        guard k > 0 else { return }
+        for j in 1...m {
+            for i in 1...n {
+                let q = ix(i, j)
+                d[q] += k * ((d[q - 1] + d[q + 1] + d[q - s] + d[q + s]) * 0.25 - d[q])
+            }
+        }
+        bnd(d)
+    }
+
+    private func step() {
+        let dt = 0.5 * speed
+        // 自動: ゆっくりした対流と、ときどきの1滴
+        phase += 0.0015
+        let nx = 0.5 + 0.34 * sin(phase * 1.3) + 0.08 * sin(phase * 4.1)
+        let ny = 0.5 + 0.3 * cos(phase * 0.9) + 0.08 * cos(phase * 3.3)
+        stir(x: nx, y: ny, px: ax, py: ay, accent: false, amount: 0)
+        ax = nx; ay = ny
+        dropClock += 1.0 / 30
+        if dropClock > dropEvery {
+            dropClock = 0
+            let pink = Double.random(in: 0..<1) < 0.4
+            drop(x: .random(in: 0.1...0.9), y: pink ? .random(in: 0.1...0.4) : .random(in: 0.5...0.9),
+                 r: .random(in: 0.12...0.22), accent: pink, amount: 0.6)
+        }
+        vorticity(curlStrength)
+        // 墨は水より重くて沈み、差し色は軽くて浮く
+        for j in 1...m {
+            for i in 1...n {
+                let q = ix(i, j), a = d1[q], b = d2[q]
+                v[q] += sink * dt * (a * a - 0.5 * b * b) * 0.0015
+            }
+        }
+        diffuse(u, 0.2); diffuse(v, 0.2)
+        u0.update(from: u, count: size); v0.update(from: v, count: size)
+        advect(u, u0, dt, viscosity); advect(v, v0, dt, viscosity)
+        project()
+        d0.update(from: d1, count: size); advect(d1, d0, dt, dissolve); diffuse(d1, spread)
+        d0.update(from: d2, count: size); advect(d2, d0, dt, dissolve); diffuse(d2, spread)
+    }
+
+    /// 濃さ → 色。紙 → 墨 → 濃い墨（3段）と 紙 → 差し色 → くすんだ差し色 を、墨の割合で混ぜる
+    private func paint() {
+        let inkDeep = (ink.0 * 0.38, ink.1 * 0.38, ink.2 * 0.38)
+        let accentDeep = (accent.0 * 0.55 + ink.0 * 0.25, accent.1 * 0.55 + ink.1 * 0.25, accent.2 * 0.55 + ink.2 * 0.25)
+        func mix(_ a: (Float, Float, Float), _ b: (Float, Float, Float), _ t: Float) -> (Float, Float, Float) {
+            (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
+        }
+        for j in 1...m {
+            for i in 1...n {
+                let q = ix(i, j), a = max(0, d1[q]), b = max(0, d2[q])
+                let tot = (a + b) * (1 + grain[q])
+                let t = 1 - exp(-1.5 * tot)
+                let tt = t < 0.2 ? 0 : (t - 0.2) / 0.8
+                let share: Float = tot > 0 ? a / (a + b) : 0
+                let inkC: (Float, Float, Float), accC: (Float, Float, Float)
+                if tt < 0.55 {
+                    let k = tt / 0.55
+                    inkC = mix(paper, ink, k); accC = mix(paper, accent, min(1, k * 0.85))
+                } else {
+                    let k = (tt - 0.55) / 0.45
+                    inkC = mix(ink, inkDeep, k); accC = mix(accent, accentDeep, k)
+                }
+                let c = mix(accC, inkC, share)
+                let o = ((j - 1) * n + (i - 1)) * 4
+                pixels[o] = UInt8(max(0, min(255, c.0)))
+                pixels[o + 1] = UInt8(max(0, min(255, c.1)))
+                pixels[o + 2] = UInt8(max(0, min(255, c.2)))
+                pixels[o + 3] = 255
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return }
+        image = CGImage(width: n, height: m, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: n * 4,
+                        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// 右の面の墨流し。30Hz、`paused` の間は進まない
+struct Suminagashi: View {
+    let tank: InkTank
+    var paused = false
+
+    var body: some View {
+        GeometryReader { geo in
+            Ticker(fps: 30, paused: paused) { now in
+                if let image = tank.frame(at: now) {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: geo.size.width + 4, height: geo.size.height + 4)
+                        .offset(x: -2, y: -2)
+                        // 部品の `soft 0.8`（= 升 0.8 個ぶんのぼかし）。縁が透けないよう opaque で掛ける
+                        .blur(radius: 0.8 * geo.size.width / CGFloat(tank.n), opaque: true)
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case let .active(point):
+                    tank.hover(x: Float(point.x / max(1, geo.size.width)), y: Float(point.y / max(1, geo.size.height)))
+                case .ended:
+                    tank.endHover()
+                }
+            }
+        }
+        .clipped()
+    }
+}
