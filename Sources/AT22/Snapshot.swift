@@ -16,12 +16,20 @@ enum Snapshot {
 
     @MainActor
     static func write(to path: String, size: CGSize, mode: CockpitMode = .work,
-                      transcript: String? = nil, gate: Bool = false) {
+                      transcript: String? = nil, gate: Bool = false, approval: Bool = false) {
         let cockpit = Cockpit()
         // 空のまま焼くとセッションの選び口しか写らない。実 transcript を1本流し込むと、
         // ACTIONS の行・会話・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
+        // 道具の承認の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
+        if approval {
+            cockpit.loadApprovalsForProbe([Approval(
+                id: "probe", session: cockpit.selectedSession ?? "probe", tool: "Bash",
+                detail: "Create file at /tmp/at22-spike-file",
+                input: #"{"command":"touch /tmp/at22-spike-file","description":"Create file at /tmp/at22-spike-file"}"#,
+                at: Date(timeIntervalSinceNow: -8))])
+        }
 
         let renderer = ImageRenderer(content:
             CockpitView(cockpit: cockpit, shot: Date(), shotMode: mode)

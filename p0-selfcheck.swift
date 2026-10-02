@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -79,10 +79,468 @@ struct P0SelfCheck {
         actionRowsPutGatesLastAndCapAtFour()
         planWindowStartsAtFirstUnfinished()
         headlineNamesWhoMovesAndWhoWaits()
+        waitingAgentShowsAsWaitRow()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
+        streamingIsPerSession()
+        claudePermissionRoundTrip()
+        codexEventsReachBoard()
+        acpSpeaksJSONRPC()
+        worktreesAreSafe()
+        workspaceTreePlacesAgents()
+        unreadAndTerminal()
+        reviewReadsDiff()
+        providersAndLogins()
+        launchLevelTargetsNewProject()
+        await racesAndDispatches()
         await listsRecentSessions()
         replayRealTranscriptIfGiven()
         print("p0: ok")
+    }
+
+    /// 書きかけはセッションごと。1本にまとめていた頃は、どれか1つが書いている間
+    /// 全セッションが稼働中に見え、別のセッションのターン終了で書きかけが消えていた
+    static func streamingIsPerSession() {
+        let c = Cockpit()
+        c.handle(.partial("書いている途中"), session: "A")
+        assert(c.isWorking("A"), "書いているセッションが稼働中にならない")
+        assert(!c.isWorking("B"), "A の書きかけで B まで稼働中になった")
+        c.handle(.turnEnded(tokens: nil), session: "B")
+        assert(c.streaming["A"] == "書いている途中", "B のターン終了で A の書きかけが消えた")
+        // 送っていない割り込みの受領確認は無視する（別セッション宛ての誤配を止め損ないと言わない）
+        c.handle(.interruptAcknowledged(requestID: "rB", stillQueued: 2, cancelled: 0), session: "A")
+        assert(c.launchError == nil, "送っていない割り込みの確認で警告が出た: \(c.launchError ?? "")")
+        c.handle(.turnEnded(tokens: nil), session: "A")
+        assert(c.streaming["A"] == nil && !c.isWorking("A"), "ターン終了で書きかけが残った")
+
+        // 人が止めたターンは失敗と言わない。claude は止めたターンを error_during_execution で終える（実機で確認）
+        c.expectInterrupt("rA", for: "A")
+        c.handle(.partial("1\n2\n"), session: "A")
+        c.handle(.interruptAcknowledged(requestID: "rA", stillQueued: 0, cancelled: 0), session: "A")
+        c.handle(.turnFailed("error_during_execution"), session: "A")
+        assert(c.launchError == nil, "自分で止めたのに失敗と出た: \(c.launchError ?? "")")
+        // 止めていないセッションの同じ終わり方は、今まで通り失敗として出す
+        c.handle(.turnFailed("error_during_execution"), session: "B")
+        assert(c.launchError?.contains("error_during_execution") == true, "本物の失敗を握り潰した")
+    }
+
+    /// `--permission-prompt-tool stdio` の問い合わせを読み、答えを組み立てる。
+    /// 材料は実機（claude 2.1.282）が出した行そのまま
+    static func claudePermissionRoundTrip() {
+        let line = #"{"type":"control_request","request_id":"b9e19849-0112-4e1e-953a-382cc30eff00","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"touch /tmp/at22-spike-file","description":"Create file at /tmp/at22-spike-file"},"description":"Create file at /tmp/at22-spike-file","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch /tmp/at22-spike-file"}],"behavior":"allow","destination":"localSettings"}],"blocked_path":"/tmp/at22-spike-file","tool_use_id":"toolu_014MCDkiywWxxbETWMR57Lw4"}}"#
+        guard case let .permissionRequest(id, tool, detail, input)? = Launcher.parseStreamLine(Data(line.utf8)) else {
+            fatalError("承認の問い合わせを読めない")
+        }
+        assert(id == "b9e19849-0112-4e1e-953a-382cc30eff00" && tool == "Bash")
+        assert(detail == "Create file at /tmp/at22-spike-file", "実際: \(detail)")
+        assert(input.contains("touch /tmp/at22-spike-file"), "入力が落ちた: \(input)")
+        // 共通の形では、どのセッションへの依頼かが付く
+        guard case let .approval(approval)? = ClaudeConnection.agentEvent(
+            .permissionRequest(requestID: id, tool: tool, detail: detail, input: input), session: "S1"),
+              approval.session == "S1", approval.id == id else { fatalError("承認の依頼に直せない") }
+
+        func decode(_ data: Data?) -> [String: Any] {
+            let outer = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
+            let response = outer?["response"] as? [String: Any]
+            assert(outer?["type"] as? String == "control_response" && response?["request_id"] as? String == id)
+            return response?["response"] as? [String: Any] ?? [:]
+        }
+        // 書き換えて許可 → 書き換えた方が updatedInput に載る（実機で、実行されるのはこちらだった）
+        let revised = decode(Launcher.permissionLine(requestID: id, allow: true, input: #"{"command":"echo ok"}"#))
+        assert(revised["behavior"] as? String == "allow"
+               && (revised["updatedInput"] as? [String: Any])?["command"] as? String == "echo ok", "\(revised)")
+        let denied = decode(Launcher.permissionLine(requestID: id, allow: false, input: input))
+        assert(denied["behavior"] as? String == "deny" && denied["message"] != nil, "\(denied)")
+        // 壊れた入力で許可はしない。何が走るか分からない
+        assert(Launcher.permissionLine(requestID: id, allow: true, input: "{壊れた") == nil)
+    }
+
+    /// Codex の出来事は transcript を通らないので、会話にも盤面にも接続から直に出す
+    static func codexEventsReachBoard() {
+        let git = CodexConnection.agentEvents(.commandRun(command: "git status", exitCode: 0))
+        guard case let .tool(_, kind, title, path, _, done)? = git.first else { fatalError("\(git)") }
+        assert(kind == .git && title.hasPrefix("git") && path == nil && done, "\(git)")
+        assert(CodexConnection.agentEvents(.fileChanged(paths: ["/p/a.swift", "/p/b.swift"])).count == 2,
+               "変更ファイルを1件ずつ出していない")
+
+        let c = Cockpit()
+        c.handle(.message("直しました", thinking: false), session: "X1")
+        for event in CodexConnection.agentEvents(.fileChanged(paths: ["/p/src/Fixed.swift"])) {
+            c.handle(event, session: "X1")
+        }
+        c.handle(.turnEnded(tokens: 1200), session: "X1")
+        let snap = c.snapshot(now: Date(), mode: .work)
+        assert(c.messages.contains { $0.session == "X1" && $0.text == "直しました" }, "発言が会話に出ない")
+        assert(snap.chips.contains { $0.id == "X1" }, "Codex のセッションが盤面のチップに出ない")
+        assert(snap.cards.flatMap(\.files).contains { $0.id == "/p/src/Fixed.swift" }, "変更したファイルが盤面に出ない")
+    }
+
+    /// ACP（grok agent stdio）の行を読み、出来事に直す。材料は実機の Grok 1.0.41 が出した形
+    static func acpSpeaksJSONRPC() {
+        func classify(_ json: String) -> RPC.Line? { RPC.classify(Data(json.utf8)) }
+        guard case let .response(id, result, error)? = classify(#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#),
+              id == 3, error == nil, result["stopReason"] as? String == "end_turn" else { fatalError("返事を読めない") }
+        guard case let .response(_, _, failed)? = classify(#"{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"boom"}}"#),
+              failed == "boom" else { fatalError("エラーの返事を読めない") }
+        guard case let .request(askID, method, _)? = classify(#"{"jsonrpc":"2.0","id":"perm-7","method":"session/request_permission","params":{}}"#),
+              method == "session/request_permission", "\(askID)" == "perm-7" else { fatalError("相手からの問いを読めない") }
+        guard case .notification("session/update", _)? = classify(#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{}}}"#)
+        else { fatalError("知らせを読めない") }
+        assert(classify("壊れた行") == nil)
+
+        // 実機の tool_call（種類は _meta 側、題は関数名）→ 完了の update（題が人向けに変わる）
+        let start = #"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"run_terminal_command","rawInput":{"command":"git status"},"_meta":{"x.ai/tool":{"kind":"execute"}}}"#
+        let startTool = ACPConnection.tool((try! JSONSerialization.jsonObject(with: Data(start.utf8))) as! [String: Any], known: nil)
+        assert(startTool.kind == .git && startTool.title.hasPrefix("git") && !startTool.done, "\(startTool)")
+        let done = ACPConnection.tool(["toolCallId": "c1", "status": "completed", "title": "Execute `git status`"], known: startTool)
+        assert(done.done && done.kind == .git, "完了で素性が消えた: \(done)")
+        let edit = ACPConnection.tool(["kind": "edit", "title": "Edit a.swift", "locations": [["path": "/p/a.swift"]]], known: nil)
+        assert(edit.kind == .edit && edit.write && edit.path == "/p/a.swift", "\(edit)")
+
+        // ターンの閉じ方。人が止めたターン（cancelled）は失敗ではない
+        assert(ACPConnection.turnEnd(["stopReason": "end_turn", "_meta": ["inputTokens": 18559]]) == .turnEnded(tokens: 18559))
+        assert(ACPConnection.turnEnd(["stopReason": "cancelled"]) == .turnEnded(tokens: nil))
+        assert(ACPConnection.turnEnd(["stopReason": "max_tokens"]) == .turnFailed("max_tokens"))
+
+        // 承認の選択肢は「一度きり」を先に選ぶ。「以後ずっと」を AT22 が勝手に選ばない
+        let options: [[String: Any]] = [["optionId": "aa", "kind": "allow_always"], ["optionId": "ao", "kind": "allow_once"],
+                                        ["optionId": "ro", "kind": "reject_once"], ["optionId": "ra", "kind": "reject_always"]]
+        assert(ACPConnection.option(options, allow: true) == "ao" && ACPConnection.option(options, allow: false) == "ro")
+        assert(ACPConnection.option([["optionId": "x", "kind": "allow_always"]], allow: true) == "x")
+        let approval = ACPConnection.approval("perm-7", session: "G1", params: [
+            "toolCall": ["title": "Execute `rm -rf build`", "kind": "execute", "rawInput": ["command": "rm -rf build"]]])
+        assert(approval.id == "perm-7" && approval.session == "G1" && approval.input.contains("rm -rf build"), "\(approval)")
+
+        // 台帳は古い形（backend 無し）も読める。台帳を持っていたのは codex だけだった
+        let old = #"[{"id":"x1","threadID":"t1","title":"t","cwd":"/p","model":"m","lastUsed":0}]"#
+        let decoded = try? JSONDecoder().decode([Cockpit.RunRecord].self, from: Data(old.utf8))
+        assert(decoded?.first?.backend == .codex, "古い台帳を読めない")
+    }
+
+    /// ACP の相手ごとの起動引数と、ログインの状態の読み方
+    static func providersAndLogins() {
+        assert(Cockpit.acpArguments(.grok, model: "grok-4.6", level: .normal) == ["agent", "-m", "grok-4.6", "stdio"])
+        assert(Cockpit.acpArguments(.grok, model: "", level: .auto) == ["agent", "--always-approve", "stdio"],
+               "Lv.4 で全部通していない")
+        assert(Cockpit.acpArguments(.hermes, model: "x", level: .auto) == ["acp"], "Hermes に知らない引数を渡した")
+        assert(Backend.allCases.filter(\.isACP) == [.grok, .hermes])
+        // Hermes はトークン数を usage に入れて返す（実測）
+        assert(ACPConnection.turnEnd(["stopReason": "end_turn", "usage": ["inputTokens": 14683]]) == .turnEnded(tokens: 14683))
+        // claude auth status（JSON）
+        assert(Cockpit.claudeLogin(#"{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}"#)
+               == "ログイン済み（claude.ai · max）")
+        assert(Cockpit.claudeLogin(#"{"loggedIn":false}"#) == "未ログイン" && Cockpit.claudeLogin("") == "未ログイン")
+        // grok は記録があればログイン済み。expires_at が過ぎていても grok が自分で更新する
+        let grok = #"{"https://auth.x.ai::u1":{"key":"k","refresh_token":"r","expires_at":"2020-01-01T00:00:00Z"}}"#
+        assert(Cockpit.grokLogin(Data(grok.utf8)) == "ログイン済み（xAI）", "期限切れの記録をログアウト扱いした")
+        assert(Cockpit.grokLogin(nil) == "未ログイン" && Cockpit.grokLogin(Data("{}".utf8)) == "未ログイン")
+    }
+
+    /// レビュー。差分の行番号、追跡外の新規、コメントを1通にまとめる形、コミットと push まで
+    static func reviewReadsDiff() {
+        let sample = """
+        diff --git a/src/a.swift b/src/a.swift
+        index 1..2 100644
+        --- a/src/a.swift
+        +++ b/src/a.swift
+        @@ -10,3 +10,4 @@ func f() {
+         let x = 1
+        -let y = 2
+        +let y = 3
+        +let z = 4
+         return x
+        diff --git a/new.md b/new.md
+        new file mode 100644
+        --- /dev/null
+        +++ b/new.md
+        @@ -0,0 +1 @@
+        +hello
+        \\ No newline at end of file
+        """
+        let files = Worktree.parseDiff(sample)
+        assert(files.map(\.path) == ["src/a.swift", "new.md"], "\(files.map(\.path))")
+        let lines = files[0].hunks[0].lines
+        assert(lines.map(\.kind) == [.context, .remove, .add, .add, .context])
+        assert(lines[0].old == 10 && lines[0].new == 10 && lines[1].old == 11 && lines[1].new == nil
+               && lines[2].new == 11 && lines[3].new == 12 && lines[4].old == 12 && lines[4].new == 13,
+               "行番号がずれた: \(lines.map { ($0.old, $0.new) })")
+        assert(files[0].added == 2 && files[0].removed == 1 && files[1].isNew && files[1].added == 1)
+
+        let message = Cockpit.reviewMessage([
+            Cockpit.ReviewComment(file: "src/a.swift", line: 12, code: "let z = 4", text: "z は要らない"),
+            Cockpit.ReviewComment(file: "new.md", line: nil, code: "", text: "中身が足りない"),
+        ])
+        assert(message.contains("2 件") && message.contains("1. src/a.swift:12\n   > let z = 4\n   z は要らない")
+               && message.contains("2. new.md\n   中身が足りない"), message)
+
+        // 本物の git。基点からの差分（コミット済み＋作業中）と追跡外、コミット、push
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-review-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        let repo = base + "/repo", remote = base + "/remote.git"
+        try! manager.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        let id = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: repo)
+        try! "one\ntwo\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "."], in: repo)
+        _ = try! Worktree.git(id + ["commit", "-qm", "init"], in: repo)
+        _ = try! Worktree.git(["init", "-q", "--bare", remote], in: base)
+        _ = try! Worktree.git(["remote", "add", "origin", remote], in: repo)
+        let made = try! Worktree.add(repo: repo, name: "fix", base: "main")
+        try! "one\nTWO\n".write(toFile: made.path + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(id + ["commit", "-qam", "wip"], in: made.path)
+        try! "one\nTWO\nthree\n".write(toFile: made.path + "/a.txt", atomically: true, encoding: .utf8)
+        try! "fresh\n".write(toFile: made.path + "/fresh.txt", atomically: true, encoding: .utf8)
+        let review = try! Worktree.review(made.path, base: made.baseSHA)
+        let a = review.first { $0.path == "a.txt" }, fresh = review.first { $0.path == "fresh.txt" }
+        assert(a?.added == 2 && a?.removed == 1, "基点からのコミット済み＋作業中が揃っていない: \(String(describing: a))")
+        assert(fresh?.untracked == true && fresh?.added == 2, "追跡外の新規が出ない: \(String(describing: fresh))")
+        assert((try? Worktree.git(["diff", "--cached", "--name-only"], in: made.path))?.isEmpty == true,
+               "レビューでインデックスに触った")
+        _ = try! Worktree.run("/usr/bin/git", id + ["-C", made.path, "add", "-A"], in: made.path)
+        _ = try! Worktree.git(id + ["commit", "-qm", "done"], in: made.path)
+        assert(try! Worktree.review(made.path, base: made.baseSHA).first { $0.path == "fresh.txt" }?.isNew == true,
+               "コミットした新規ファイルが新規として出ない")
+        _ = try! Worktree.push(made.path, branch: made.branch)
+        assert((try? Worktree.git(["branch", "--list", made.branch], in: remote))?.contains("fix") == true,
+               "push した枝がリモートに無い")
+    }
+
+    /// 未読（見ていない間に起きたこと）と、Terminal で続きを開くコマンドの引用
+    static func unreadAndTerminal() {
+        let c = Cockpit()
+        var told: [String] = []
+        c.onAttention = { session, _, body in told.append("\(session):\(body)") }
+        c.selectedSession = "A"
+        c.handle(.turnEnded(tokens: nil), session: "A")
+        c.handle(.turnEnded(tokens: nil), session: "B")
+        c.handle(.approval(Approval(id: "r", session: "C", tool: "Bash", detail: "ls", input: "{}")), session: "C")
+        assert(c.unread == ["B", "C"], "見ているセッションまで未読にした／見ていない方を拾わない: \(c.unread)")
+        assert(told.count == 2 && told[0].hasPrefix("B:"), "\(told)")
+        assert(c.attentionCount == 2)
+        c.selectedSession = "B"
+        assert(!c.unread.contains("B"), "選んでも既読にならない")
+
+        // パスはシェル用に引用する。本物の sh に通して元に戻ること
+        func roundTrip(_ text: String) -> String {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = ["-c", "printf %s " + Cockpit.shellQuote(text)]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            try! task.run()
+            task.waitUntilExit()
+            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        }
+        for tricky in ["/tmp/it's here", #"a "b" $HOME `x` \n"#, "日本語 フォルダ"] {
+            assert(roundTrip(tricky) == tricky, "引用が崩れた: \(tricky) → \(roundTrip(tricky))")
+        }
+        // AppleScript の文字列も本物の osascript に通して元に戻ること
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        let odd = #"cd '/tmp/a "b"' && echo \ok"#
+        script.arguments = ["-e", "return " + Cockpit.appleScriptString(odd)]
+        let out = Pipe()
+        script.standardOutput = out
+        try! script.run()
+        script.waitUntilExit()
+        let back = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .newlines)
+        assert(back == odd, "AppleScript の引用が崩れた: \(back ?? "")")
+
+        c.liveSessions = [LiveSession(id: "S1", name: "s", cwd: "/tmp/it's here", busy: false)]
+        assert(c.terminalCommand(for: "S1") == #"cd '/tmp/it'\''s here' && 'claude' --resume 'S1'"#,
+               c.terminalCommand(for: "S1") ?? "nil")
+    }
+
+    /// 木の組み立て。セッションは最も深いワークスペースに、人の番が先に並ぶ
+    static func workspaceTreePlacesAgents() {
+        let c = Cockpit(projectsRoot: URL(fileURLWithPath: "/nonexistent"))
+        let repo = "/r", wt = "/r/.claude/worktrees/a"
+        c.loadWorkspacesForProbe(projects: [repo],
+                                 worktrees: [repo: [Worktree.Entry(path: repo, head: "x", branch: "main", isMain: true),
+                                                    Worktree.Entry(path: wt, head: "x", branch: "at22/a", isMain: false)]],
+                                 pending: ["/r/.claude/worktrees/b": .init(repo: repo, name: "b", error: nil)])
+        c.liveSessions = [LiveSession(id: "idle", name: "i", cwd: wt + "/src", busy: false),
+                          LiveSession(id: "ask", name: "a", cwd: wt, busy: false, waiting: "承認待ち"),
+                          LiveSession(id: "top", name: "t", cwd: repo, busy: true)]
+        let tree = c.workspaceTree()
+        assert(tree.count == 1 && tree[0].registered, "\(tree.map(\.name))")
+        let byID = Dictionary(uniqueKeysWithValues: tree[0].workspaces.map { ($0.id, $0) })
+        assert(byID[repo]?.agents.map(\.id) == ["top"], "本体に worktree の中のセッションが吸われた")
+        assert(byID[wt]?.agents.map(\.id) == ["ask", "idle"], "人の番が先に並んでいない: \(byID[wt]?.agents.map(\.id) ?? [])")
+        assert(byID["/r/.claude/worktrees/b"]?.pending == "作成中", "作成中のカードが出ない")
+        assert(byID[repo]?.agents.first?.status == .working && byID[wt]?.agents.first?.status == .waiting)
+    }
+
+    /// git worktree の読み取りと、作る・消すの安全装置。使い捨てのリポジトリで本物の git を叩く
+    static func worktreesAreSafe() {
+        // 実機の `git worktree list --porcelain`（本体・切り離し・枝付き）
+        let porcelain = "worktree /r\nHEAD 267fb2b\nbranch refs/heads/main\n\nworktree /r/.claude/worktrees/det\nHEAD 267fb2b\ndetached\n\nworktree /r/.claude/worktrees/task2\nHEAD 267fb2b\nbranch refs/heads/at22/task2\nlocked\n"
+        let entries = Worktree.parse(porcelain)
+        assert(entries.map(\.path) == ["/r", "/r/.claude/worktrees/det", "/r/.claude/worktrees/task2"], "\(entries)")
+        assert(entries[0].isMain && !entries[1].isMain && entries[1].branch == nil, "本体と切り離しを取り違えた")
+        assert(entries[2].branch == "at22/task2" && entries[2].locked, "\(entries[2])")
+        // 名前はブランチにも置き場にも使える形へ。パスを抜ける名前は潰す
+        assert(Worktree.slug("ログイン画面の修正 v2") == "v2" || !Worktree.slug("ログイン画面の修正 v2").contains(" "))
+        assert(!Worktree.slug("../../etc").contains("..") && !Worktree.slug("../../etc").contains("/"), Worktree.slug("../../etc"))
+        assert(Worktree.slug("   ") == "task")
+        // 最も長い前方一致。本体は worktree 全部の前方にもなるので、短い方に吸わせない
+        let paths = ["/r", "/r/.claude/worktrees/a", "/r/.claude/worktrees/ab"]
+        assert(Cockpit.owner(of: "/r/.claude/worktrees/ab/src", among: paths) == "/r/.claude/worktrees/ab")
+        assert(Cockpit.owner(of: "/r/src", among: paths) == "/r")
+        assert(Cockpit.owner(of: "/r2/src", among: paths) == nil, "前方一致を文字列の頭だけで見ている")
+        assert(Worktree.changedFiles(" M a.txt\n?? new.txt\n") == ["a.txt", "new.txt"])
+
+        // 本物の git で、作る → 汚す → 消す
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-wt-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        try! manager.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let identity = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: base)
+        try! "a\n".write(toFile: base + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "a.txt"], in: base)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "init"], in: base)
+        let repo = try! Worktree.root(of: base)
+        let made = try! Worktree.add(repo: repo, name: "task 1", base: "main")
+        assert(made.branch == "at22/task-1" && made.path.hasSuffix("/.claude/worktrees/task-1"), "\(made)")
+        assert((try? Worktree.root(of: made.path)) == repo, "worktree の中から本体を引けない")
+        assert((try? Worktree.git(["status", "--porcelain"], in: repo))?.isEmpty == true,
+               "作業場所が本体の git status に出ている（.git/info/exclude が効いていない）")
+        assert((try? Worktree.add(repo: repo, name: "task 1", base: "main")) == nil, "同じ名前を二度作った")
+        // 汚れた作業場所は force 無しでは消えない。本体と一覧に無い場所はどうやっても消えない
+        try! "x\n".write(toFile: made.path + "/new.txt", atomically: true, encoding: .utf8)
+        assert((try? Worktree.dirtyFiles(made.path)) == ["new.txt"])
+        assert((try? Worktree.remove(repo: repo, path: made.path, force: false)) == nil, "汚れた作業場所を確認無しで消した")
+        assert((try? Worktree.remove(repo: repo, path: repo, force: true)) == nil, "本体を消せてしまう")
+        assert((try? Worktree.remove(repo: repo, path: base + "/elsewhere", force: true)) == nil, "一覧に無い場所を消せてしまう")
+        // コミットを積んだ枝は、作業場所を消しても -d では消えずに残る（中身を見てから消せる）
+        _ = try! Worktree.git(["add", "-A"], in: made.path)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "wip"], in: made.path)
+        try! Worktree.remove(repo: repo, path: made.path, force: false)
+        assert(!manager.fileExists(atPath: made.path))
+        assert(!Worktree.deleteBranch(made.branch, repo: repo), "マージされていない枝を消した")
+        assert((try? Worktree.git(["branch", "--list", made.branch], in: repo))?.contains("task-1") == true)
+    }
+
+    /// 競走は同じ基点の SHA から N 本。勝ちを採ると負けは消え、勝ちは普通のワークスペースに戻る。
+    /// 采配は答えを書いた後でワークスペースを作り、起こせなければ `.result` に失敗を書く（司令塔を待たせ続けない）
+    static func racesAndDispatches() async {
+        func wait(_ secs: Double, _ ok: () -> Bool) async -> Bool {
+            let end = Date().addingTimeInterval(secs)
+            while Date() < end { if ok() { return true }; try? await Task.sleep(for: .milliseconds(50)) }
+            return ok()
+        }
+        // 門の書式。dispatch の無い門は今まで通り（名前・基点は既定で埋まる）
+        let asked = Gate.parse(path: "/p/memory/gate/d.md",
+                               text: "---\ncall: t9\nto: fix\ndispatch: grok\nname: fix 1\nbase: main\n---\n直して\n")!
+        assert(asked.dispatch == .grok && asked.name == "fix 1" && asked.base == "main" && asked.instruction.contains("直して"), "\(asked)")
+        let plain = Gate.parse(path: "/p/memory/gate/e.md", text: "---\ncall: t1\nto: Explore\n---\nx\n")!
+        assert(plain.dispatch == nil && plain.base == "HEAD", "\(plain)")
+        assert(Gate.parse(path: "/p/memory/gate/f.md", text: "---\ncall: t1\ndispatch: nope\n---\nx\n")!.dispatch == nil,
+               "知らないエージェント名で采配になった")
+        assert(Gate.projectDirectory(of: "/h/.claude/projects/-r/memory/gate/d.md") == "/h/.claude/projects/-r")
+        assert(Gate.resultPath(for: "/p/memory/gate/d.md") == "/p/memory/gate/d.result")
+        let result = Gate.resultText(status: "done", fields: [("branch", "at22/x")], summary: " 直した \n",
+                                     at: Date(timeIntervalSince1970: 0))
+        assert(Memory.frontMatter(result)["status"] == "done" && Memory.frontMatter(result)["branch"] == "at22/x"
+               && Memory.body(result).contains("直した"), result)
+
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-race-\(UUID().uuidString)").path
+        defer { try? manager.removeItem(atPath: base) }
+        let repoPath = base + "/repo"
+        try! manager.createDirectory(atPath: repoPath, withIntermediateDirectories: true)
+        let identity = ["-c", "user.email=at22@example.com", "-c", "user.name=AT22"]
+        _ = try! Worktree.git(["init", "-q", "-b", "main"], in: repoPath)
+        try! "a\n".write(toFile: repoPath + "/a.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "a.txt"], in: repoPath)
+        _ = try! Worktree.git(identity + ["commit", "-qm", "init"], in: repoPath)
+        let repo = try! Worktree.root(of: repoPath)
+        let sha = try! Worktree.git(["rev-parse", "HEAD"], in: repo).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 司令塔のセッション（transcript に cwd を持つ）を開いて、そのプロジェクトの門を読む
+        let projects = URL(fileURLWithPath: base + "/projects")
+        let project = projects.appendingPathComponent(Cockpit.projectSlug(repo))
+        let gateDir = project.appendingPathComponent("memory/gate")
+        try! manager.createDirectory(at: gateDir, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("orc.jsonl")
+        try! "{\"type\":\"user\",\"cwd\":\"\(repo)\",\"sessionId\":\"orc\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n"
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let c = Cockpit(projectsRoot: projects)
+        await c.loadSession(RecentSession(id: "orc", project: project.lastPathComponent, projectURL: project,
+                                          transcriptURL: transcript, modifiedAt: Date()))
+        c.refreshMemory()
+
+        // 競走：2本とも同じ SHA から、同じ親で
+        c.createWorkspaces(repo: repo, base: "main",
+                           racers: [.init(name: "r-claude", backend: .claude), .init(name: "r-grok", backend: .grok)],
+                           prompt: "", level: .normal)
+        let a = Worktree.location(repo: repo, name: "r-claude"), b = Worktree.location(repo: repo, name: "r-grok")
+        let raced = await wait(20) { c.refreshWorktreesIfNeeded(force: true); return c.rivals(of: a) == [b] }
+        assert(raced, "競走の相手が引けない: \(c.worktrees) \(c.workspaceMeta)")
+        assert(c.workspaceMeta[a]?.baseSHA == sha && c.workspaceMeta[b]?.baseSHA == sha, "基点の SHA が揃っていない")
+        assert(c.workspaceMeta[a]?.baseRef == "main", "レビュー・PR の基点が枝の名前でなくなった")
+        try! "x\n".write(toFile: b + "/wip.txt", atomically: true, encoding: .utf8)
+        _ = await c.adopt(a)
+        assert(!manager.fileExists(atPath: b), "負けが消えていない")
+        assert(manager.fileExists(atPath: a) && c.workspaceMeta[a]?.parent == nil && c.rivals(of: a).isEmpty,
+               "勝ちが普通のワークスペースに戻っていない")
+
+        // 采配：答えを先に書き、ワークスペースを作る。ここでは CLI が無いので、起こせなかったことを結果に書く
+        let gatePath = gateDir.appendingPathComponent("d1.md").path
+        try! "---\ncall: t1\nby: orc\nto: fixer\ndispatch: claude\nname: fix-1\nbase: main\n---\nREADME を直して\n"
+            .write(toFile: gatePath, atomically: true, encoding: .utf8)
+        c.refreshGates()
+        guard let gate = c.gates.first(where: { $0.dispatch == .claude }) else { return assertionFailure("采配の門が読めない") }
+        assert(c.answer(gate, .allow) == .saved && c.gates.isEmpty, "采配の門に答えられない")
+        let resultFile = Gate.resultPath(for: gatePath)
+        let reported = await wait(20) { manager.fileExists(atPath: resultFile) }
+        assert(reported, "采配の結果が書かれない")
+        let written = try! String(contentsOfFile: resultFile, encoding: .utf8)
+        let front = Memory.frontMatter(written)
+        assert(front["status"] == "failed" && front["error"]?.contains("claude") == true, written)
+        assert(front["workspace"] == Worktree.location(repo: repo, name: "fix-1")
+               && manager.fileExists(atPath: Worktree.location(repo: repo, name: "fix-1")),
+               "采配のワークスペースが司令塔のリポジトリに作られていない: \(written)")
+        // 却下した采配は何も作らない
+        try! "---\ncall: t2\ndispatch: claude\nname: fix-2\n---\nx\n".write(toFile: gateDir.appendingPathComponent("d2.md").path,
+                                                                              atomically: true, encoding: .utf8)
+        c.refreshGates()
+        _ = c.answer(c.gates.first!, .deny)
+        try? await Task.sleep(for: .milliseconds(500))
+        assert(!manager.fileExists(atPath: Worktree.location(repo: repo, name: "fix-2")), "却下したのに作った")
+
+        // 検査の跡を UserDefaults に残さない
+        _ = await c.deleteWorkspace(a, force: true, deleteBranch: false)
+        _ = await c.deleteWorkspace(Worktree.location(repo: repo, name: "fix-1"), force: true, deleteBranch: false)
+        c.removeProject(repo)
+    }
+
+    /// 新しいセッションの承認の段は、**起こす先のプロジェクト**に書く。
+    /// 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
+    static func launchLevelTargetsNewProject() {
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("at22-level-\(UUID().uuidString)")
+        defer { try? manager.removeItem(at: base) }
+        let projects = base.appendingPathComponent("projects")
+        let current = projects.appendingPathComponent("current")
+        try! manager.createDirectory(at: current.appendingPathComponent("memory"), withIntermediateDirectories: true)
+        try! Data().write(to: current.appendingPathComponent("selected.jsonl"))
+
+        let c = Cockpit(projectsRoot: projects)
+        c.selectedSession = "selected"
+        c.refreshMemory()
+        assert(c.setGateLevel(.auto) == .saved, "選択中のプロジェクトに段を書けない")
+
+        // transcript もプロジェクトのフォルダもまだ無い、これから起こす先
+        let cwd = "/tmp/brand new/app"
+        assert(c.setGateLevel(.each, cwd: cwd) == .saved, "起こす先のプロジェクトに段を書けない")
+        let fresh = projects.appendingPathComponent(Cockpit.projectSlug(cwd)).appendingPathComponent("memory")
+        assert(Gate.level(memoryRoot: fresh) == .each, "起こす先に段が書かれていない")
+        assert(Gate.level(memoryRoot: current.appendingPathComponent("memory")) == .auto,
+               "選択中の別プロジェクトの段が変わった")
+        assert(c.gateLevel == .auto, "別プロジェクトに書いたのに表示中の段が変わった")
     }
 
     // MARK: パーサ
@@ -182,6 +640,17 @@ struct P0SelfCheck {
         assert(events.count == 1)
         guard case let .touchFinished(_, a, r, _) = events[0] else { fatalError() }
         assert(a == 0 && r == 0)
+
+        // 完了通知は人間の発言ではない。代わりにサブエージェントを閉じる（実データの形そのまま）
+        let notice = #"{"type":"user","sessionId":"S1","timestamp":"2026-09-25T05:35:50.000Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>afb28320c3a52218f</task-id>\n<status>completed</status>\n</task-notification>"}}"#
+        let noticed = TranscriptParser.parse(Data(notice.utf8), fallbackSession: "x")
+        assert(noticed.count == 1, "実際: \(noticed)")
+        guard case let .agentEnded(agent, _) = noticed[0] else { fatalError("\(noticed)") }
+        assert(agent == "afb28320c3a52218f")
+        // 人間が打った行は今まで通り発言になる
+        let typed = #"{"type":"user","sessionId":"S1","timestamp":"2026-09-25T05:35:50.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"push して"}}"#
+        guard case .said(_, _, "push して", .human, _, _)? = TranscriptParser.parse(Data(typed.utf8), fallbackSession: "x").first
+        else { fatalError("人間の発言が落ちた") }
     }
 
     /// 同じファイルが相対パスと絶対パスの両方で記録されると、
@@ -1534,6 +2003,31 @@ struct P0SelfCheck {
                  .agentActivity(agent: "w0", session: "S1", model: "haiku-4.5", at: t0)])
         let worker = c.snapshot(now: later, mode: .work).chips.first { $0.id == "w0" }
         assert(worker?.busy == false, "止まっている子が親の busy を借りた")
+
+        // 承認ダイアログ中。sessions/<pid>.json の実測の形（v2.1.282）をそのまま通す
+        assert(Cockpit.waitingLabel(status: "waiting", waitingFor: "permission prompt") == "承認待ち")
+        assert(Cockpit.waitingLabel(status: "waiting", waitingFor: "input needed") == "入力待ち")
+        assert(Cockpit.waitingLabel(status: "busy", waitingFor: nil) == nil)
+        c.liveSessions = [LiveSession(id: "S1", name: "S1", cwd: "/p", busy: false,
+                                      waiting: Cockpit.waitingLabel(status: "waiting",
+                                                                    waitingFor: "permission prompt"))]
+        let chipsWaiting = c.snapshot(now: later, mode: .work).chips
+        let asking = chipsWaiting.first { $0.id == "S1" }
+        // 待っている道具（直前の作業）まで出す。止まっているので「思考中」でも内訳でもない
+        assert(asking?.waiting == "承認待ち" && asking?.doing == "承認待ち · 編集 Gate.swift",
+               "実際: \(asking?.doing ?? "無し")")
+        assert(chipsWaiting.first { $0.id == "w0" }?.waiting == nil, "セッションの待ちが子に載った")
+        // AT22 が繋いでいるセッションの道具の承認も、司令塔の「承認待ち」として出す
+        c.liveSessions = [LiveSession(id: "S1", name: "S1", cwd: "/p", busy: false)]
+        c.handle(.approval(Approval(id: "r1", session: "S1", tool: "Bash", detail: "ls", input: "{}")), session: "S1")
+        assert(c.snapshot(now: later, mode: .work).chips.first { $0.id == "S1" }?.waiting == "承認待ち",
+               "承認の依頼が司令塔に出ない")
+        assert(c.stoppedCount == c.gates.count + 1, "承認が止まっている件数に入らない")
+        // 繋がっていない相手には送れないので、依頼は残る（黙って消すと相手は待ったまま）
+        assert(!c.answer(c.approvals[0], allow: true) && c.approvals.count == 1, "送れない答えで依頼が消えた")
+        // 直前に動いていても（最後の作業から1秒後）、待っている間は稼働中にしない
+        let justAsked = c.snapshot(now: t0.addingTimeInterval(41), mode: .work).chips.first { $0.id == "S1" }
+        assert(justAsked?.waiting == "承認待ち" && justAsked?.busy == false, "承認待ちなのに稼働中のランプが点く")
     }
 
     // MARK: 門（人間の介入）
@@ -1566,11 +2060,15 @@ struct P0SelfCheck {
             return a[a.firstIndex(of: "--permission-mode")! + 1]
         }
         assert(mode(.plan) == "plan", "壁打ちが編集できる段に落ちた")
-        assert(mode(.each) == "acceptEdits" && mode(.normal) == "acceptEdits",
-               "段の違いは門が持つ。permission-mode で分けるものではない")
+        // 訊く相手（AT22 の承認パネル）が居るので、Lv.2 は道具ごとに訊き、Lv.3 は編集だけ任せる
+        assert(mode(.each) == "default" && mode(.normal) == "acceptEdits",
+               "Lv.2 / Lv.3 の権限モードが違う: \(mode(.each)) / \(mode(.normal))")
+        let asked = args(.normal)
+        assert(asked[asked.firstIndex(of: "--permission-prompt-tool")! + 1] == "stdio",
+               "承認を AT22 に訊かせていない（-p の claude は黙って断る）")
         assert(mode(.auto) == "bypassPermissions" && mode(.unattended) == "bypassPermissions",
                "任せてる／留守番が確認を求める段に落ちた")
-        // 端末が無いので manual は使えない。誰も答えられないまま待ち続ける
+        // manual は使わない（訊くのは default で足りる）
         assert(!Gate.Level.allCases.contains { $0.permissionMode == "manual" },
                "訊く相手が居ない段で manual を渡している")
 
@@ -1626,6 +2124,15 @@ struct P0SelfCheck {
             sessionID: "s1",
             config: Launcher.Config(cwd: "/p", level: .normal, prompt: "", model: "sonnet"))
         assert(picked[picked.firstIndex(of: "--model")! + 1] == "sonnet", "選んだモデルが渡らない")
+
+        // codex の続き。`exec resume` は -C / --sandbox を弾くので、sandbox は -c で渡す
+        let codex = CodexLauncher.Config(cwd: "/proj", level: .normal, prompt: "", model: "gpt-5.4")
+        let resumed = CodexLauncher.resumeArguments(threadID: "t1", prompt: "続けて", config: codex)
+        assert(!resumed.contains("-C") && !resumed.contains("--sandbox"), "resume が弾く引数を渡している: \(resumed)")
+        assert(resumed[resumed.firstIndex(of: "-c")! + 1] == #"sandbox_mode="workspace-write""#, "\(resumed)")
+        let unattended = CodexLauncher.Config(cwd: "/proj", level: .unattended, prompt: "", model: "gpt-5.4")
+        assert(CodexLauncher.resumeArguments(threadID: "t1", prompt: "x", config: unattended)
+            .contains("--dangerously-bypass-approvals-and-sandbox"), "Lv.5 の段が resume で落ちた")
     }
 
     /// 会話に出す「誰を何のために呼んだか」。**`description` は以前まで捨てていた**ので、
@@ -1708,7 +2215,7 @@ struct P0SelfCheck {
 
         // 割り込みの受領確認。request_id と内訳の両方が正しく取れること
         let ack = """
-        {"type":"control_response","request_id":"r1","response":{"still_queued":["a","b"],"cancelled":["c"]}}
+        {"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"still_queued":["a","b"],"cancelled":["c"]}}}
         """
         guard case let .interruptAcknowledged(requestID, stillQueued, cancelled) = parse(ack) else {
             fatalError("割り込み受領が取れない")
@@ -1720,13 +2227,21 @@ struct P0SelfCheck {
         // 古い版（response が空オブジェクト）。stillQueued/cancelled は0として扱い、
         // エラー扱いにしない裏取り
         let oldAck = """
-        {"type":"control_response","request_id":"r1","response":{}}
+        {"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{}}}
         """
         guard case let .interruptAcknowledged(_, stillQueuedOld, cancelledOld) = parse(oldAck) else {
             fatalError("古い版の受領確認が取れない")
         }
         assert(stillQueuedOld == 0 && cancelledOld == 0,
                "古い版なのに内訳が0でない: \(stillQueuedOld)/\(cancelledOld)")
+
+        // 弾かれた割り込み（実測の文言そのまま）。受領扱いにすると止まったと思い込む
+        let rejected = """
+        {"type":"control_response","response":{"subtype":"error","request_id":"r1","error":"Unsupported control request subtype: undefined"}}
+        """
+        guard case let .error(why) = parse(rejected), why.contains("Unsupported") else {
+            fatalError("弾かれた割り込みを受領扱いした")
+        }
 
         // API 再試行。文言に理由が残っていること
         let retry = """
@@ -1778,8 +2293,9 @@ struct P0SelfCheck {
         assert(decoded?["type"] as? String == "control_request",
                "type が control_request でない (実際: \(decoded?["type"] ?? "nil"))")
         let request = decoded?["request"] as? [String: Any]
-        assert(request?["type"] as? String == "interrupt",
-               "request.type が interrupt でない (実際: \(request?["type"] ?? "nil"))")
+        // キーは subtype。type で送ると claude が弾いてターンが止まらない（v2.1.282 実測）
+        assert(request?["subtype"] as? String == "interrupt",
+               "request.subtype が interrupt でない (実際: \(request ?? [:]))")
         let requestID = decoded?["request_id"] as? String
         assert(requestID?.isEmpty == false, "request_id が空文字")
 
@@ -2574,12 +3090,14 @@ struct P0SelfCheck {
         feed(looseShape)
         feed(otherShape)
         snap = c.snapshot(now: TranscriptParser.date("2026-08-01T09:00:09.000Z")!, mode: .work)
-        let slack = snap.chips.first { $0.id == "mcp-call:m3" }
-        assert(slack?.id == "mcp-call:m3" && slack?.done == true && slack?.work == 1)
+        // prompt の無い呼び出しは道具の利用。呼び出しごとに分裂させず、サーバ単位で1体に束ねて回数を積む
+        // （実測でブラウザ操作85回が85行になり、エージェントの帯を埋めていた）
+        let slacks = snap.chips.filter { $0.role == "claude_ai_Slack" }
+        assert(slacks.count == 1, "道具として呼んだMCPが呼び出しごとに分裂した: \(slacks.map(\.id))")
+        let slack = slacks.first
+        assert(slack?.done == true && slack?.work == 2, "束ねた回数か完了が違う: \(String(describing: slack?.work))")
         assert(slack?.doing == "search" && slack?.instruction == "search",
                "promptが無いMCPでツール名へ戻らない")
-        assert(snap.chips.contains { $0.id == "mcp-call:m4" && $0.done },
-               "threadIdのない別JSON形を呼び出しIDで残せない")
 
         let root = snap.chips.first { $0.id == "S1" }!
         assert(root.counts.first { $0.kind == .spawn }?.count == 4,
@@ -3224,6 +3742,15 @@ struct P0SelfCheck {
         let none = Cockpit.planWindow(tasks: [])
         assert(none.rows.isEmpty && none.total == 0 && none.current == nil)
         assert(Cockpit.planWindow(tasks: tasks(Array(repeating: p, count: 30)), size: 21).rows.count == 21)
+    }
+
+    /// 承認待ち・入力待ちのエージェントは WAIT の行になり、見出しが「waits for you」と言う
+    static func waitingAgentShowsAsWaitRow() {
+        var root = v10Chip("S1", depth: 0, busy: true)
+        root.waiting = "承認待ち"
+        let rows = Cockpit.actionRows(chips: [root, v10Chip("a1", depth: 1, busy: true)], gates: []).rows
+        assert(rows.first?.verb == "WAIT" && rows.first?.jp == "承認待ち" && rows.first?.branch == "│", "\(rows)")
+        assert(Cockpit.headline(rows: rows).contains("C0 waits for you."), Cockpit.headline(rows: rows))
     }
 
     /// 01 TALK の大見出しは、動いている者と待っている者だけを主語にした定型文

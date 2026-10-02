@@ -39,7 +39,7 @@ struct MenuItem {
         case recent(RecentSession)
         /// セッションの選び口（01 TALK の一覧）へ戻る
         case picker
-        case codex(Cockpit.CodexRecord)
+        case codex(Cockpit.RunRecord)
         case newSession
         case agent(String)
         case level(Gate.Level)
@@ -71,11 +71,10 @@ struct MenuItem {
         let notes = cockpit.memory.filter { !$0.isIndex }
         let handoff = notes.first { $0.file.uppercased().contains("HANDOFF") } ?? notes.first
         let session = cockpit.selectedSession
-        let codex = session.map { cockpit.backend(of: $0) == .codex } ?? false
         let canPickModel = session != nil && !cockpit.isWorking(session)
 
         var sessions: [MenuItem] = [MenuItem(en: "New session", jp: "新しく起こす",
-                                             desc: launcherReady ? "claude / codex を起こす" : "設定で連携を入にすると使える",
+                                             desc: launcherReady ? "claude / grok / codex を起こす" : "設定で連携を入にすると使える",
                                              action: .newSession),
                                     MenuItem(en: "All sessions", jp: "一覧から選ぶ", desc: "実行中・履歴・Codex を全部並べる",
                                              action: .picker)]
@@ -90,12 +89,12 @@ struct MenuItem {
                      desc: recent.project + " · " + recent.modifiedAt.formatted(.dateTime.month().day().hour().minute()),
                      action: .recent(recent))
         }
-        sessions += cockpit.codexRecords.filter { !liveIDs.contains($0.id) }.prefix(5).map { record in
-            MenuItem(en: String(record.id.prefix(8)).uppercased(), jp: cockpit.title(for: record.id) ?? "Codex",
-                     desc: "Codex · " + (record.cwd as NSString).lastPathComponent, action: .codex(record))
+        sessions += cockpit.runRecords.filter { !liveIDs.contains($0.id) }.prefix(5).map { record in
+            MenuItem(en: String(record.id.prefix(8)).uppercased(), jp: cockpit.title(for: record.id) ?? record.backend.title,
+                     desc: record.backend.title + " · " + (record.cwd as NSString).lastPathComponent, action: .codex(record))
         }
 
-        let models = (codex ? ModelChoice.codexModels : ModelChoice.claudeModels).map { choice in
+        let models = ModelChoice.models(for: session.map(cockpit.backend(of:)) ?? .claude).map { choice in
             MenuItem(en: choice.title, jp: choice.id, desc: "次に繋いだ時から効く",
                      action: canPickModel ? .model(choice.id) : .none)
         }

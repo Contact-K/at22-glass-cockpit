@@ -156,13 +156,28 @@ enum SumiFonts {
 }
 
 extension Font {
-    /// ラベル・数値。Departure Mono（無ければ等幅のシステム書体）
+    /// 欧文の書体に、和文の受け皿を名指しで付ける。付けないと、欧文書体に無い字（かな・漢字）は
+    /// OS が選んだ書体（ヒラギノ）に落ちて、ラベルの中の和文だけ別の顔になる。
+    /// CSS の `"Departure Mono","DotGothic16"` / `"Fraunces","Aoyagi Kouzan T"` と同じ並び
+    private static func cascaded(_ family: String, then fallback: String?, size: CGFloat) -> Font {
+        var attributes: [CFString: Any] = [kCTFontFamilyNameAttribute: family]
+        if let fallback {
+            attributes[kCTFontCascadeListAttribute] =
+                [CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: fallback] as CFDictionary)]
+        }
+        return Font(CTFontCreateWithFontDescriptor(
+            CTFontDescriptorCreateWithAttributes(attributes as CFDictionary), size, nil))
+    }
+
+    /// ラベル・数値。Departure Mono、和文は DotGothic16（無ければ等幅のシステム書体）
     static func mono(_ size: CGFloat) -> Font {
-        SumiFonts.mono.map { .custom($0, fixedSize: size) }
+        SumiFonts.mono.map { cascaded($0, then: SumiFonts.bodyJP, size: size) }
             ?? .system(size: size, design: .monospaced)
     }
 
-    /// 英見出し。Fraunces（無ければセリフのシステム書体）
+    /// 英見出し。Fraunces（無ければセリフのシステム書体）。
+    /// **受け皿付き（`cascaded`）にしない**——CTFont から作った Font は `minimumScaleFactor` が
+    /// 必要も無いのに字を縮める（門の Allow / Rewrite が 0.6 倍で出た）。見出しは英語だけなので困らない
     static func display(_ size: CGFloat) -> Font {
         SumiFonts.display.map { .custom($0, fixedSize: size) }
             ?? .system(size: size, design: .serif)

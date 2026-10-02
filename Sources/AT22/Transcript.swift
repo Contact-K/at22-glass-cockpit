@@ -489,10 +489,25 @@ enum TranscriptParser {
             // toolUseResult を持つ行（ツール結果の運び屋）は発言として出さない。
             // `isMeta` は行の直下に付くことも `message` の中に入ることもあるので、両方見る
             // （実データでの形はまだ実測していない。広めに構えて、混ざるより落とす方を選ぶ）
+            //
+            // `origin.kind` が human 以外の行は Claude Code が差し込んだもの。実測で
+            // `task-notification`（裏で走らせたサブエージェントや Bash の完了通知）は isMeta を持たず、
+            // 見なければ「<task-notification>…」が人間の発言として会話に出ていた
+            let origin = (obj["origin"] as? [String: Any])?["kind"] as? String
+            let text = humanText(from: message)
             if obj["toolUseResult"] == nil, obj["isMeta"] as? Bool != true,
-               let text = humanText(from: message) {
+               origin == nil || origin == "human", let text {
                 events.append(.said(agent: session, session: session, text: text,
                                     speaker: .human, thinking: false, at: at))
+            }
+            // 裏で走らせたサブエージェントの終了。実測で最後の発言の stop_reason が null のまま
+            // 終わるものが19体中7体あり、end_turn だけを見ていると「待機」のまま残っていた。
+            // 通知の task-id はサブエージェントの agentId そのもの。Bash の ID も来るが、
+            // 台帳に無い ID は受け手（Cockpit）が捨てる
+            if origin == "task-notification", let text,
+               let open = text.range(of: "<task-id>"),
+               let close = text.range(of: "</task-id>", range: open.upperBound..<text.endIndex) {
+                events.append(.agentEnded(agent: String(text[open.upperBound..<close.lowerBound]), at: at))
             }
 
             // tool_result はどのツールでも出るので、対応する touch を知らなければ受け手が捨てる。

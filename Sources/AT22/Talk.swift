@@ -14,8 +14,7 @@ struct TalkScreen: View {
     let verdicts: [VerdictLine]
     @Binding var gate: GateUI
     let gateFailed: Bool
-    let request: Gate.Request?
-    let gateLabel: String
+    let stop: Stop?
     let pendingGates: Int
     let trail: [(path: String, kind: TouchKind)]
     let ctxAlarm: Bool
@@ -92,8 +91,8 @@ struct TalkScreen: View {
                 .scrollIndicators(.never)
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: items.last?.id) { scrollDown(proxy) }
-                .onChange(of: cockpit.streaming.count) { scrollDown(proxy) }
-                .onChange(of: request?.id) { scrollDown(proxy) }
+                .onChange(of: cockpit.streaming[cockpit.selectedSession ?? ""]?.count) { scrollDown(proxy) }
+                .onChange(of: stop?.id) { scrollDown(proxy) }
                 .onChange(of: gate.rewriting) { scrollDown(proxy) }
                 .onChange(of: cockpit.isWorking(cockpit.selectedSession)) { scrollDown(proxy) }
             }
@@ -121,12 +120,12 @@ struct TalkScreen: View {
 
     @ViewBuilder
     private var tail: some View {
-        if let request {
-            GateCard(request: request, label: gateLabel, pending: pendingGates, failed: gateFailed,
+        if let stop {
+            GateCard(stop: stop, pending: pendingGates, failed: gateFailed,
                      gate: $gate, onChoose: onChoose, onRewrite: onRewrite)
         }
         if cockpit.isWorking(cockpit.selectedSession) {
-            BusyBox(trail: trail, streaming: cockpit.streaming)
+            BusyBox(trail: trail, streaming: cockpit.streaming[cockpit.selectedSession ?? ""] ?? "")
         }
     }
 
@@ -316,8 +315,7 @@ struct TalkScreen: View {
 /// 止まっている指示1件。**複数溜まっていても出すのは待たせている順に1件だけ**——
 /// 並べると「どれに答えているか」が曖昧になる
 private struct GateCard: View {
-    let request: Gate.Request
-    let label: String
+    let stop: Stop
     let pending: Int
     let failed: Bool
     @Binding var gate: GateUI
@@ -331,12 +329,12 @@ private struct GateCard: View {
         VStack(alignment: .leading, spacing: 0) {
             bar
             VStack(alignment: .leading, spacing: 6) {
-                Text("Wake \(label)?").font(.display(40))
-                Text(Cockpit.plainLine(request.instruction)).font(.bodyJP(14)).lineSpacing(14 * 0.6 - 4)
+                Text(stop.title).font(.display(40)).lineLimit(1)
+                Text(stop.body).font(.bodyJP(14)).lineSpacing(14 * 0.6 - 4)
                     .lineLimit(4)
-                Text(meta).font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
+                Text(stop.meta).font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
                 if failed {
-                    Text("答えを書けなかった。司令塔は待ったままなので、置き場を直してもう一度")
+                    Text("答えを届けられなかった。相手は待ったままなので、置き場か接続を直してもう一度")
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -359,11 +357,6 @@ private struct GateCard: View {
         }
     }
 
-    private var meta: String {
-        [request.risk.isEmpty ? nil : request.risk, request.by.isEmpty ? nil : String(request.by.prefix(8)),
-         "→ " + (request.to.isEmpty ? request.call : request.to)].compactMap { $0 }.joined(separator: " · ")
-    }
-
     private var bar: some View {
         HStack(spacing: 10) {
             Ticker(fps: 4) { now in
@@ -371,12 +364,12 @@ private struct GateCard: View {
                 Rectangle().fill(Palette.pink).frame(width: 8, height: 8).opacity(on ? 1 : 0)
             }
             .frame(width: 8, height: 8)
-            Text("C0 // GATE")
-            Text("門").font(.brush(14)).tracking(0)
-            Text("· " + (request.to.isEmpty ? request.call : request.to)).lineLimit(1)
+            Text(stop.bar)
+            Text(stop.barJP).font(.brush(14)).tracking(0)
+            Text("· " + stop.target).lineLimit(1)
             if pending > 1 { Text("· 他 \(pending - 1) 件") }
             Spacer(minLength: 8)
-            Ticker(fps: 1) { now in Text("WAIT \(Int(request.waited(now: now)))s") }
+            Ticker(fps: 1) { now in Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
         }
         .font(.mono(10)).tracking(1.2)
         .foregroundStyle(Palette.Light.bg)
@@ -406,6 +399,7 @@ private struct GateCard: View {
             Text(jp).font(.bodyJP(11))
         }
         .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg2)
+        .opacity(i == 1 && !stop.canRevise ? 0.35 : 1)
         .padding(EdgeInsets(top: 9, leading: 14, bottom: 10, trailing: 18))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
@@ -581,14 +575,14 @@ struct SessionPicker: View {
                         }
                     }
                     let liveIDs = Set(cockpit.liveSessions.map(\.id))
-                    let codex = cockpit.codexRecords.filter { !liveIDs.contains($0.id) }
+                    let codex = cockpit.runRecords.filter { !liveIDs.contains($0.id) }
                     if !codex.isEmpty {
-                        group("CODEX")
+                        group("CODEX · GROK")
                         ForEach(codex.sorted { $0.lastUsed > $1.lastUsed }) { record in
                             line(title: cockpit.title(for: record.id) ?? String(record.id.prefix(8)),
                                  sub: (record.cwd as NSString).lastPathComponent, live: false) {
                                 cockpit.selectedSession = record.id
-                                cockpit.resumeCodexRecord(record)
+                                cockpit.resumeRunRecord(record)
                             }
                         }
                     }

@@ -85,6 +85,8 @@ struct AgentChip: Identifiable {
     let spent: Double
     /// 同じセッションの合計に対する割合（0…1）。合計が0なら0
     let share: Double
+    /// 人間の返事待ち（`LiveSession.waiting`）。セッション単位の値なので司令塔にだけ載る
+    var waiting: String? = nil
 }
 
 struct CockpitSnapshot {
@@ -105,6 +107,9 @@ struct LiveSession: Identifiable, Hashable {
     let name: String
     let cwd: String
     let busy: Bool
+    /// 人間の返事を待って止まっている時だけ入る（「承認待ち」「入力待ち」）。
+    /// Claude Code 自身が `sessions/<pid>.json` に書く値なので、フックも設定も要らない
+    var waiting: String? = nil
 }
 
 /// 終了済みも含む transcript の入口。ファイル名のUUIDを選択キーにそのまま使う
@@ -183,6 +188,7 @@ final class Cockpit {
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let claudePathKey = "claudePath"
     static let codexPathKey = "codexPath"
+    static let grokPathKey = "grokPath"
 
     /// 画面に並べるファイル数の上限（最終接触が新しい順）
     static let maxFiles = 48
@@ -278,7 +284,14 @@ final class Cockpit {
     /// ここより前の記録は畳み込みで無視する。実装の区切りで押す「クリア」の実体
     private(set) var clearedAt: Date?
 
-    var selectedSession: String?
+    var selectedSession: String? {
+        // 見たものは既読。未読は「選んでいない間に何か起きた」印なので、選んだ瞬間に消す
+        didSet { if let selectedSession { unread.remove(selectedSession) } }
+    }
+    /// 選んでいない間にターンが終わった・失敗した・承認を求めてきたセッション（サイドバーの太字）
+    private(set) var unread: Set<String> = []
+    /// 人の注意を引く出来事。画面の外（通知）へ渡す口。Cockpit は AppKit を知らない
+    var onAttention: ((_ session: String, _ title: String, _ body: String) -> Void)?
     var liveSessions: [LiveSession] = []
     private(set) var activeSessions: Set<String> = []
     private(set) var recentSessions: [RecentSession] = []
@@ -306,20 +319,36 @@ final class Cockpit {
     /// 承認の強さ。正は `memory/gate/LEVEL` の中身——司令塔も同じファイルを読むので、
     /// UserDefaults に置くと向こうから見えない
     private(set) var gateLevel = Gate.defaultLevel
-    /// AT22 が起こしたセッション。終了まで手元に置いて、落ちた理由を拾えるようにする
-    private var launched: [UUID: Process] = [:]
+    /// AT22 が起こした／繋いだ接続。キーはセッションID。終了まで手元に置いて、落ちた理由を拾う。
+    /// `token` は繋ぐたびに新しくする——同じセッションへ繋ぎ直した後に古いプロセスが終わった時、
+    /// 新しい方まで片付けないため
+    private struct Run {
+        let connection: any AgentConnection
+        let token: UUID
+    }
+    private var runs: [String: Run] = [:]
+    /// 人の返事を待っている承認の依頼。答えると消える
+    private(set) var approvals: [Approval] = []
+    /// ターンを回している AT22 の接続。送った時に開き、ターンの終わり・失敗・接続の終了で閉じる。
+    /// **ここを持つまで、起こしたセッションのタブは busy のまま固定で**、Codex は終わっても
+    /// 「処理中」に見え続けていた（`-p` の claude は `~/.claude/sessions` に載らないので同じ）
+    private var openTurns: Set<String> = []
+    /// 最後のターンが失敗したセッション。サイドバーの赤い印。次に送ると消える
+    private(set) var failedTurns: Set<String> = []
     private(set) var launchError: String?
-    /// 起こした／繋いだセッションの stdin。**ここが開いている間だけ言葉が通る**
-    private var inputs: [String: FileHandle] = [:]
     /// 人がセッションごとに選んだモデル。**選ばれていない間は渡さない**——
     /// `--resume` にモデルを渡さなければ、claude は元のセッションの設定をそのまま引き継ぐ
     private var sessionModel: [String: String] = [:]
     /// stdout から拾っている部分テキスト。確定は transcript の担当——ここは「いま書いている途中」だけ。
-    /// ターン終了で空になる。`isWorking` が更正確に判定できるように使う
-    private(set) var streaming: String = ""
-    /// 最後に送った割り込みの request_id。受領確認が来たら、その ID とこれを照合する。
+    /// ターン終了で消える。**セッションごとに持つ**——1本にまとめていた頃は、どれか1つが
+    /// 書いている間、`isWorking` が全セッションを稼働中と答えていた
+    private(set) var streaming: [String: String] = [:]
+    /// セッションごとの、受領確認を待っている割り込みの request_id。
     /// ここを持つことで、投げっぱなし（応答の見落とし）と、誤報（止まり損ない）を防ぐ
-    private var lastInterruptRequestID: String?
+    private var interruptRequests: [String: String] = [:]
+    /// 人が止めたターン。claude は止めたターンを `error_during_execution` で終えるので、
+    /// ここに無いと「自分で止めたのに失敗」と出てしまう（実機で確認）
+    private var stopping: Set<String> = []
 
     /// モデルが書いた言葉。tool_use しか見ていなかったので、これまで画面に出ていなかった分
     private(set) var messages: [Message] = []
@@ -362,24 +391,43 @@ final class Cockpit {
 
     /// codex セッション台帳（内部セッションID → threadID・題名等）
     /// UserDefaults（キー "codexSessions"）で読み書き
-    private(set) var codexRecords: [CodexRecord] = []
-    private var codexProcesses: [String: Process] = [:]  // 内部セッションID -> プロセス
-    private var codexThreads: [String: String] = [:]      // 内部セッションID -> threadID
+    private(set) var runRecords: [RunRecord] = []
 
     /// セッションのバックエンド種別（claude または codex）
     private var backends: [String: Backend] = [:]
 
-    /// Codex セッション台帳。UserDefaults で永続化
-    struct CodexRecord: Codable, Identifiable {
+    /// AT22 が起こした、transcript を AT22 が読まない相手（Codex / ACP）のセッション台帳。
+    /// UserDefaults で永続化し、アプリを閉じても続きに繋げるようにする
+    struct RunRecord: Codable, Identifiable {
         var id: String              // 内部セッションID（UUID lowercased）
+        /// 相手側のID（codex の thread / ACP の sessionId）。続きに繋ぐ時に使う
         var threadID: String?
         var title: String
         var cwd: String
         var model: String
         var lastUsed: Date
+        /// どのエージェントか。項目の無い古い記録は codex（台帳を持っていたのは codex だけだった）
+        var backend: Backend
 
         enum CodingKeys: String, CodingKey {
-            case id, threadID, title, cwd, model, lastUsed
+            case id, threadID, title, cwd, model, lastUsed, backend
+        }
+
+        init(id: String, threadID: String?, title: String, cwd: String, model: String,
+             lastUsed: Date, backend: Backend) {
+            (self.id, self.threadID, self.title, self.cwd, self.model, self.lastUsed, self.backend)
+                = (id, threadID, title, cwd, model, lastUsed, backend)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            threadID = try c.decodeIfPresent(String.self, forKey: .threadID)
+            title = try c.decode(String.self, forKey: .title)
+            cwd = try c.decode(String.self, forKey: .cwd)
+            model = try c.decode(String.self, forKey: .model)
+            lastUsed = try c.decode(Date.self, forKey: .lastUsed)
+            backend = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .codex
         }
     }
 
@@ -402,26 +450,26 @@ final class Cockpit {
         self.projectsRoot = projectsRoot
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/projects")
         // codex 台帳を UserDefaults から読み込み
-        loadCodexRecords()
+        loadRunRecords()
     }
 
     /// codex 台帳を UserDefaults から読み込む
-    private func loadCodexRecords() {
+    private func loadRunRecords() {
         guard let data = UserDefaults.standard.data(forKey: "codexSessions") else { return }
-        if let decoded = try? JSONDecoder().decode([CodexRecord].self, from: data) {
-            codexRecords = decoded
+        if let decoded = try? JSONDecoder().decode([RunRecord].self, from: data) {
+            runRecords = decoded
         }
     }
 
     /// codex 台帳を UserDefaults に保存
-    private func saveCodexRecords() {
-        if let encoded = try? JSONEncoder().encode(codexRecords) {
+    private func saveRunRecords() {
+        if let encoded = try? JSONEncoder().encode(runRecords) {
             UserDefaults.standard.set(encoded, forKey: "codexSessions")
         }
     }
 
     /// codex 台帳から既存セッションをライブセッション化（プロセスはまだ起動しない）
-    func resumeCodexRecord(_ record: CodexRecord) {
+    func resumeRunRecord(_ record: RunRecord) {
         // ライブセッションに追加（プロセスはまだ無し）
         let tab = LiveSession(id: record.id, name: String(record.id.prefix(8)),
                              cwd: record.cwd, busy: false)
@@ -431,8 +479,7 @@ final class Cockpit {
             liveSessions.sort { $0.name < $1.name }
         }
 
-        backends[record.id] = .codex
-        codexThreads[record.id] = record.threadID
+        backends[record.id] = record.backend
 
         // 案内メッセージを追加
         messages.append(Message(
@@ -550,11 +597,22 @@ final class Cockpit {
 
             case let .mcpCalled(call, session, by, server, tool, prompt, at):
                 guard mcpCallKey[call] == nil else { break }
-                let key = "mcp-call:\(call)"
+                // prompt の無い呼び出しは仕事を任せたのではなく、道具を使っただけ（ブラウザ操作・検索など）。
+                // 1回ごとに1体にすると、実測でブラウザ操作85回が85行になって帯を埋めた。
+                // 呼んだエージェント × サーバで1体に束ね、回数を労働量として積む
+                let key = prompt.isEmpty ? "mcp-tool:\(session)#\(by)#\(server)" : "mcp-call:\(call)"
                 mcpCallKey[call] = key
-                let instruction = prompt.isEmpty ? tool : prompt
-                mcpWorkers[key] = MCPRecord(session: session, server: server, parent: by,
-                                            prompt: instruction, calls: 1, done: false, lastAt: at)
+                if prompt.isEmpty, var worker = mcpWorkers[key] {
+                    worker.calls += 1
+                    worker.prompt = tool
+                    worker.done = false
+                    worker.lastAt = max(worker.lastAt, at)
+                    mcpWorkers[key] = worker
+                } else {
+                    mcpWorkers[key] = MCPRecord(session: session, server: server, parent: by,
+                                                prompt: prompt.isEmpty ? tool : prompt,
+                                                calls: 1, done: false, lastAt: at)
+                }
 
             case let .mcpThread(call, thread):
                 mergeMCP(call: call, thread: thread)
@@ -611,7 +669,9 @@ final class Cockpit {
 
     /// threadId が返るまでは呼び出しIDで置き、判明した時点で過去の同一スレッドへ合流する
     private func mergeMCP(call: String, thread: String) {
-        guard let oldKey = mcpCallKey[call], let current = mcpWorkers.removeValue(forKey: oldKey) else { return }
+        // 束ねた道具の1体（mcp-tool:）はスレッドを持たない。ここで動かすと束ごと消える
+        guard let oldKey = mcpCallKey[call], oldKey.hasPrefix("mcp-call:"),
+              let current = mcpWorkers.removeValue(forKey: oldKey) else { return }
         let key = "mcp-thread:\(current.server)#\(thread)"
         var merged = mcpWorkers[key] ?? current
         if mcpWorkers[key] != nil {
@@ -649,6 +709,7 @@ final class Cockpit {
         refreshStructureIfNeeded()
         refreshMemory()
         refreshGates()
+        refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
     }
 
@@ -660,13 +721,17 @@ final class Cockpit {
     /// - Parameter creating: まだ無いファイルを作ってよいか。門の答え（`gate/<id>.verdict`）と
     ///   承認モード（`gate/LEVEL`）だけがこれを使う。置き場のガードは通常の経路と同じものを通す
     @discardableResult
+    /// - Parameter project: 書き込む先のプロジェクト（`~/.claude/projects/<slug>`）。省略すると
+    ///   選択中のセッションのもの。**どちらでも置き場のガードは同じ**——`projects/` の直下で、
+    ///   その `memory/` の内側だけ
     func saveNote(path: String, text: String, expectedText: String? = nil,
-                  overwrite: Bool = false, creating: Bool = false) -> NoteSaveResult {
+                  overwrite: Bool = false, creating: Bool = false, project explicit: URL? = nil) -> NoteSaveResult {
         let manager = FileManager.default
         let projects = projectsRoot.standardizedFileURL.resolvingSymlinksInPath()
-        guard let project = memoryRoot?.standardizedFileURL.resolvingSymlinksInPath(),
-              let memory = memoryDirectory()?.standardizedFileURL.resolvingSymlinksInPath(),
-              project.path.hasPrefix(projects.path + "/"),
+        guard let root = explicit ?? memoryRoot else { return .failed }
+        let project = root.standardizedFileURL.resolvingSymlinksInPath()
+        let memory = root.appendingPathComponent("memory").standardizedFileURL.resolvingSymlinksInPath()
+        guard project.path.hasPrefix(projects.path + "/"),
               memory.lastPathComponent == "memory",
               memory.deletingLastPathComponent().path == project.path else { return .failed }
 
@@ -755,23 +820,78 @@ final class Cockpit {
 
     /// 門に答える。**書けなかったら必ず呼び出し元に返す**——
     /// 黙って画面から消すと、司令塔は答えが来ないまま待ち続ける
+    /// 采配（`dispatch:` のある門）は、許可・書換の答えを書いた**後で** AT22 がワークスペースを作って
+    /// ワーカーを起こし、最初のターンが終わったら `<id>.result` を書く。答えを先に書くのは、
+    /// 作成を待つ間に門が板に残って二度押されないため
     @discardableResult
     func answer(_ request: Gate.Request, _ verdict: Gate.Verdict,
                 revised: String = "", at: Date = Date()) -> NoteSaveResult {
         let result = saveNote(path: Gate.verdictPath(for: request),
                               text: Gate.verdictText(verdict, at: at, revised: revised),
                               creating: true)
-        if result == .saved { refreshGates() }
+        guard result == .saved else { return result }
+        refreshGates()
+        if let backend = request.dispatch, verdict != .deny {
+            dispatch(request, backend: backend, instruction: verdict == .revise ? revised : request.instruction)
+        }
         return result
     }
 
+    /// 采配したワーカー → 答えた門のパス。最初のターンが終わったら結果を書いて外す
+    private var dispatched: [String: String] = [:]
+
+    private func dispatch(_ request: Gate.Request, backend: Backend, instruction: String) {
+        let gate = request.id
+        let cwd = selectedSession.flatMap(cwd(of:)) ?? ""
+        let level = gateLevel
+        Task {
+            let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
+            guard let repo else {
+                return writeResult(gate, status: "failed", fields: [("error", "司令塔の作業ディレクトリがリポジトリの外")])
+            }
+            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: "",
+                            prompt: instruction, level: level) { [weak self] path, session, error in
+                guard let self else { return }
+                if let session, error == nil {
+                    self.dispatched[session] = gate
+                } else {
+                    self.writeResult(gate, status: "failed", fields: [("workspace", path), ("error", error ?? "起こせなかった")])
+                }
+            }
+        }
+    }
+
+    /// 采配の結果を門の隣に書く。**門が置かれたプロジェクト**へ（その間に選択が別へ移っていても）
+    private func writeResult(_ gate: String, status: String, fields: [(String, String)], summary: String = "") {
+        guard let project = Gate.projectDirectory(of: gate) else { return }
+        let result = saveNote(path: Gate.resultPath(for: gate),
+                              text: Gate.resultText(status: status, fields: fields, summary: summary, at: Date()),
+                              creating: true, project: URL(fileURLWithPath: project))
+        if result != .saved { appendLaunchError("采配の結果を書けない: \(Gate.resultPath(for: gate))") }
+    }
+
+    /// 采配したワーカーの最初のターンが終わった。本文はそのターンの返事（書きかけが無い相手は最後の発言）
+    private func reportDispatched(_ session: String, status: String, reply: String?) {
+        guard let gate = dispatched.removeValue(forKey: session) else { return }
+        let path = cwd(of: session) ?? ""
+        let text = reply ?? messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.text ?? ""
+        writeResult(gate, status: status,
+                    fields: [("workspace", path), ("branch", Worktree.branch(for: (path as NSString).lastPathComponent)),
+                             ("agent", backend(of: session).rawValue), ("session", session)],
+                    summary: String(text.suffix(4000)))
+    }
+
     /// 承認の強さを変える。ファイルが正なので、選んだその場で書く
+    /// - Parameter cwd: これから起こすセッションの作業ディレクトリ。渡すと**そのプロジェクト**の
+    ///   `LEVEL` に書く（まだ transcript が無くても書ける）。省略すると選択中のセッションのもの
     @discardableResult
-    func setGateLevel(_ level: Gate.Level) -> NoteSaveResult {
-        guard let dir = memoryDirectory() else { return .failed }
-        let result = saveNote(path: Gate.levelPath(memoryRoot: dir),
-                              text: level.rawValue + "\n", creating: true)
-        if result == .saved { gateLevel = level }
+    func setGateLevel(_ level: Gate.Level, cwd: String? = nil) -> NoteSaveResult {
+        let project = cwd.map { projectsRoot.appendingPathComponent(Self.projectSlug($0)) } ?? memoryRoot
+        guard let project else { return .failed }
+        let result = saveNote(path: Gate.levelPath(memoryRoot: project.appendingPathComponent("memory")),
+                              text: level.rawValue + "\n", creating: true, project: project)
+        // 表示している段は選択中のセッションのもの。別プロジェクトに書いた時は変えない
+        if result == .saved, project.standardizedFileURL == memoryRoot?.standardizedFileURL { gateLevel = level }
         return result
     }
 
@@ -785,56 +905,28 @@ final class Cockpit {
 
     // MARK: 起動
 
-    /// `claude` の在り処。見つかるまで起動UIは出さない（配布先で「押しても無反応」にしない）
-    private(set) var claude: Launcher.Found?
-    private var lookedForClaude = false
-    /// デバウンス用。設定画面で `claude` のパスを打つたびに探索を再実行しないように、タスクをキャンセル・再スケジュール
-    private var lookupTask: Task<Void, Never>?
+    /// CLI の在り処。見つかるまでそのエージェントの起動UIは出さない（配布先で「押しても無反応」にしない）
+    private(set) var found: [Backend: Launcher.Found] = [:]
+    private var lookedFor: Set<Backend> = []
+    /// デバウンス用。設定画面でパスを打つたびにログインシェルを立てないよう、前の探索を取り消して待つ
+    private var lookups: [Backend: Task<Void, Never>] = [:]
+    var claude: Launcher.Found? { found[.claude] }
+    var codexFound: Launcher.Found? { found[.codex] }
+    var grokFound: Launcher.Found? { found[.grok] }
 
-    /// `codex` の在り処。claude と並行して探索
-    private(set) var codexFound: CodexLauncher.Found?
-    private var lookedForCodex = false
-    private var codexLookupTask: Task<Void, Never>?
-
-    /// ログインシェルを起こして claude を探す。既定は1回だけだが、設定でパスを変えた時は再探索
-    func findClaudeIfNeeded(override: String? = nil, force: Bool = false) {
-        guard force || !lookedForClaude else { return }
-        lookedForClaude = true
-
-        // force で呼ばれたら前の探索をキャンセル（設定を打つたびに `$SHELL -l -c` でログインシェルを立てるのを防ぐ）
-        if force {
-            lookupTask?.cancel()
-        }
-
-        lookupTask = Task.detached(priority: .utility) {
+    /// ログインシェルを起こして CLI を探す。既定は1回だけだが、設定でパスを変えた時は再探索
+    func findIfNeeded(_ backend: Backend, override: String? = nil, force: Bool = false) {
+        guard force || !lookedFor.contains(backend) else { return }
+        lookedFor.insert(backend)
+        if force { lookups[backend]?.cancel() }
+        lookups[backend] = Task.detached(priority: .utility) {
             // force のときだけ待つ。起動時（force: false）は遅延なく実行
             if force {
                 try? await Task.sleep(for: .milliseconds(600))
                 guard !Task.isCancelled else { return }
             }
-
-            let found = Launcher.locate(override: override)
-            await MainActor.run { [weak self] in self?.claude = found }
-        }
-    }
-
-    /// ログインシェルを起こして codex を探す。claude と並行して実行
-    func findCodexIfNeeded(override: String? = nil, force: Bool = false) {
-        guard force || !lookedForCodex else { return }
-        lookedForCodex = true
-
-        if force {
-            codexLookupTask?.cancel()
-        }
-
-        codexLookupTask = Task.detached(priority: .utility) {
-            if force {
-                try? await Task.sleep(for: .milliseconds(600))
-                guard !Task.isCancelled else { return }
-            }
-
-            let found = CodexLauncher.find(override: override)
-            await MainActor.run { [weak self] in self?.codexFound = found }
+            let result = Launcher.locate(override: override, command: backend.command)
+            await MainActor.run { [weak self] in self?.found[backend] = result }
         }
     }
 
@@ -846,46 +938,54 @@ final class Cockpit {
     ///   - backend: .claude または .codex（デフォルト: .claude）
     ///   - model: モデルID（例: "opus", "gpt-5.3-codex"）。空なら既定値を使用
     ///   - allowedTools: 白名簿（claude のみ）
+    ///   - level: 承認の段。省略すると選択中のセッションの段を使う
     @discardableResult
     func launch(prompt: String, cwd: String, backend: Backend = .claude, model: String = "",
-                allowedTools: [String] = []) -> UUID? {
+                allowedTools: [String] = [], level: Gate.Level? = nil) -> UUID? {
+        let level = level ?? gateLevel
         switch backend {
         case .claude:
-            return launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools)
+            return launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
+                                level: level)
         case .codex:
-            return launchCodex(prompt: prompt, cwd: cwd, model: model)
+            return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
+        case .grok, .hermes:
+            return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
 
     private func launchClaude(prompt: String, cwd: String, model: String,
-                              allowedTools: [String]) -> UUID? {
+                              allowedTools: [String], level: Gate.Level) -> UUID? {
         guard let claude else {
             launchError = "claude が見つからない"
             return nil
         }
-        let config = Launcher.Config(cwd: cwd, level: gateLevel,
+        // 司令塔は起きてすぐ `memory/gate/LEVEL` を読むので、起こす前に**起こす先のプロジェクトへ**書く。
+        // 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
+        setGateLevel(level, cwd: cwd)
+        let config = Launcher.Config(cwd: cwd, level: level,
                                      prompt: prompt, allowedTools: allowedTools, model: model)
-        let onStream = claudeStream()
+        let sessionID = UUID()
+        // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
+        let id = sessionID.uuidString.lowercased()
+        let token = UUID()
 
         do {
-            // 末尾クロージャは使わない。`onStream:` を明示したうえで末尾に閉じ括弧を置くと、
-            // Swift が末尾クロージャを最後の引数（onStream）に結ぼうとして衝突する
-            let started = try Launcher.launch(
-                config, using: claude,
-                onExit: exitHandler(label: "claude"),
-                onStream: onStream)
-            launched[started.sessionID] = started.process
+            let connection = try ClaudeConnection.start(
+                config, using: claude, session: id, sessionID: sessionID,
+                onEvent: agentStream(session: id),
+                onExit: exitHandler(label: "claude", session: id, token: token))
+            runs[id] = Run(connection: connection, token: token)
+            backends[id] = .claude
             launchError = nil
 
             // `.jsonl` はまだ無い。タブを先に立てておかないと、起こした直後の数秒が行方不明になる
-            let id = started.sessionID.uuidString.lowercased()
-            inputs[id] = started.input
-            backends[id] = .claude
             loadedSessionTabs[id] = LiveSession(id: id, name: String(id.prefix(8)),
-                                                cwd: cwd, busy: true)
+                                                cwd: cwd, busy: false)
+            beginTurn(id)
             selectedSession = id
             refreshLiveSessions()
-            return started.sessionID
+            return sessionID
         } catch {
             launchError = "\(error)"
             return nil
@@ -901,7 +1001,7 @@ final class Cockpit {
     /// ponytail: 繋ぐのは送信の直前だけ。開いて眺めているだけのセッションでプロセスは起こさない
     @discardableResult
     func attach(to session: String) -> Bool {
-        if inputs[session] != nil { return true }
+        if runs[session] != nil { return true }
         guard backend(of: session) == .claude else { return false }
         guard let claude else {
             launchError = "claude が見つからない。設定で場所を指定する"
@@ -916,13 +1016,13 @@ final class Cockpit {
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
         let config = Launcher.Config(cwd: cwd, level: gateLevel, prompt: "",
                                      model: sessionModel[session] ?? "")
+        let token = UUID()
         do {
-            let started = try Launcher.launch(
-                config, using: claude, resuming: session,
-                onExit: exitHandler(label: "claude"),
-                onStream: claudeStream())
-            launched[started.sessionID] = started.process
-            inputs[session] = started.input
+            let connection = try ClaudeConnection.start(
+                config, using: claude, session: session, resuming: session,
+                onEvent: agentStream(session: session),
+                onExit: exitHandler(label: "claude", session: session, token: token))
+            runs[session] = Run(connection: connection, token: token)
             backends[session] = .claude
             launchError = nil
             return true
@@ -932,14 +1032,18 @@ final class Cockpit {
         }
     }
 
-    /// 人が選んだモデル。**繋ぎ直すまで効かない**ので、既に繋がっているなら畳んでおく。
-    /// 次に送った時に新しいモデルで繋がる（`claude -p` は走っている最中に切り替えられない）
+    /// 人が選んだモデル。**繋ぎ直すまで効かない**ので、ターンの合間なら今の接続を畳んでおく。
+    /// 次に送った時に新しいモデルで繋がる（`claude -p` も codex も、走っている最中には切り替えられない）
     func setModel(_ model: String, for session: String) {
         sessionModel[session] = model
-        if let input = inputs[session] {
-            try? input.close()
-            inputs[session] = nil
+        // codex は台帳のモデルで繋ぐ。以前はここを書き換えず、選び直しても効いていなかった
+        if let index = runRecords.firstIndex(where: { $0.id == session }) {
+            runRecords[index].model = model
+            saveRunRecords()
         }
+        guard let run = runs[session], run.connection.acceptsInput else { return }
+        run.connection.close()
+        forget(session)
     }
 
     /// そのセッションが実際に使っているモデル。transcript から観測した値
@@ -947,206 +1051,324 @@ final class Cockpit {
         sessionModel[session] ?? agents[session]?.model
     }
 
-    /// 落ちた時の後始末。起こす／繋ぐで同じものを使う
-    private func exitHandler(label: String) -> @Sendable (Int32, String) -> Void {
+    /// 接続を手放す。書きかけ・割り込み待ち・答え待ちの承認も一緒に消す
+    private func forget(_ session: String) {
+        runs[session] = nil
+        streaming[session] = nil
+        interruptRequests[session] = nil
+        stopping.remove(session)
+        openTurns.remove(session)
+        approvals.removeAll { $0.session == session }
+    }
+
+    /// 終わった時の後始末。起こす／繋ぐで同じものを使う。
+    /// 片付けるのは `token` が合う時だけ——モデルの切り替えで閉じた古いプロセスが、
+    /// 繋ぎ直した後に終わることがあり、そこで消すと新しい接続まで捨ててしまう
+    private func exitHandler(label: String, session: String, token: UUID) -> @Sendable (Int32, String) -> Void {
         { status, errors in
-            guard status != 0 else { return }
             Task { @MainActor [weak self] in
-                self?.launchError = errors.isEmpty
+                guard let self else { return }
+                if self.runs[session]?.token == token { self.forget(session) }
+                guard status != 0 else { return }
+                self.launchError = errors.isEmpty
                     ? "\(label) が終了コード \(status) で終わった" : errors
             }
         }
     }
 
-    /// stdout のイベントを状態に反映するハンドラ。**起こす時と繋ぐ時で同じもの**を使う——
+    /// 接続の出来事を状態に反映するハンドラ。**起こす時と繋ぐ時で同じもの**を使う——
     /// 2本に割ると、片方だけ直して挙動が食い違う。
     /// `readabilityHandler` は別スレッドで走るので、MainActor に載せ替える
-    private func claudeStream() -> @Sendable (Launcher.StreamEvent) -> Void {
+    private func agentStream(session: String) -> @Sendable (AgentEvent) -> Void {
         { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .partialText(text):
-                    // 部分テキスト。ターン終了で空になる
-                    self?.streaming += text
-
-                case .turnProgressed:
-                    // ターンが進んだ。進行中として記録するだけ
-                    break
-
-                case .turnEnded:
-                    // ターンが正常に終わった。部分テキストを空にしてリセット。
-                    // 確定メッセージは transcript から来るので、ここには残さない
-                    self?.streaming = ""
-
-                case let .turnFailed(reason):
-                    // ターンが失敗。理由を launchError に載せる。
-                    // これを握り潰すと司令塔が「成功した」と誤認する。
-                    // 書きかけテキスト（streaming）は消す——失敗しても途中まで書けたと見えてはいけない
-                    self?.streaming = ""
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(reason)"
-                    } else {
-                        self?.launchError = "失敗: \(reason)"
-                    }
-
-                case let .interruptAcknowledged(requestID, stillQueued, cancelled):
-                    // 割り込みの受領確認。自分が送った ID と照合する。
-                    // stillQueued が 0 でなければ「全部は止まっていない」の誤報を防ぐため、
-                    // エラー扱いにして司令塔に報告。0 なら成功。
-                    // これを握り潰すと、止め損ないが画面に現れず、司令塔が気づけない
-                    if requestID == self?.lastInterruptRequestID {
-                        // **`cancelled` は成功の印**（取り消せた件数）。ここで警告を出すと、
-                        // 完璧に止まったときに「止まっていない」と誤報することになる。
-                        // 止まり損ないを示すのは `stillQueued` だけ
-                        if stillQueued > 0 {
-                            let msg = "割り込みが全部は通らず、\(stillQueued) 件残っている（取消 \(cancelled) 件）"
-                            if let existing = self?.launchError, !existing.isEmpty {
-                                self?.launchError = existing + "\n\(msg)"
-                            } else {
-                                self?.launchError = msg
-                            }
-                        }
-                        self?.lastInterruptRequestID = nil
-                    }
-
-                case let .error(message):
-                    // エラーを記録
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(message)"
-                    } else {
-                        self?.launchError = message
-                    }
-
-                case .initialized:
-                    // セッションが立ち上がった
-                    break
-                }
-            }
+            Task { @MainActor [weak self] in self?.handle(event, session: session) }
         }
     }
 
-    private func launchCodex(prompt: String, cwd: String, model: String) -> UUID? {
+    /// 接続から来た出来事を1件、そのセッションの状態に反映する。自己チェックが直接叩く
+    func handle(_ event: AgentEvent, session: String) {
+        switch event {
+        case let .ready(remoteID):
+            // 続きに繋ぐための相手側の ID。アプリを閉じても続けられるよう台帳に残す
+            if let index = runRecords.firstIndex(where: { $0.id == session }) {
+                runRecords[index].threadID = remoteID
+                saveRunRecords()
+            }
+
+        case let .partial(text):
+            // 部分テキスト。ターン終了で消える
+            streaming[session, default: ""] += text
+
+        case let .message(text, thinking):
+            // transcript を AT22 が読まない相手の確定した発言。transcript 由来と同じ入口に通すので、
+            // 会話にも盤面のチップにも同じ規則で出る
+            apply([.said(agent: session, session: session, text: text, speaker: .model,
+                         thinking: thinking, at: Date())])
+
+        case let .said(text):
+            apply([.said(agent: session, session: session, text: text, speaker: .human,
+                         thinking: false, at: Date())])
+
+        case let .tool(id, kind, title, path, write, done):
+            // 道具の呼び出し。transcript の tool_use と同じ出来事に直して、労働量・「今していること」・
+            // ファイルの触りを盤面に出す。開始と完了が別々に来る相手（ACP）は、2回目は閉じるだけ
+            let now = Date()
+            var events: [TranscriptEvent] = [
+                .agentActivity(agent: session, session: session, model: model(of: session), at: now),
+                .agentAction(id: id, agent: session, session: session, kind: kind, detail: title, at: now),
+            ]
+            if let path {
+                if index[id] == nil {
+                    events.append(.touchStarted(id: id, session: session, agent: session, path: path,
+                                                kind: write ? .write : .read, at: now))
+                }
+                if done { events.append(.touchFinished(id: id, added: 0, removed: 0, at: now)) }
+            }
+            apply(events)
+
+        case let .approval(approval):
+            approvals.append(approval)
+            noteAttention(session, "承認を待っている — \(approval.detail)")
+
+        case let .turnEnded(tokens):
+            reportDispatched(session, status: "done", reply: streaming[session])
+            // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
+            streaming[session] = nil
+            stopping.remove(session)
+            openTurns.remove(session)
+            noteAttention(session, "ターンが終わった")
+            if let tokens {
+                Snowman.observe(&readings[session, default: Snowman.Reading()], tokens: tokens)
+            }
+
+        case let .turnFailed(reason):
+            // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
+            // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
+            streaming[session] = nil
+            openTurns.remove(session)
+            // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
+            // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
+            // error_during_execution を1回だけ見逃す。止めるボタンは走っている間しか出ない
+            if stopping.remove(session) != nil, reason == "error_during_execution" {
+                reportDispatched(session, status: "stopped", reply: nil)
+                break
+            }
+            reportDispatched(session, status: "failed", reply: reason)
+            failedTurns.insert(session)
+            noteAttention(session, "失敗した — \(reason)")
+            appendLaunchError("失敗: \(reason)")
+
+        case let .interruptAcknowledged(requestID, stillQueued, cancelled):
+            // 割り込みの受領確認。**そのセッションに**送った ID と照合する。
+            // 握り潰すと、止め損ないが画面に現れず、司令塔が気づけない
+            guard requestID == interruptRequests[session] else { break }
+            // **`cancelled` は成功の印**（取り消せた件数）。ここで警告を出すと、
+            // 完璧に止まったときに「止まっていない」と誤報することになる。
+            // 止まり損ないを示すのは `stillQueued` だけ
+            if stillQueued > 0 {
+                appendLaunchError("割り込みが全部は通らず、\(stillQueued) 件残っている（取消 \(cancelled) 件）")
+            }
+            interruptRequests[session] = nil
+
+        case let .error(message):
+            appendLaunchError(message)
+        }
+    }
+
+    /// 承認に答える。**呼ぶのは人のクリックだけ**。`input` を渡すと書き換えた入力で許可する。
+    /// 送れなかった時（書き換えた入力が JSON として読めない等）は依頼を残して false——
+    /// 黙って消すと、相手は答えを待ったまま止まり続ける
+    @discardableResult
+    func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input) == true else {
+            return false
+        }
+        approvals.removeAll { $0.id == approval.id }
+        return true
+    }
+
+    /// 人の番で止まっているものの数（門＋道具の承認）。タブとステータスバーの件数
+    var stoppedCount: Int { gates.count + approvals.count }
+
+    /// 検査・画像焼きから承認の依頼を直接流し込む口
+    func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
+
+    /// 人の注意を引く出来事。見ていないセッションなら未読にし、画面の外（通知）にも渡す
+    private func noteAttention(_ session: String, _ what: String) {
+        guard session != selectedSession else { return }
+        unread.insert(session)
+        onAttention?(session, title(for: session) ?? String(session.prefix(8)), what)
+    }
+
+    /// 人の番で止まっている・見ていない間に何か起きたセッションの数（Dock のバッジ）
+    var attentionCount: Int {
+        Set(approvals.map(\.session))
+            .union(liveSessions.filter { $0.waiting != nil }.map(\.id))
+            .union(unread).count
+    }
+
+    /// 木や ⌘J の行を開く。過去のセッションは読み込み、Codex / Grok の台帳は続きに繋ぐ
+    func open(_ row: AgentRow) async {
+        selectedSession = row.id
+        if let recent = row.recent { await loadSession(recent) }
+        else if let record = row.record { resumeRunRecord(record) }
+    }
+
+    /// Terminal で続きを開くコマンド。**パスはシェル用に引用する**（空白や ' を含むフォルダでも壊れない）
+    func terminalCommand(for session: String) -> String? {
+        guard let cwd = cwd(of: session) else { return nil }
+        let backend = backend(of: session)
+        let exe = Self.shellQuote(found[backend]?.executable.path ?? backend.command)
+        let remote = runRecords.first { $0.id == session }?.threadID
+        let resume: String
+        switch backend {
+        case .claude: resume = "\(exe) --resume \(Self.shellQuote(session))"
+        case .codex:
+            guard let remote else { return nil }
+            resume = "\(exe) resume \(Self.shellQuote(remote))"
+        case .grok:
+            guard let remote else { return nil }
+            resume = "\(exe) -r \(Self.shellQuote(remote))"
+        case .hermes:
+            guard let remote else { return nil }
+            resume = "\(exe) --resume \(Self.shellQuote(remote))"
+        }
+        return "cd \(Self.shellQuote(cwd)) && \(resume)"
+    }
+
+    nonisolated static func shellQuote(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    nonisolated static func appleScriptString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// Terminal.app で続きを開く（生の TUI が要る時の逃げ道）。**先に AT22 の接続を閉じる**——
+    /// 同じセッションに2つのプロセスが書くと、transcript が混ざる。初回は macOS が操作の許可を訊く
+    func openInTerminal(_ session: String) -> String? {
+        guard let command = terminalCommand(for: session) else { return "このセッションの続きを開く手掛かりが無い" }
+        if let run = runs[session] {
+            run.connection.close()
+            forget(session)
+        }
+        return runInTerminal(command)
+    }
+
+    /// 各 CLI 自身のログインを Terminal で起こす。**トークンはその CLI が持つ**——AT22 は何も預からない
+    func login(_ backend: Backend) -> String? {
+        guard let cli = found[backend] else { return "\(backend.command) が見つからない" }
+        return runInTerminal(([cli.executable.path] + backend.loginArguments).map(Self.shellQuote).joined(separator: " "))
+    }
+
+    /// ログインの状態を1行で。調べ方は CLI ごとに違う（どれも読むだけ）
+    func loginStatus(_ backend: Backend) async -> String {
+        guard let cli = found[backend] else { return "見つからない" }
+        return await Task.detached {
+            switch backend {
+            case .claude:
+                let json = (try? Worktree.run(cli.executable.path, ["auth", "status"], in: NSHomeDirectory(), path: cli.path)) ?? ""
+                return Self.claudeLogin(json)
+            case .codex:
+                let text = (try? Worktree.run(cli.executable.path, ["login", "status"], in: NSHomeDirectory(),
+                                              path: cli.path, withErrors: true)) ?? ""
+                return text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未ログイン"
+            case .grok:
+                return Self.grokLogin(FileManager.default.contents(atPath: NSHomeDirectory() + "/.grok/auth.json"))
+            case .hermes:
+                return "Hermes の設定に従う（hermes setup）"
+            }
+        }.value
+    }
+
+    /// `claude auth status`（JSON）を1行に
+    nonisolated static func claudeLogin(_ json: String) -> String {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              object["loggedIn"] as? Bool == true else { return "未ログイン" }
+        let method = object["authMethod"] as? String ?? ""
+        let plan = object["subscriptionType"] as? String ?? ""
+        return "ログイン済み（" + [method, plan].filter { !$0.isEmpty }.joined(separator: " · ") + "）"
+    }
+
+    /// `~/.grok/auth.json` にアカウントがあればログイン済み。**expires_at は見ない**——
+    /// 短命のトークンの期限で、grok が自分で更新する（期限切れの記録のまま動くのを実測）
+    nonisolated static func grokLogin(_ data: Data?) -> String {
+        guard let data, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              !object.isEmpty else { return "未ログイン" }
+        return "ログイン済み（xAI）"
+    }
+
+    /// Terminal.app で1行のコマンドを走らせる。初回は macOS が Terminal の操作の許可を訊く
+    private func runInTerminal(_ command: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", "tell application \"Terminal\"", "-e", "activate",
+                          "-e", "do script \(Self.appleScriptString(command))", "-e", "end tell"]
+        do { try task.run() } catch { return "Terminal を開けない: \(error)" }
+        return nil
+    }
+
+    /// ターンを開く。前のターンの「失敗」の印はここで消す
+    private func beginTurn(_ session: String) {
+        openTurns.insert(session)
+        failedTurns.remove(session)
+    }
+
+    /// 割り込みを送ったことを覚える。受領確認の照合と、止めたターンの終わり方の見分けに使う
+    func expectInterrupt(_ requestID: String, for session: String) {
+        interruptRequests[session] = requestID
+        stopping.insert(session)
+    }
+
+    private func appendLaunchError(_ message: String) {
+        if let existing = launchError, !existing.isEmpty {
+            launchError = existing + "\n" + message
+        } else {
+            launchError = message
+        }
+    }
+
+    /// 人の発言は transcript から返ってくるまで画面に出ない。
+    /// 押してから数秒何も起きないと「効いていない」に見えるので、送った側で先に置く
+    private func appendHuman(_ text: String, session: String) {
+        messages.append(Message(id: messages.count, session: session, agent: session,
+                                text: text, thinking: false, speaker: .human, at: Date()))
+        if messages.count > Self.maxMessages {
+            messages.removeFirst(messages.count - Self.maxMessages)
+        }
+    }
+
+    private func launchCodex(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
         guard let codex = codexFound else {
             launchError = "codex が見つからない"
             return nil
         }
 
         let sessionID = UUID().uuidString.lowercased()
-        let config = CodexLauncher.Config(cwd: cwd, level: gateLevel, prompt: prompt, model: model)
-
-        let onStream: @Sendable (CodexLauncher.Event) -> Void = { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .threadStarted(id):
-                    guard let self = self else { return }
-                    self.codexThreads[sessionID] = id
-                    if let index = self.codexRecords.firstIndex(where: { $0.id == sessionID }) {
-                        self.codexRecords[index].threadID = id
-                        self.saveCodexRecords()
-                    }
-
-                case let .agentMessage(text):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: text,
-                        thinking: false,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .reasoning(text):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: text,
-                        thinking: true,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .commandRun(command, exitCode):
-                    guard let self = self else { return }
-                    let detail = exitCode.map { "終了コード \($0)" } ?? "実行中"
-                    self.messages.append(Message(
-                        id: self.messages.count,
-                        session: sessionID,
-                        agent: sessionID,
-                        text: "$ \(command) (\(detail))",
-                        thinking: false,
-                        speaker: .model,
-                        at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .turnEnded(inputTokens, _):
-                    guard let self = self else { return }
-                    self.codexProcesses[sessionID] = nil
-                    Snowman.observe(&self.readings[sessionID, default: Snowman.Reading()],
-                                   tokens: inputTokens)
-
-                case let .turnFailed(msg):
-                    self?.codexProcesses[sessionID] = nil
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(msg)"
-                    } else {
-                        self?.launchError = "失敗: \(msg)"
-                    }
-
-                case let .error(msg):
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(msg)"
-                    } else {
-                        self?.launchError = msg
-                    }
-
-                case .fileChanged:
-                    break   // ファイル変更は台帳に任せる
-                }
-            }
-        }
-
-        guard let started = CodexLauncher.launch(config, using: codex, onStream: onStream) else {
+        let connection = CodexConnection(
+            found: codex, config: CodexLauncher.Config(cwd: cwd, level: level, prompt: "", model: model),
+            threadID: nil, onEvent: agentStream(session: sessionID))
+        guard connection.send(prompt) else {
             launchError = "codex を起動できなかった"
             return nil
         }
-
-        codexProcesses[sessionID] = started.process
+        runs[sessionID] = Run(connection: connection, token: UUID())
         backends[sessionID] = .codex
 
         // codex セッションをライブセッション・台帳に登録
-        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: true)
+        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
+        beginTurn(sessionID)
         loadedSessionTabs[sessionID] = tab
         liveSessions.append(tab)
         liveSessions.sort { $0.name < $1.name }
+        appendHuman(prompt, session: sessionID)
 
-        // 最初のユーザー発言をメッセージに追加
-        messages.append(Message(
-            id: messages.count,
-            session: sessionID,
-            agent: sessionID,
-            text: prompt,
-            thinking: false,
-            speaker: .human,
-            at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
-
-        // 台帳に記録（最初はthreadIDは nil、turnEnded で入る）
+        // 台帳に記録（最初は threadID は nil、thread が始まった時に入る）
         let title = Self.titleRule(prompt) ?? ""
-        let record = CodexRecord(id: sessionID, threadID: nil, title: title, cwd: cwd, model: model, lastUsed: Date())
-        codexRecords.append(record)
-        saveCodexRecords()
+        let record = RunRecord(id: sessionID, threadID: nil, title: title, cwd: cwd, model: model,
+                               lastUsed: Date(), backend: .codex)
+        runRecords.append(record)
+        saveRunRecords()
 
         selectedSession = sessionID
         launchError = nil
@@ -1161,13 +1383,12 @@ final class Cockpit {
     ///
     /// 以前は「AT22 が起こしたセッションだけ」だった。人が端末で開いている transcript を
     /// 2つのプロセスが書く事故を避けるためだったが、その結果**履歴から開いた会話には
-    /// 一言も送れず、画面が行き止まりになっていた**。いまは送る直前に `attach` が
-    /// `claude --resume` で繋ぐので、口は常に1本のまま繋がる
+    /// 一言も送れず、画面が行き止まりになっていた**。いまは送る直前に `connect` が
+    /// 繋ぐので、口は常に1本のまま繋がる
     func canSend(to session: String?) -> Bool {
         guard let session else { return false }
         // codex は1ターン1プロセス。走っている間は次を受けられない（ボタンは停止に変わる）
-        if backend(of: session) == .codex { return codexProcesses[session] == nil }
-        return true
+        return runs[session]?.connection.acceptsInput ?? true
     }
 
     @discardableResult
@@ -1175,187 +1396,161 @@ final class Cockpit {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, let session else { return false }
 
-        if backend(of: session) == .codex {
-            return sendToCodex(body, to: session)
-        }
-        return sendToClaude(body, to: session)
-    }
-
-    private func sendToClaude(_ text: String, to session: String) -> Bool {
         // 繋がっていなければここで繋ぐ。**送ろうとした時が繋ぎ時**——
         // 開いて眺めているだけのセッションでプロセスを起こさない
-        guard let input = inputs[session] ?? (attach(to: session) ? inputs[session] : nil) else {
-            return false        // 理由は attach が launchError に載せている
+        guard let run = runs[session] ?? connect(session) else {
+            return false        // 理由は connect が launchError に載せている
         }
-        guard Launcher.send(text, to: input) else {
-            inputs[session] = nil
+        guard run.connection.acceptsInput else {
+            launchError = "まだ前のターンを処理している"
+            return false
+        }
+        guard run.connection.send(body) else {
+            forget(session)
             launchError = "送れなかった。セッションが終わっている"
             return false
         }
-        // 人の発言は transcript から返ってくるまで画面に出ない。
-        // 押してから数秒何も起きないと「効いていない」に見えるので、ここで先に置く
-        messages.append(Message(id: messages.count, session: session, agent: session,
-                                text: text, thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
+        beginTurn(session)
+        appendHuman(body, session: session)
         return true
     }
 
-    private func sendToCodex(_ text: String, to session: String) -> Bool {
-        guard codexProcesses[session] == nil else {
-            launchError = "codex がまだ処理中です"
-            return false
-        }
-        guard let threadID = codexThreads[session] else {
-            launchError = "codex のスレッドID が不明です"
-            return false
-        }
-        guard let codex = codexFound else {
-            launchError = "codex が見つかりません"
-            return false
-        }
-
-        // 台帳から config を復元
-        guard let record = codexRecords.first(where: { $0.id == session }) else {
-            launchError = "codex セッションが見つかりません"
-            return false
-        }
-
-        let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: text, model: record.model)
-
-        let onStream: @Sendable (CodexLauncher.Event) -> Void = { event in
-            Task { @MainActor [weak self] in
-                switch event {
-                case let .agentMessage(msg):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session, text: msg,
-                        thinking: false, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .reasoning(msg):
-                    guard let self = self else { return }
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session, text: msg,
-                        thinking: true, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .commandRun(command, exitCode):
-                    guard let self = self else { return }
-                    let detail = exitCode.map { "終了コード \($0)" } ?? "実行中"
-                    self.messages.append(Message(
-                        id: self.messages.count, session: session, agent: session,
-                        text: "$ \(command) (\(detail))", thinking: false, speaker: .model, at: Date()))
-                    if self.messages.count > Self.maxMessages {
-                        self.messages.removeFirst(self.messages.count - Self.maxMessages)
-                    }
-
-                case let .turnEnded(inputTokens, _):
-                    guard let self = self else { return }
-                    self.codexProcesses[session] = nil
-                    Snowman.observe(&self.readings[session, default: Snowman.Reading()], tokens: inputTokens)
-
-                case let .turnFailed(msg):
-                    self?.codexProcesses[session] = nil
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n失敗: \(msg)"
-                    } else {
-                        self?.launchError = "失敗: \(msg)"
-                    }
-
-                case let .error(msg):
-                    if let existing = self?.launchError, !existing.isEmpty {
-                        self?.launchError = existing + "\n\(msg)"
-                    } else {
-                        self?.launchError = msg
-                    }
-
-                case .threadStarted, .fileChanged:
-                    break
-                }
+    /// まだ繋がっていないセッションに繋ぐ。claude は `--resume`、codex は台帳の thread ID で続きへ
+    private func connect(_ session: String) -> Run? {
+        switch backend(of: session) {
+        case .claude:
+            return attach(to: session) ? runs[session] : nil
+        case .codex:
+            guard let codex = codexFound else {
+                launchError = "codex が見つかりません"
+                return nil
             }
+            guard let record = runRecords.first(where: { $0.id == session }) else {
+                launchError = "codex セッションが見つかりません"
+                return nil
+            }
+            guard let thread = record.threadID else {
+                launchError = "codex のスレッドID が不明です"
+                return nil
+            }
+            let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: "",
+                                              model: sessionModel[session] ?? record.model)
+            let run = Run(connection: CodexConnection(found: codex, config: config, threadID: thread,
+                                                      onEvent: agentStream(session: session)),
+                          token: UUID())
+            runs[session] = run
+            return run
+        case .grok, .hermes:
+            let backend = backend(of: session)
+            guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
+                launchError = "\(backend.title) のセッションが見つからない"
+                return nil
+            }
+            return startACP(backend, session: session, cwd: record.cwd, model: sessionModel[session] ?? record.model,
+                            level: gateLevel, resume: remote)
         }
+    }
 
-        guard let started = CodexLauncher.resume(threadID: threadID, prompt: text, config: config,
-                                                 using: codex, onStream: onStream) else {
-            launchError = "codex resume に失敗"
-            return false
+    /// ACP の相手ごとの起動引数。
+    /// grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
+    /// それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する。
+    /// Hermes はモデルも承認も自身の設定（hermes model / hermes setup）に従う
+    nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level) -> [String] {
+        switch backend {
+        case .grok:
+            var arguments = ["agent"]
+            if !model.isEmpty { arguments += ["-m", model] }
+            if level.needsConfirmation { arguments.append("--always-approve") }
+            return arguments + ["stdio"]
+        case .hermes:
+            return ["acp"]
+        case .claude, .codex:
+            return []
         }
+    }
 
-        codexProcesses[session] = started.process
-
-        // ユーザー発言をメッセージに追加
-        messages.append(Message(
-            id: messages.count, session: session, agent: session, text: text,
-            thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
+    /// ACP の相手を起こす。`resume` を渡すと session/load で続きへ繋ぐ（履歴は相手が送り直す）
+    private func startACP(_ backend: Backend, session: String, cwd: String, model: String, level: Gate.Level,
+                          resume: String?) -> Run? {
+        guard let cli = found[backend] else {
+            launchError = "\(backend.command) が見つからない"
+            return nil
         }
+        let token = UUID()
+        do {
+            let connection = try ACPConnection.start(
+                cli.executable, arguments: Self.acpArguments(backend, model: model, level: level), cwd: cwd,
+                path: cli.path, session: session, resume: resume,
+                onEvent: agentStream(session: session),
+                onExit: exitHandler(label: backend.command, session: session, token: token))
+            let run = Run(connection: connection, token: token)
+            runs[session] = run
+            backends[session] = backend
+            return run
+        } catch {
+            launchError = "\(error)"
+            return nil
+        }
+    }
 
-        return true
+    private func launchACP(_ backend: Backend, prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
+        let sessionID = UUID().uuidString.lowercased()
+        guard let run = startACP(backend, session: sessionID, cwd: cwd, model: model, level: level, resume: nil),
+              run.connection.send(prompt) else { return nil }
+        let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
+        loadedSessionTabs[sessionID] = tab
+        liveSessions.append(tab)
+        liveSessions.sort { $0.name < $1.name }
+        beginTurn(sessionID)
+        appendHuman(prompt, session: sessionID)
+        // 相手側のIDは挨拶が済んだ時（.ready）に台帳へ入る
+        runRecords.append(RunRecord(id: sessionID, threadID: nil, title: Self.titleRule(prompt) ?? "", cwd: cwd,
+                                    model: model, lastUsed: Date(), backend: backend))
+        saveRunRecords()
+        selectedSession = sessionID
+        launchError = nil
+        refreshLiveSessions()
+        return UUID(uuidString: sessionID) ?? UUID()
     }
 
     /// 走っているセッションの進行中のターンだけを止める。
     ///
-    /// **AT22 が起こしたセッションにだけ通る。** セッション自体は開いたままで、
-    /// `send` と同じく stdin が開いている間だけ有効。
-    /// 返された request_id で `onStream` の `interruptAcknowledged` イベントを照合し、
-    /// 止まりきったか確認する
+    /// **AT22 が繋いでいるセッションにだけ通る。** セッション自体は開いたまま。
+    /// 返された request_id で `interruptAcknowledged` を照合し、止まりきったか確認する
     @discardableResult
     func interrupt(_ session: String?) -> Bool {
         guard let session else { return false }
-
-        if backend(of: session) == .codex {
-            return interruptCodex(session)
-        }
-        return interruptClaude(session)
-    }
-
-    private func interruptClaude(_ session: String) -> Bool {
         // 繋がっていないセッションは AT22 から止められない。**別の端末が回している**ので、
         // 「終わっている」と言うと嘘になる。止められない理由をそのまま出す
-        guard let input = inputs[session] else {
+        guard let run = runs[session] else {
             launchError = "このセッションは AT22 から繋がっていないので止められない"
             return false
         }
-        guard let requestID = Launcher.interrupt(input) else {
-            inputs[session] = nil
+        guard let requestID = run.connection.interrupt() else {
+            // claude は stdin に書けなかった＝もう終わっている。codex は走っているターンが無い
+            if backend(of: session) == .claude { forget(session) }
             launchError = "止められなかった。セッションが終わっている"
             return false
         }
-        lastInterruptRequestID = requestID
-        return true
-    }
-
-    private func interruptCodex(_ session: String) -> Bool {
-        guard let process = codexProcesses[session] else { return false }
-        process.terminate()
-        codexProcesses[session] = nil
+        // 受領確認を返さない相手（codex はプロセスを落とすだけ）は照合しない
+        if requestID.isEmpty { stopping.insert(session) } else { expectInterrupt(requestID, for: session) }
         return true
     }
 
     /// そのセッションが今動いているか。メッセージ窓の「思考中」表示に使う。
     ///
-    /// `liveSessions` の busy フラグ、stdout からの部分テキスト、エージェント台帳の最終活動時刻から判定する。
+    /// `liveSessions` の busy フラグ、接続からの部分テキスト、エージェント台帳の最終活動時刻から判定する。
     /// `streaming` が空でなければ「今この瞬間」書いている状態なので優先。
-    /// codex セッションはプロセスが存在すれば稼働中と判定。
     /// 既存の `activeWindow` 定数と `isBusy` 判定を組み合わせるだけで、新しい閾値は作らない
     func isWorking(_ session: String?) -> Bool {
         guard let wanted = session else {
             // セッションが指定されていない場合は、稼働中のセッションが1つでもあれば true
             return liveSessions.contains { $0.busy }
         }
-        // stdout から部分テキストが流れてきている。「今書いている途中」の状態
-        if !streaming.isEmpty { return true }
-        // codex セッション: プロセスが実行中なら稼働中
-        if backend(of: wanted) == .codex && codexProcesses[wanted] != nil {
-            return true
-        }
+        // そのセッションの接続から部分テキストが流れてきている。「今書いている途中」の状態
+        if streaming[wanted]?.isEmpty == false { return true }
+        // AT22 の接続がターンを回している間は稼働中（書きかけがまだ来ていない考え中も含む）
+        if openTurns.contains(wanted) { return true }
         // 指定されたセッションが liveSessions に在るか、busy フラグで確認
         if let session = liveSessions.first(where: { $0.id == wanted }), session.busy {
             return true
@@ -1466,6 +1661,395 @@ final class Cockpit {
         lastScan = Date()
         wroteSinceScan = false
         scanning = false
+    }
+
+    // MARK: ワークスペース（プロジェクト → worktree → エージェント）
+
+    /// エージェントの状態。サイドバーの印の色になる
+    enum AgentStatus: Int, Comparable, Sendable {
+        case waiting, working, failed, done, idle     // 並べる順（人の番が先）
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    struct AgentRow: Identifiable {
+        let id: String
+        let title: String
+        let backend: Backend
+        let status: AgentStatus
+        /// まだ読み込んでいない過去のセッション。押したら読み込む
+        let recent: RecentSession?
+        /// AT22 の台帳にある Codex / Grok のセッション。押したら続きに繋ぐ
+        let record: RunRecord?
+        var unread = false
+    }
+
+    struct WorkspaceNode: Identifiable {
+        /// worktree のパス
+        let id: String
+        let name: String
+        let branch: String?
+        let isMain: Bool
+        var agents: [AgentRow]
+        /// 作っている最中なら "作成中"、失敗したらその理由
+        var pending: String?
+    }
+
+    struct ProjectNode: Identifiable {
+        /// リポジトリ本体のパス
+        let id: String
+        let name: String
+        let registered: Bool
+        var workspaces: [WorkspaceNode]
+    }
+
+    /// AT22 が作ったワークスペースの基点。差分の基準（レビュー）と親子（競走）に使う
+    struct WorkspaceMeta: Codable, Equatable {
+        var baseRef: String
+        var baseSHA: String
+        var parent: String?
+        var createdAt: Date
+    }
+
+    struct PendingWorkspace: Equatable {
+        let repo: String
+        let name: String
+        var error: String?
+    }
+
+    /// 登録したリポジトリ。UserDefaults（AT22 自身の記録はここだけに置く）
+    private(set) var projects: [String] = UserDefaults.standard.stringArray(forKey: "projects") ?? []
+    private(set) var workspaceMeta: [String: WorkspaceMeta] = {
+        guard let data = UserDefaults.standard.data(forKey: "workspaceMeta") else { return [:] }
+        return (try? JSONDecoder().decode([String: WorkspaceMeta].self, from: data)) ?? [:]
+    }()
+    /// 各リポジトリの worktree 一覧。git に訊き直すのは数秒おき（裏で）
+    private(set) var worktrees: [String: [Worktree.Entry]] = [:]
+    /// 作業ディレクトリ → リポジトリ本体（"" はリポジトリの外）。一度訊いたら覚えておく
+    private var repoOf: [String: String] = [:]
+    private(set) var pendingWorkspaces: [String: PendingWorkspace] = [:]
+    private var lastWorktreeScan = Date.distantPast
+    private var scanningWorktrees = false
+
+    func addProject(_ repo: String) {
+        guard !projects.contains(repo) else { return }
+        projects.append(repo)
+        UserDefaults.standard.set(projects, forKey: "projects")
+        refreshWorktreesIfNeeded(force: true)
+    }
+
+    func removeProject(_ repo: String) {
+        projects.removeAll { $0 == repo }
+        UserDefaults.standard.set(projects, forKey: "projects")
+    }
+
+    /// 選んだフォルダをリポジトリとして登録する。worktree の中を選んでも本体を登録する
+    func addProject(containing folder: String) async -> String? {
+        let result = await Task.detached { Result { try Worktree.root(of: folder) } }.value
+        switch result {
+        case let .success(repo): addProject(repo); return nil
+        case let .failure(error): return "\(error)"
+        }
+    }
+
+    private func saveWorkspaceMeta() {
+        if let data = try? JSONEncoder().encode(workspaceMeta) {
+            UserDefaults.standard.set(data, forKey: "workspaceMeta")
+        }
+    }
+
+    /// worktree の一覧を読み直す。動いているセッションの在り処からもリポジトリを見つける——
+    /// 登録しなくても、端末や `claude -w` で始めた作業がその場で木に並ぶ。
+    /// ponytail: 5秒おきに git を数回叩くだけ。リポジトリが数十を超えたら FSEvents で .git を見る
+    func refreshWorktreesIfNeeded(force: Bool = false) {
+        guard !scanningWorktrees, force || Date().timeIntervalSince(lastWorktreeScan) > 5 else { return }
+        scanningWorktrees = true
+        lastWorktreeScan = Date()
+        let unknown = Set(liveSessions.map(\.cwd) + runRecords.map(\.cwd)).filter { !$0.isEmpty && repoOf[$0] == nil }
+        let known = Set(projects + repoOf.values.filter { !$0.isEmpty })
+        Task.detached(priority: .utility) {
+            var roots: [String: String] = [:]
+            for cwd in unknown { roots[cwd] = (try? Worktree.root(of: cwd)) ?? "" }
+            var lists: [String: [Worktree.Entry]] = [:]
+            for repo in known.union(roots.values.filter { !$0.isEmpty }) {
+                lists[repo] = (try? Worktree.list(repo: repo)) ?? []
+            }
+            let (found, listed) = (roots, lists)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.repoOf.merge(found) { _, new in new }
+                if listed != self.worktrees { self.worktrees = listed }
+                self.scanningWorktrees = false
+            }
+        }
+    }
+
+    /// セッションの作業ディレクトリ。起こしたタブ・稼働中・台帳の順に見る
+    func cwd(of session: String) -> String? {
+        (loadedSessionTabs[session]?.cwd).flatMap { $0.isEmpty ? nil : $0 }
+            ?? liveSessions.first { $0.id == session }?.cwd
+            ?? runRecords.first { $0.id == session }?.cwd
+    }
+
+    func status(of session: String) -> AgentStatus {
+        if approvals.contains(where: { $0.session == session })
+            || liveSessions.first(where: { $0.id == session })?.waiting != nil { return .waiting }
+        if isWorking(session) { return .working }
+        if failedTurns.contains(session) { return .failed }
+        if runs[session] != nil { return .done }
+        return .idle
+    }
+
+    /// 作業ディレクトリが属するワークスペース。**最も長い前方一致**——本体のパスは
+    /// `.claude/worktrees/*` 全部の前方にもなるので、短い方に吸われないようにする
+    nonisolated static func owner(of cwd: String, among paths: [String]) -> String? {
+        paths.filter { cwd == $0 || cwd.hasPrefix($0 + "/") }.max { $0.count < $1.count }
+    }
+
+    /// サイドバーの木。登録したリポジトリを先に、見つけたリポジトリを名前順に。
+    /// ponytail: リポジトリの外で動いているセッションは載せない（会話欄の履歴から開ける）
+    func workspaceTree() -> [ProjectNode] {
+        let discovered = Set(repoOf.values.filter { !$0.isEmpty }).subtracting(projects)
+            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
+        let repos = projects + discovered
+        var paths = repos.flatMap { repo in worktrees[repo]?.map(\.path) ?? [repo] }
+        paths += pendingWorkspaces.keys.filter { !paths.contains($0) }
+
+        var rows: [String: [AgentRow]] = [:]
+        var placed = Set<String>()
+        let sessions = Set(liveSessions.map(\.id) + runRecords.map(\.id) + runs.keys)
+        for session in sessions {
+            guard let cwd = cwd(of: session), let workspace = Self.owner(of: cwd, among: paths) else { continue }
+            let record = runRecords.first { $0.id == session }
+            rows[workspace, default: []].append(AgentRow(
+                id: session, title: title(for: session) ?? String(session.prefix(8)),
+                backend: backend(of: session), status: status(of: session), recent: nil,
+                record: runs[session] == nil && !liveSessions.contains { $0.id == session } ? record : nil,
+                unread: unread.contains(session)))
+            placed.insert(session)
+        }
+        // 過去のセッションは cwd を持たないので、プロジェクトのフォルダ名（slug）で突き合わせる。
+        // 1つのワークスペースに並べるのは新しい方から5本まで（それより前は会話欄の履歴で）
+        for workspace in paths {
+            let slug = Self.projectSlug(workspace)
+            let past = recentSessions.filter { $0.project == slug && !placed.contains($0.id) }.prefix(5)
+            rows[workspace, default: []] += past.map {
+                AgentRow(id: $0.id, title: title(for: $0.id) ?? String($0.id.prefix(8)), backend: .claude,
+                         status: .idle, recent: $0, record: nil)
+            }
+        }
+
+        return repos.map { repo in
+            let entries = worktrees[repo] ?? []
+            var workspaces = entries.map { entry in
+                WorkspaceNode(id: entry.path, name: entry.isMain ? "本体" : (entry.path as NSString).lastPathComponent,
+                              branch: entry.branch, isMain: entry.isMain,
+                              agents: (rows[entry.path] ?? []).sorted { $0.status < $1.status },
+                              pending: nil)
+            }
+            for (path, pending) in pendingWorkspaces where pending.repo == repo && !entries.contains(where: { $0.path == path }) {
+                workspaces.append(WorkspaceNode(id: path, name: Worktree.slug(pending.name), branch: nil, isMain: false,
+                                                agents: [], pending: pending.error ?? "作成中"))
+            }
+            return ProjectNode(id: repo, name: (repo as NSString).lastPathComponent,
+                               registered: projects.contains(repo), workspaces: workspaces)
+        }
+    }
+
+    /// 1本のワークスペースで走らせるエージェント
+    struct Racer: Equatable {
+        let name: String
+        let backend: Backend
+        var model = ""
+    }
+
+    /// 1本版。`then` は（置き場, 起こしたセッション, 失敗の理由）
+    func createWorkspace(repo: String, name: String, base: String, backend: Backend, model: String,
+                         prompt: String, level: Gate.Level,
+                         then: ((String, String?, String?) -> Void)? = nil) {
+        createWorkspaces(repo: repo, base: base, racers: [Racer(name: name, backend: backend, model: model)],
+                         prompt: prompt, level: level, then: then)
+    }
+
+    /// ワークスペースを作り、できたらそこでエージェントを起こす。作成は裏で進め、
+    /// 待つ間はカードに「作成中」、失敗したら理由を出す（ダイアログは待たせない）。
+    /// 2つ以上渡すと**競走**：最初の1本で基点を SHA に固定し、残りも同じ SHA から作って同じ指示を送る。
+    /// 作るのは1本ずつ順に——同じリポジトリで `git worktree add` を同時に走らせない（ref や exclude の取り合い）
+    func createWorkspaces(repo: String, base: String, racers: [Racer], prompt: String, level: Gate.Level,
+                          then: ((String, String?, String?) -> Void)? = nil) {
+        let parent = racers.count > 1 ? "競走 " + base + " " + UUID().uuidString.prefix(8) : nil
+        for racer in racers {
+            pendingWorkspaces[Worktree.location(repo: repo, name: racer.name)] = PendingWorkspace(repo: repo, name: racer.name, error: nil)
+        }
+        addProject(repo)
+        Task {
+            var pinned: String?
+            for racer in racers {
+                let from = pinned ?? base
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try Worktree.add(repo: repo, name: racer.name, base: from) }
+                }.value
+                if case let .success(made) = result { pinned = pinned ?? made.baseSHA }
+                finishWorkspace(repo: repo, racer: racer, base: base, parent: parent, result: result,
+                                prompt: prompt, level: level, then: then)
+            }
+        }
+    }
+
+    private func finishWorkspace(repo: String, racer: Racer, base: String, parent: String?,
+                                 result: Result<(path: String, branch: String, baseSHA: String), Error>,
+                                 prompt: String, level: Gate.Level, then: ((String, String?, String?) -> Void)?) {
+        let path = Worktree.location(repo: repo, name: racer.name)
+        switch result {
+        case let .success(made):
+            pendingWorkspaces[path] = nil
+            workspaceMeta[made.path] = WorkspaceMeta(baseRef: base, baseSHA: made.baseSHA, parent: parent, createdAt: Date())
+            saveWorkspaceMeta()
+            refreshWorktreesIfNeeded(force: true)
+            let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prompt.isEmpty else { then?(made.path, nil, nil); return }
+            let session = launch(prompt: prompt, cwd: made.path, backend: racer.backend, model: racer.model, level: level)
+            then?(made.path, session?.uuidString.lowercased(), session == nil ? (launchError ?? "起こせなかった") : nil)
+        case let .failure(error):
+            pendingWorkspaces[path]?.error = "\(error)"
+            then?(path, nil, "\(error)")
+        }
+    }
+
+    /// 同じ競走で走った他のワークスペース（まだ残っているものだけ）
+    func rivals(of path: String) -> [String] {
+        guard let parent = workspaceMeta[path]?.parent,
+              let list = worktrees.values.first(where: { $0.contains { $0.path == path } }) else { return [] }
+        return list.map(\.path).filter { $0 != path && workspaceMeta[$0]?.parent == parent }
+    }
+
+    /// 競走の勝ちを決める。**人が負けの一覧（未コミットの変更の数つき）を見て押した後だけ**呼ぶ。
+    /// 負けは変更ごと消し、枝は `-d`（コミットを積んだ負けの枝は残る）。勝ちは普通のワークスペースに戻る。
+    /// 戻り値は人に伝える一言（残した枝など）
+    func adopt(_ winner: String) async -> [String] {
+        var notes: [String] = []
+        for loser in rivals(of: winner) {
+            if let note = await deleteWorkspace(loser, force: true, deleteBranch: true) { notes.append(note) }
+        }
+        workspaceMeta[winner]?.parent = nil
+        saveWorkspaceMeta()
+        return notes
+    }
+
+    /// 検査・画像焼きからワークスペースの木を直接流し込む口。実機の git と ~/.claude に依存させない
+    func loadWorkspacesForProbe(projects: [String], worktrees: [String: [Worktree.Entry]],
+                                pending: [String: PendingWorkspace] = [:], failed: Set<String> = [],
+                                backends: [String: Backend] = [:], meta: [String: WorkspaceMeta] = [:]) {
+        self.projects = projects
+        self.workspaceMeta = meta
+        self.worktrees = worktrees
+        self.pendingWorkspaces = pending
+        self.failedTurns = failed
+        self.backends.merge(backends) { _, new in new }
+        lastWorktreeScan = .distantFuture      // 毎秒の読み直しで消されないように
+    }
+
+    // MARK: レビューと出荷
+
+    /// 差分に付けるコメント1件。`line` は新しい側の行番号（削除行だけは旧い側）
+    struct ReviewComment: Identifiable, Equatable {
+        let id = UUID()
+        let file: String
+        let line: Int?
+        let code: String
+        var text: String
+    }
+
+    /// セッションが居るワークスペース（最も長い前方一致）。一覧をまだ読んでいなければ nil
+    func workspacePath(of session: String) -> String? {
+        guard let cwd = cwd(of: session) else { return nil }
+        return Self.owner(of: cwd, among: worktrees.values.flatMap { $0.map(\.path) })
+    }
+
+    /// 差分の基準。AT22 が作ったワークスペースは作った時の SHA（そこからの全部）、
+    /// それ以外は HEAD（まだコミットしていない分だけ）
+    func reviewBase(of path: String) -> String { workspaceMeta[path]?.baseSHA ?? "HEAD" }
+
+    func review(_ path: String) async -> Result<[Worktree.DiffFile], Worktree.Failure> {
+        let base = reviewBase(of: path)
+        return await Task.detached {
+            Result { try Worktree.review(path, base: base) }.mapError { ($0 as? Worktree.Failure) ?? .init(message: "\($0)") }
+        }.value
+    }
+
+    /// 行コメントをまとめて1通にする。どのファイルの何行目の、どのコードについてかを必ず添える
+    nonisolated static func reviewMessage(_ comments: [ReviewComment]) -> String {
+        let items = comments.enumerated().map { index, comment in
+            let place = comment.line.map { "\(comment.file):\($0)" } ?? comment.file
+            let code = comment.code.isEmpty ? "" : "\n   > \(comment.code.trimmingCharacters(in: .whitespaces))"
+            return "\(index + 1). \(place)\(code)\n   \(comment.text)"
+        }
+        return "レビューのコメントが \(comments.count) 件あります。直してください。\n\n" + items.joined(separator: "\n\n")
+    }
+
+    /// 出荷の3つ（コミット・push・PR）。**どれも人が押した時だけ**。結果は人に見せる一言で返す
+    func commit(_ path: String, message: String) async -> String {
+        await Task.detached {
+            do { return try Worktree.commitAll(path, message: message) } catch { return "コミットできない: \(error)" }
+        }.value
+    }
+
+    func push(_ path: String) async -> String {
+        guard let branch = worktrees.values.flatMap({ $0 }).first(where: { $0.path == path })?.branch else {
+            return "枝が無い（切り離し）ので push できない"
+        }
+        return await Task.detached {
+            do { return try Worktree.push(path, branch: branch).nilIfEmpty ?? "push した: \(branch)" }
+            catch { return "push できない: \(error)" }
+        }.value
+    }
+
+    /// PR を作る。gh は自分の認証（gh auth）を使う——AT22 は何も預からない
+    func createPullRequest(_ path: String) async -> String {
+        let entry = worktrees.values.flatMap { $0 }.first { $0.path == path }
+        guard let branch = entry?.branch else { return "枝が無い（切り離し）ので PR を作れない" }
+        let baseRef = workspaceMeta[path]?.baseRef
+        return await Task.detached {
+            guard let gh = Launcher.locate(override: nil, command: "gh") else { return "gh が見つからない" }
+            // 基点が枝の名前ならそこへ。HEAD や SHA で作ったものは gh の既定（リポジトリの既定の枝）に任せる
+            var arguments = ["pr", "create", "--head", branch, "--fill"]
+            if let baseRef, baseRef != "HEAD", !baseRef.allSatisfy(\.isHexDigit) { arguments += ["--base", baseRef] }
+            do { return try Worktree.run(gh.executable.path, arguments, in: path, path: gh.path) }
+            catch { return "PR を作れない: \(error)" }
+        }.value
+    }
+
+    /// 失敗したまま残っている「作成中」を畳む
+    func dismissPending(_ path: String) { pendingWorkspaces[path] = nil }
+
+    /// 消す前に人へ見せる、未コミットの変更
+    func dirtyFiles(of path: String) async -> [String] {
+        await Task.detached { (try? Worktree.dirtyFiles(path)) ?? [] }.value
+    }
+
+    /// ワークスペースを消す。**そこで動いている接続を先に閉じる**（書いている最中の場所を消さない）。
+    /// `force` は未コミットの変更を人に見せて確認を取った後だけ立てる。
+    /// 戻り値は人に伝える一言（失敗の理由、または枝を残した旨）。何も無ければ nil
+    func deleteWorkspace(_ path: String, force: Bool, deleteBranch: Bool) async -> String? {
+        guard let (repo, entry) = worktrees.lazy.compactMap({ repo, list in
+            list.first { $0.path == path }.map { (repo, $0) } }).first else {
+            return "この作業場所は一覧に無い"
+        }
+        for session in runs.keys where cwd(of: session).map({ Self.owner(of: $0, among: [path]) != nil }) == true {
+            runs[session]?.connection.close()
+            forget(session)
+        }
+        let branch = entry.branch
+        let outcome: String? = await Task.detached {
+            do { try Worktree.remove(repo: repo, path: path, force: force) } catch { return "\(error)" }
+            if deleteBranch, let branch, !Worktree.deleteBranch(branch, repo: repo) {
+                return "枝 \(branch) はマージされていないので残した（中身を見てから消せる）"
+            }
+            return nil
+        }.value
+        workspaceMeta[path] = nil
+        saveWorkspaceMeta()
+        refreshWorktreesIfNeeded(force: true)
+        return outcome
     }
 
     // MARK: 畳み込み
@@ -1713,7 +2297,14 @@ final class Cockpit {
                             now: Date) -> ([AgentChip], Int) {
         var chips: [AgentChip] = []
         // Claude Code 自身が busy と言っているセッション。考えている時間もここには出る
-        let busySessions = Set(liveSessions.lazy.filter(\.busy).map(\.id))
+        let busySessions = Set(liveSessions.lazy.filter(\.busy).map(\.id)).union(openTurns)
+        // 返事待ちのセッション。キーはセッションIDなので、引けるのは司令塔（ID＝セッションID）だけ。
+        // ponytail: どのサブエージェントのどの道具が待っているかまでは sessions/*.json に無い。
+        // 要るなら PermissionRequest フック（agent_id・tool_use_id が来る）だが、設定に触ることになる
+        var waitingSessions = Dictionary(liveSessions.compactMap { s in s.waiting.map { (s.id, $0) } },
+                                         uniquingKeysWith: { first, _ in first })
+        // AT22 が繋いでいるセッションの承認待ち。答えるまで相手は道具の前で止まっている
+        for approval in approvals { waitingSessions[approval.session] = "承認待ち" }
 
         // セッションごとの消費量合計。`share` の分母になる。
         //
@@ -1742,6 +2333,10 @@ final class Cockpit {
             let busy = Self.isBusy(record, live: running != nil || busySessions.contains(id), now: now)
             let totalInSession = sessionSpendTotal[record.session] ?? 0
             let share = totalInSession > 0 ? record.spent / totalInSession : 0
+            let waiting = waitingSessions[id]
+            // 待っている間は、止まる直前にしていたこと（＝承認を求めている道具）を添える
+            let doing = waiting.map { "\($0) · " + Self.doingText(record, working: true, now: now) }
+                ?? Self.doingText(record, working: busy, now: now)
             chips.append(AgentChip(
                 id: id,
                 role: record.role ?? role(of: id, session: record.session),
@@ -1750,9 +2345,11 @@ final class Cockpit {
                 parent: record.parentCall.flatMap { callIssuer[$0] },
                 // 終了報告が来ていればそれが確定値。来るまでは観測できたぶんで代用する
                 work: record.reportedWork ?? max(record.observedWork, touchCount[id] ?? 0),
-                doing: Self.doingText(record, working: busy, now: now),
+                doing: doing,
                 done: record.doneAt != nil,
-                busy: busy,
+                // 返事待ちは止まっている。直前15秒に動きがあっても稼働中にしない
+                // （赤いランプと琥珀の枠が同時に点くと、動いているのか待っているのか読めない）
+                busy: busy && waiting == nil,
                 target: running?.target,
                 kind: running?.kind,
                 lastAt: record.lastAt,
@@ -1761,7 +2358,8 @@ final class Cockpit {
                     record.counts[kind].map { (kind, $0) }
                 },
                 spent: record.spent,
-                share: share))
+                share: share,
+                waiting: waiting))
         }
 
         for (id, worker) in mcpWorkers {
@@ -1998,7 +2596,7 @@ final class Cockpit {
 
         // codex セッション
         if backend(of: sessionID) == .codex {
-            if let record = codexRecords.first(where: { $0.id == sessionID }) {
+            if let record = runRecords.first(where: { $0.id == sessionID }) {
                 let result = Self.titleRule(record.title)
                 titles.updateValue(result, forKey: sessionID)
                 return result
@@ -2200,12 +2798,28 @@ final class Cockpit {
             found.append(LiveSession(id: id,
                                      name: obj["name"] as? String ?? String(id.prefix(8)),
                                      cwd: obj["cwd"] as? String ?? "",
-                                     busy: (obj["status"] as? String) == "busy"))
+                                     busy: (obj["status"] as? String) == "busy",
+                                     waiting: Self.waitingLabel(status: obj["status"] as? String,
+                                                                waitingFor: obj["waitingFor"] as? String)))
+        }
+        // 端末で動いているセッションの区切り。AT22 の接続が無いので、状態の変わり目で拾う
+        for session in found where runs[session.id] == nil {
+            let before = liveSessions.first { $0.id == session.id }
+            if session.waiting != nil, before?.waiting == nil { noteAttention(session.id, "承認を待っている") }
+            else if before?.busy == true, !session.busy { noteAttention(session.id, "ターンが終わった") }
         }
         activeSessions = Set(found.map(\.id))
         let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions,
                                loaded: Array(loadedSessionTabs.values))
         if sorted != liveSessions { liveSessions = sorted }
+    }
+
+    /// `status` が `waiting` の時の表示名。実測（v2.1.282）で承認ダイアログ中は
+    /// `waitingFor: "permission prompt"`、質問への回答待ちは `"input needed"` が来る。
+    /// 知らない値も「人を待っている」ことに変わりはないので入力待ちに寄せる
+    nonisolated static func waitingLabel(status: String?, waitingFor: String?) -> String? {
+        guard status == "waiting" else { return nil }
+        return waitingFor == "permission prompt" ? "承認待ち" : "入力待ち"
     }
 
     /// 見ていたセッションが終わってもタブは残す。消すと選択だけが残って
@@ -2337,6 +2951,8 @@ extension Cockpit {
             let lines = cell.map { "+\($0.added) −\($0.removed)" }
             let (verb, jp, loader): (String, String, String) = {
                 if chip.done { return ("DONE", "終了", "done") }
+                // 承認待ち・入力待ち。相手は人の答えが来るまで止まっている
+                if let waiting = chip.waiting { return ("WAIT", waiting, "wait") }
                 guard chip.busy else { return ("IDLE", "待機", "idle") }
                 switch chip.kind {
                 case .write?: return ("WRITE", "書込中", "write")
@@ -2350,7 +2966,7 @@ extension Cockpit {
                              file: name ?? plainLine(chip.doing),
                              path: chip.target,
                              note: verb == "WRITE" ? (lines ?? "±0") : "\(chip.work) calls",
-                             waiting: false)
+                             waiting: verb == "WAIT")
         }
 
         let waiting = gates.enumerated().map { i, gate in
@@ -2359,14 +2975,15 @@ extension Cockpit {
                       file: gate.to.isEmpty ? gate.call : gate.to, path: nil,
                       note: "\(Int(gate.waited(now: now)))s", waiting: true)
         }
-        let busy = chips.filter { $0.busy && !$0.done }.map(row)
-        let resting = chips.filter { !$0.busy && !$0.done }.map(row)
-        let picked = Array((waiting + busy + resting).prefix(limit))
+        let asking = chips.filter { $0.waiting != nil && !$0.done }.map(row)
+        let busy = chips.filter { $0.busy && $0.waiting == nil && !$0.done }.map(row)
+        let resting = chips.filter { !$0.busy && $0.waiting == nil && !$0.done }.map(row)
+        let picked = Array((waiting + asking + busy + resting).prefix(limit))
 
-        // 並べ直し: 司令塔 → 配下 → 門
+        // 並べ直し: 司令塔 → 配下 → 門。待っている司令塔は司令塔の位置のまま
         let root = picked.filter { $0.branch == "│" }
         let workers = picked.filter { $0.branch != "│" && !$0.waiting }
-        var ordered = root + workers + picked.filter(\.waiting)
+        var ordered = root + workers + picked.filter { $0.waiting && $0.branch != "│" }
         if let last = ordered.lastIndex(where: { $0.branch != "│" }) { ordered[last].branch = "└" }
         return (ordered, chips.filter(\.done).count)
     }

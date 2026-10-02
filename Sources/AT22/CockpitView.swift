@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import AppKit
 
 // MARK: - 画面の根
@@ -24,6 +25,7 @@ struct CockpitView: View {
     @AppStorage(Cockpit.launcherEnabledKey) private var launcherEnabled = false
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
+    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
     @AppStorage("showThinking") private var showThinking = false
 
     /// 手前に開いているもの。Esc はここから畳む
@@ -83,9 +85,16 @@ struct CockpitView: View {
         .onChange(of: launcherEnabled) { findCLIs(force: true) }
         .onChange(of: claudePath) { findCLIs(force: true) }
         .onChange(of: codexPath) { findCLIs(force: true) }
+        .onChange(of: grokPath) { findCLIs(force: true) }
+        // Dock のバッジ＝人の番で止まっている／見ていない間に何か起きたセッションの数。
+        // 画像焼き（--shot）では NSApplication が無いので何もしない
+        .onChange(of: cockpit.attentionCount, initial: true) { _, count in
+            NSApp?.dockTile.badgeLabel = count == 0 ? nil : "\(count)"
+        }
+        .task { cockpit.onAttention = { _, title, body in Notifier.post(title: title, body: body) } }
         // 止まっている門が入れ替わったら、答えかけを捨てて新しい門の本文から始める
-        .onChange(of: oldestGate?.id, initial: true) {
-            gate = GateUI(revised: oldestGate.map { Cockpit.plainLine($0.instruction) } ?? "")
+        .onChange(of: stop?.id, initial: true) {
+            gate = GateUI(revised: stop?.seed ?? "")
             // 次の門が出た直後の Enter / 1 は受けない。続けて押すと、見ていない門を許可してしまう
             gateArmedAt = Date()
         }
@@ -165,9 +174,9 @@ struct CockpitView: View {
                     case .work:
                         TalkScreen(cockpit: cockpit, headline: Cockpit.headline(rows: actions.rows),
                                    subtitle: subtitle(tasks), showThinking: showThinking,
-                                   verdicts: verdicts, gate: $gate, gateFailed: gateFailedFor(oldestGate),
-                                   request: oldestGate, gateLabel: Cockpit.gateLabel(chips: snap.chips),
-                                   pendingGates: gates.count, trail: trail, ctxAlarm: ctxAlarm,
+                                   verdicts: verdicts, gate: $gate, gateFailed: gate.failed != nil && gate.failed == stop?.id,
+                                   stop: Stop.current(cockpit, chips: snap.chips),
+                                   pendingGates: cockpit.stoppedCount, trail: trail, ctxAlarm: ctxAlarm,
                                    height: h - 72, width: contentW, modalOpen: overlay != nil,
                                    onChoose: { choose($0) },
                                    onRewrite: { issueRewrite() },
@@ -237,10 +246,8 @@ struct CockpitView: View {
 
     // MARK: 状態の読み出し
 
-    private var oldestGate: Gate.Request? { cockpit.gates.min { $0.issued < $1.issued } }
-
-    private func gateFailedFor(_ request: Gate.Request?) -> Bool {
-        request.map { gate.failed == $0.id } ?? false
+    private var stop: Stop? {
+        Stop.current(cockpit, chips: cockpit.snapshot(now: Date(), mode: .work).chips)
     }
 
     private var ctxAlarm: Bool { cockpit.reading.stage == .warning }
@@ -274,8 +281,9 @@ struct CockpitView: View {
             let step = trail.last.map { $0.kind == .write ? "write" : "search" } ?? "think"
             return CraneStatus(busy: step, pose: .idle, state: step.uppercased(), sub: TalkScreen.stepLabel[step] ?? "")
         }
-        if !cockpit.gates.isEmpty {
-            return CraneStatus(busy: "wait", pose: .one, state: "ASKING · MENU", sub: "門の応答を待っています")
+        if cockpit.stoppedCount > 0 {
+            return CraneStatus(busy: "wait", pose: .one, state: "ASKING · MENU",
+                               sub: cockpit.gates.isEmpty ? "承認を待っています" : "門の応答を待っています")
         }
         if ctxAlarm {
             return CraneStatus(busy: "overload", pose: .idle, state: "MENU", sub: "文脈があふれそうです")
@@ -340,21 +348,38 @@ struct CockpitView: View {
     // MARK: 門
 
     private func choose(_ i: Int) {
-        guard let request = oldestGate else { return }
+        guard let stop else { return }
         gate.choice = i
         gate.shake += 1
         if i == 1 {
-            after(0.11) { gate.rewriting = true }
+            // ACP の承認には書き換えの口が無い。揺れるだけで開かない
+            if stop.canRevise { after(0.11) { gate.rewriting = true } }
             return
         }
-        answer(request, i == 0 ? .allow : .deny, revised: "", from: book.rects["gateBtn:\(i)"],
+        answer(stop, i == 0 ? .allow : .deny, revised: "", from: book.rects["gateBtn:\(i)"],
                word: i == 0 ? "ALLOWED" : "REJECTED")
     }
 
     private func issueRewrite() {
-        guard let request = oldestGate,
-              !gate.revised.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        answer(request, .revise, revised: gate.revised, from: book.rects["gateBtn:rw"], word: "REWRITTEN")
+        guard let stop, !gate.revised.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        answer(stop, .revise, revised: gate.revised, from: book.rects["gateBtn:rw"], word: "REWRITTEN")
+    }
+
+    private func answer(_ stop: Stop, _ verdict: Gate.Verdict, revised: String, from: CGRect?, word: String) {
+        switch stop.source {
+        case let .gate(request):
+            answer(request, verdict, revised: revised, from: from, word: word)
+        case let .approval(approval):
+            // 送れたかどうかは必ず見る。相手は答えが届くまで道具の前で止まっている
+            guard cockpit.answer(approval, allow: verdict != .deny, input: verdict == .revise ? revised : nil) else {
+                gate.failed = approval.id
+                return
+            }
+            gate.failed = nil
+            gate.rewriting = false
+            verdicts.append(VerdictLine(id: approval.id, session: approval.session, at: Date(),
+                                        text: "APPROVAL // \(approval.tool) → \(word)"))
+        }
     }
 
     /// 門に答える。**書けたかどうかは必ず見る**——黙って消すと司令塔が待ち続ける。
@@ -394,7 +419,7 @@ struct CockpitView: View {
         default: break
         }
         // 門のカードが出ている間だけ ←→ ENTER 1–3 が効く
-        guard mode == .work, oldestGate != nil, !gate.rewriting, wipe == nil,
+        guard mode == .work, stop != nil, !gate.rewriting, wipe == nil,
               Date().timeIntervalSince(gateArmedAt) > 0.6 else { return .ignored }
         switch press.key {
         case .rightArrow: gate.choice = (gate.choice + 1) % 3; return .handled
@@ -407,8 +432,11 @@ struct CockpitView: View {
     }
 
     private func findCLIs(force: Bool) {
-        cockpit.findClaudeIfNeeded(override: claudePath.isEmpty ? nil : claudePath, force: force)
-        cockpit.findCodexIfNeeded(override: codexPath.isEmpty ? nil : codexPath, force: force)
+        let paths: [Backend: String] = [.claude: claudePath, .codex: codexPath, .grok: grokPath]
+        for backend in Backend.allCases {
+            let path = paths[backend] ?? ""
+            cockpit.findIfNeeded(backend, override: path.isEmpty ? nil : path, force: force)
+        }
     }
 
     // MARK: メニュー
@@ -496,7 +524,7 @@ struct CockpitView: View {
     }
 
     private var launcherReady: Bool {
-        launcherEnabled && (cockpit.claude != nil || cockpit.codexFound != nil)
+        launcherEnabled && !cockpit.found.isEmpty
     }
 
     /// 葉を押した。タブへ移るものは DotWipe で、それ以外はその場で済ませて閉じる
@@ -531,7 +559,7 @@ struct CockpitView: View {
             go(.work, origin: origin, fromMenu: true)
         case let .codex(record):
             cockpit.selectedSession = record.id
-            cockpit.resumeCodexRecord(record)
+            cockpit.resumeRunRecord(record)
             go(.work, origin: origin, fromMenu: true)
         case .newSession:
             hideMenu()
@@ -597,6 +625,66 @@ extension View {
 @MainActor
 enum Ink {
     static let tank = InkTank()
+}
+
+/// いま人の答えを待っている1件。**門**（司令塔が自分で止まって待つ）と
+/// **道具の承認**（AT22 が繋いだエージェントが道具の前で止まる）を、同じカードで出す。
+/// 道具の承認を先に出す——相手はプロセスごと止まっていて、門より先に詰まる
+struct Stop {
+    enum Source { case gate(Gate.Request), approval(Approval) }
+    let source: Source
+    let id: String
+    let bar: String
+    let barJP: String
+    let target: String
+    let title: String
+    let body: String
+    let meta: String
+    let since: Date
+    let canRevise: Bool
+    /// 書換欄に最初から入れておく文
+    let seed: String
+
+    @MainActor
+    static func current(_ cockpit: Cockpit, chips: [AgentChip]) -> Stop? {
+        if let a = cockpit.approvals.filter({ $0.session == cockpit.selectedSession }).min(by: { $0.at < $1.at }) {
+            return Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
+                        title: "Run \(a.tool)?", body: a.detail,
+                        meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
+                        since: a.at, canRevise: a.canRevise, seed: a.input)
+        }
+        guard let g = cockpit.gates.min(by: { $0.issued < $1.issued }) else { return nil }
+        let to = g.to.isEmpty ? g.call : g.to
+        var meta = [g.risk.isEmpty ? nil : g.risk, g.by.isEmpty ? nil : String(g.by.prefix(8)), "→ " + to]
+            .compactMap { $0 }.joined(separator: " · ")
+        // 采配の門は、通すと AT22 が worktree を作ってワーカーを起こす
+        if let backend = g.dispatch {
+            meta += " · 采配 → \(backend) で \(g.name)（\(g.base.isEmpty ? "HEAD" : g.base) から）"
+        }
+        return Stop(source: .gate(g), id: g.id, bar: "C0 // GATE", barJP: "門", target: to,
+                    title: "Wake \(Cockpit.gateLabel(chips: chips))?", body: Cockpit.plainLine(g.instruction),
+                    meta: meta, since: g.issued, canRevise: true, seed: Cockpit.plainLine(g.instruction))
+    }
+}
+
+/// 見ていない間にターンが終わった・承認を求めてきた時の通知。**アプリが前に出ている間は出さない**
+/// （Dock のバッジで足りる）
+enum Notifier {
+    /// 通知は bundle ID のある .app（package.sh で組んだもの）の時だけ。
+    /// `swift run` の素の実行ファイルで通知の口を叩くと落ちる
+    @MainActor
+    static func post(title: String, body: String) {
+        guard Bundle.main.bundleIdentifier != nil, !NSApp.isActive else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
 }
 
 /// 門のカードの手元の状態（←→ で選んでいる番号・書換欄）
@@ -714,8 +802,8 @@ private struct TopBand: View {
                 .font(.mono(9)).tracking(Palette.caps(9))
             }
             Spacer(minLength: 0)
-            if let request = cockpit.gates.min(by: { $0.issued < $1.issued }) {
-                gatePill(request)
+            if let stop = Stop.current(cockpit, chips: cockpit.snapshot(now: now, mode: .work).chips) {
+                gatePill(stop)
             } else {
                 HStack(spacing: 10) {
                     RegMark(kind: .target, size: 12, color: Palette.Blue.fg2)
@@ -744,16 +832,15 @@ private struct TopBand: View {
         .padding(.trailing, 24)
     }
 
-    private func gatePill(_ request: Gate.Request) -> some View {
-        let label = Cockpit.gateLabel(chips: cockpit.snapshot(now: now, mode: .work).chips)
-        return Button(action: onGate) {
+    private func gatePill(_ stop: Stop) -> some View {
+        Button(action: onGate) {
             HStack(spacing: 12) {
                 Starburst(size: 20, points: 4, color: Palette.pink, fill: true, spin: true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("GATE 門 · \(cockpit.gates.count) 件止まっています").font(.mono(9)).tracking(9 * 0.16)
+                    Text("GATE 門 · \(cockpit.stoppedCount) 件止まっています").font(.mono(9)).tracking(9 * 0.16)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("Wake \(label)?").font(.display(20))
-                        Text("\(Int(request.waited(now: now)))s").font(.mono(10)).tracking(0.8)
+                        Text(stop.title).font(.display(20)).lineLimit(1)
+                        Text("\(Int(max(0, now.timeIntervalSince(stop.since))))s").font(.mono(10)).tracking(0.8)
                     }
                 }
                 Text("応答する ↵").font(.mono(10)).tracking(Palette.caps(10))

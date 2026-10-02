@@ -13,13 +13,14 @@ struct AT22App: App {
         // 見え方を画像に焼いて確かめる口。**画面を開かずに** PNG を1枚吐いて終わる。
         //
         //     swift run AT22 --shot /tmp/cockpit.png [幅 高さ] [--mode work|structure|memory]
-        //                    [--transcript <path.jsonl>] [--gate]
+        //                    [--transcript <path.jsonl>] [--gate] [--approval]
         //
         // 動き（墨流し・ドット・InkLoader）は時刻を固定した1コマしか写らない
         if let path = Self.shotPath() {
             Snapshot.write(to: path, size: Self.shotSize(), mode: Self.shotMode(),
                            transcript: Self.shotTranscript(),
-                           gate: CommandLine.arguments.contains("--gate"))
+                           gate: CommandLine.arguments.contains("--gate"),
+                           approval: CommandLine.arguments.contains("--approval"))
             exit(0)
         }
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。
@@ -100,6 +101,10 @@ private struct ThresholdSettings: View {
     /// CLI の場所を人が指定する口。空ならログインシェルに訊く
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
+    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
+    /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
+    @State private var logins: [Backend: String] = [:]
+    @State private var loginProblem: String?
 
     var body: some View {
         Form {
@@ -114,20 +119,17 @@ private struct ThresholdSettings: View {
                 Toggle("セッションを起こす／続きを送る", isOn: $launcherEnabled)
                 note("既定でオフなのは、AT22 が入れただけで LLM を起動するアプリにしないため。"
                      + "AT22 は API キーも OAuth トークンも保存せず、"
-                     + "あなたが既にログイン済みの `claude` / `codex` コマンドを起こすだけで、"
-                     + "通信はそのプロセスが行う。")
+                     + "あなたが既にログイン済みの CLI（claude / codex / grok / hermes）を起こすだけで、"
+                     + "通信はそのプロセスが行う。「ログイン」は各 CLI 自身のログインを Terminal で起こす。")
 
                 // 見つかった場所を必ず出す。**以前は見つからない時しか何も出ず**、
                 // 「探しに行ったのか」「見つけたのか」が画面から分からなかった
-                found("claude", cockpit.claude?.executable.path)
-                TextField("claude の場所（空ならログインシェルに訊く）", text: $claudePath)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-
-                found("codex", cockpit.codexFound?.executable.path)
-                TextField("codex の場所（空ならログインシェルに訊く）", text: $codexPath)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
+                ForEach(Backend.allCases, id: \.self) { backend in
+                    agentRow(backend)
+                }
+                if let loginProblem {
+                    Text(loginProblem).font(.system(size: 11)).foregroundStyle(Palette.Light.danger)
+                }
 
                 note("GUI アプリの `PATH` には `~/.local/bin` も `/opt/homebrew/bin` も無いので、"
                      + "通常はログインシェルを1回通して自動で見つける。"
@@ -136,6 +138,52 @@ private struct ThresholdSettings: View {
         }
         .formStyle(.grouped)
         .frame(width: 480)
+        .task(id: cockpit.found.keys.sorted { $0.rawValue < $1.rawValue }) { await readLogins() }
+    }
+
+    /// 1つのエージェントの行。見つかった場所・ログインの状態・ログインの口・場所の手入力
+    @ViewBuilder
+    private func agentRow(_ backend: Backend) -> some View {
+        found(backend.command, cockpit.found[backend]?.executable.path)
+        if cockpit.found[backend] != nil {
+            HStack(spacing: Palette.Space.s2) {
+                Text(logins[backend] ?? "…")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Palette.Light.fg2)
+                    .lineLimit(1)
+                Spacer()
+                Button("ログイン") {
+                    loginProblem = cockpit.login(backend)
+                    // Terminal で済ませて戻ってきた頃に読み直す
+                    Task {
+                        try? await Task.sleep(for: .seconds(20))
+                        await readLogins()
+                    }
+                }
+                .font(.system(size: 11))
+                .help("\(backend.command) \((backend.loginArguments).joined(separator: " ")) を Terminal で開く")
+            }
+        }
+        if let path = pathBinding(backend) {
+            TextField("\(backend.command) の場所（空ならログインシェルに訊く）", text: path)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+        }
+    }
+
+    private func pathBinding(_ backend: Backend) -> Binding<String>? {
+        switch backend {
+        case .claude: $claudePath
+        case .codex: $codexPath
+        case .grok: $grokPath
+        case .hermes: nil
+        }
+    }
+
+    private func readLogins() async {
+        for backend in Backend.allCases where cockpit.found[backend] != nil {
+            logins[backend] = await cockpit.loginStatus(backend)
+        }
     }
 
     /// 本編と同じ章見出しの形（番号 → 章名）

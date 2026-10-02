@@ -611,10 +611,10 @@ private struct NewSessionModal: View {
 
     static let customModel = "__custom__"
 
-    private var ready: Bool { launcherEnabled && (cockpit.claude != nil || cockpit.codexFound != nil) }
+    private var ready: Bool { launcherEnabled && !cockpit.found.isEmpty }
 
     private var models: [ModelChoice] {
-        launchBackend == Backend.codex.rawValue ? ModelChoice.codexModels : ModelChoice.claudeModels
+        ModelChoice.models(for: Backend(rawValue: launchBackend) ?? .claude)
     }
 
     var body: some View {
@@ -666,9 +666,10 @@ private struct NewSessionModal: View {
         VStack(alignment: .leading, spacing: 10) {
             field("BACKEND") {
                 Picker("", selection: $launchBackend) {
-                    Text("Claude").tag(Backend.claude.rawValue)
                     // 見つかっていない側は出さない（`Picker` の中身に `.disabled` は効かない）
-                    if cockpit.codexFound != nil { Text("Codex (OpenAI)").tag(Backend.codex.rawValue) }
+                    ForEach(Backend.allCases.filter { cockpit.found[$0] != nil }, id: \.rawValue) {
+                        Text($0.title).tag($0.rawValue)
+                    }
                 }
                 .pickerStyle(.segmented).labelsHidden()
             }
@@ -733,10 +734,10 @@ private struct NewSessionModal: View {
 
     private func launch() {
         launching = true
-        cockpit.setGateLevel(level)
         let model = launchModel == Self.customModel ? customModelID : launchModel
         let backend = Backend(rawValue: launchBackend) ?? .claude
-        if cockpit.launch(prompt: prompt, cwd: directory, backend: backend, model: model) != nil {
+        // 段は launch に渡す。先に setGateLevel すると、いま選んでいる別プロジェクトの LEVEL に書かれる
+        if cockpit.launch(prompt: prompt, cwd: directory, backend: backend, model: model, level: level) != nil {
             onLaunched()
         } else {
             failed = true
