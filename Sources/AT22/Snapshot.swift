@@ -50,6 +50,7 @@ enum Snapshot {
         }
 
         // 墨流しの温めは裏で回るので、焼く前に済ませておく
+        cockpit.loadSkillsForProbe(Skills.discover())
         Ink.tank.settle()
         Ink.tower.settle()
         let renderer = ImageRenderer(content:

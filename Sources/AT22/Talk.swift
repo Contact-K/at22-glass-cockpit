@@ -287,7 +287,10 @@ struct TalkScreen: View {
                                 onModel: { defaultAgent = backend.rawValue + "|" + $0 }, onEffort: { defaultEffort = $0 })
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.leading, 14).padding(.trailing, 4)
+            SkillPicker(backend: cockpit.selectedSession.map(cockpit.backend(of:)) ?? .claude, skills: cockpit.skills,
+                        onPick: { draft = $0 + draft })
+                .padding(.trailing, 6)
             if frozen != nil {
                 Text(draft.isEmpty ? "司令塔に聞く" : draft).font(.bodyJP(16)).foregroundStyle(Palette.Light.fg3)
                     .frame(maxWidth: .infinity, alignment: .leading)

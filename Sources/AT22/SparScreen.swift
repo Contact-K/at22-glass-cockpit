@@ -217,7 +217,8 @@ struct SparScreen: View {
         VStack(alignment: .trailing, spacing: 8) {
             Text("読むだけ · 書込なし").font(.mono(9)).tracking(1).foregroundStyle(Palette.Light.fg3)
             HStack(spacing: 0) {
-                sparPicker.padding(.horizontal, 14)
+                sparPicker.padding(.leading, 14).padding(.trailing, 4)
+                SkillPicker(backend: .claude, skills: cockpit.skills, onPick: { draft = $0 + draft }).padding(.trailing, 6)
                 Group {
                     if frozen != nil {
                         Text("相談したいこと — 空のまま送ると案を出します").foregroundStyle(Palette.Light.fg3)

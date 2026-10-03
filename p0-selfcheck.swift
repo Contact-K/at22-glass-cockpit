@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -90,6 +90,7 @@ struct P0SelfCheck {
         handoffIsCreatedWhenMissing()
         hydraReadsHeads()
         catalogReadsModelLists()
+        skillsAreDiscovered()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3779,6 +3780,40 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// スキル: ユーザーの置き場・共有の置き場・有効なプラグインだけを拾い、エージェントごとの見え方と呼び名を出す。
+    /// 共有するとリンクを張る（2回目は何もしない）
+    static func skillsAreDiscovered() {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("p0-skills-\(UUID().uuidString)").path
+        defer { try? fm.removeItem(atPath: home) }
+        func skill(_ dir: String, _ name: String, _ front: String) {
+            try? fm.createDirectory(atPath: dir + "/" + name, withIntermediateDirectories: true)
+            try? front.write(toFile: dir + "/" + name + "/SKILL.md", atomically: true, encoding: .utf8)
+        }
+        skill(home + "/.claude/skills", "review", "---\nname: review\ndescription: 差分を読む\n---\n本文")
+        skill(home + "/.claude/skills", "notes", "本文だけ（frontmatter なし）")
+        try? fm.createDirectory(atPath: home + "/.claude/skills/empty", withIntermediateDirectories: true)
+        skill(home + "/.agents/skills", "find", "---\nname: find-skills\ndescription: 探す\n---\n")
+        skill(home + "/plug/on/skills", "lint", "---\nname: lint\n---\n")
+        skill(home + "/plug/off/skills", "hidden", "---\nname: hidden\n---\n")
+        let registry = #"{"version":2,"plugins":{"on@m":[{"installPath":"HOME/plug/on"}],"off@m":[{"installPath":"HOME/plug/off"}]}}"#
+            .replacingOccurrences(of: "HOME", with: home)
+        try? fm.createDirectory(atPath: home + "/.claude/plugins", withIntermediateDirectories: true)
+        try? registry.write(toFile: home + "/.claude/plugins/installed_plugins.json", atomically: true, encoding: .utf8)
+        try? #"{"enabledPlugins":{"on@m":true,"off@m":false}}"#.write(toFile: home + "/.claude/settings.json", atomically: true, encoding: .utf8)
+
+        let all = Skills.discover(home: home)
+        assert(all.map(\.name) == ["notes", "review", "find-skills", "lint"], "\(all.map(\.name))")
+        assert(all.first { $0.name == "lint" }?.plugin == "on")
+        assert(Skills.visible(all, to: .claude).map(\.name) == ["notes", "review", "lint"])
+        assert(Skills.visible(all, to: .codex).map(\.name) == ["find-skills"])
+        assert(Skills.invocation(all[1], for: .claude) == "/review" && Skills.invocation(all[1], for: .codex) == "$review")
+        let made = (try? Skills.share(all[1], home: home)) ?? []
+        assert(made.count == 2 && (try? fm.destinationOfSymbolicLink(atPath: home + "/.agents/skills/review")) == all[1].path)
+        assert(((try? Skills.share(all[1], home: home)) ?? ["x"]).isEmpty, "2回目もリンクを張った")
+        assert(Skills.visible(Skills.discover(home: home), to: .codex).map(\.name).contains("review"))
+    }
+
     /// モデルの一覧: claude の list_models の応答（default と使えない行は捨てる・固定の版は claude- で始まる・
     /// エフォートはモデルごと）と grok models の出力を読む
     static func catalogReadsModelLists() {

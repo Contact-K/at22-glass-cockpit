@@ -907,3 +907,24 @@ struct EffortSlider: View {
         }
     }
 }
+
+/// 入力欄の「／ SKILL」。そのエージェントから見えるスキルを出し、選ぶと呼び名（`/名前` か `$名前`）を差し込む
+struct SkillPicker: View {
+    let backend: Backend
+    let skills: [Skills.Skill]
+    let onPick: (String) -> Void
+    @Environment(\.frozenTime) private var frozen
+
+    var body: some View {
+        let list = Skills.visible(skills, to: backend)
+        if frozen == nil, !list.isEmpty {
+            SumiPicker(sections: Dictionary(grouping: list, by: \.source.label).sorted { $0.key < $1.key }.map { label, items in
+                .init(title: label, items: items.map { .init(id: Skills.invocation($0, for: backend), text: $0.name
+                    + ($0.plugin.isEmpty ? "" : " · " + $0.plugin), on: false) })
+            }, onPick: { _, id in onPick(id + " ") }) {
+                Text("／").font(.mono(12)).foregroundStyle(Palette.Light.fg2).padding(.horizontal, 6)
+            }
+            .help("スキルを呼ぶ（\(list.count) 本）")
+        }
+    }
+}

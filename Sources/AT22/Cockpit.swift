@@ -1195,6 +1195,19 @@ final class Cockpit {
 
     func effort(of session: String) -> String? { sessionEffort[session] }
 
+    // MARK: スキル
+
+    /// 入っているスキル（Skills.discover）。入力欄の「／ SKILL」と設定の 06 Skill が使う
+    private(set) var skills: [Skills.Skill] = []
+
+    /// 撮影用（task を待たない）
+    func loadSkillsForProbe(_ list: [Skills.Skill]) { skills = list }
+
+    func refreshSkills(repo: String?) async {
+        let found = await Task.detached { Skills.discover(repo: repo) }.value
+        if found != skills { skills = found }
+    }
+
     // MARK: モデルの一覧
 
     /// CLI から取れたモデルの一覧（取れるまでは AgentCatalog.seed）

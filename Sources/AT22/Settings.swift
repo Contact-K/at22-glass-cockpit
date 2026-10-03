@@ -113,6 +113,31 @@ struct SettingsScreen: View {
                     Text(skill.label + " · ~/.claude/skills/\(SkillInstall.name)")
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1).minimumScaleFactor(0.8)
                 }
+                // 入っているスキル（変換はしない）。claude 側のスキルを codex / grok にも見せる時は共有の置き場にリンクを張る
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("入っているスキル · \(cockpit.skills.count) 本 · 入力欄の「／」から呼べる")
+                        .font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg2).padding(.bottom, 4)
+                    ForEach(cockpit.skills) { s in
+                        let shared = cockpit.skills.contains { $0.source == .agents && $0.name == s.name }
+                        HStack(spacing: 10) {
+                            Text(s.name).font(.mono(12)).lineLimit(1)
+                            Text(s.plugin.isEmpty ? s.source.label : "プラグイン · " + s.plugin)
+                                .font(.bodyJP(10)).foregroundStyle(Palette.Light.fg3).lineLimit(1)
+                            Spacer(minLength: 0)
+                            if s.source == .claude || s.source == .plugin || s.source == .repo {
+                                if shared {
+                                    Text("共有済み").font(.mono(9)).foregroundStyle(Palette.Light.fg3)
+                                } else {
+                                    Button("共有") { share(s) }.buttonStyle(.plain).font(.mono(10)).underline()
+                                        .help("~/.agents/skills と ~/.grok/skills にリンクを張り、codex / grok からも見えるようにする")
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .help(s.description)
+                    }
+                }
+                .task { await cockpit.refreshSkills(repo: nil) }
             }
             }
             .frame(width: width, alignment: .leading)
@@ -160,6 +185,16 @@ struct SettingsScreen: View {
                 : "既定にしました（いまの会話には書けませんでした）"
         } else {
             levelNote = "\(l.title) を新しいワークスペースの既定にしました"
+        }
+    }
+
+    private func share(_ s: Skills.Skill) {
+        do {
+            let made = try Skills.share(s)
+            flash(made.isEmpty ? "\(s.name) は既に共有されています" : "\(s.name) を codex / grok にも見せました")
+            Task { await cockpit.refreshSkills(repo: nil) }
+        } catch {
+            flash("共有できませんでした: \(error.localizedDescription)")
         }
     }
 

@@ -32,7 +32,7 @@ AT22 は初期状態では **読み取るだけ** で、
 - **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.4 / Lv.5 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
 - **レビューと出荷** … 07 REVIEW と 08 GIT。ハンクのステージ・コミット・push・PR は**押した時だけ**（PR は `gh` が自分の認証で作る）
 
-**入力欄の左はモデルとエフォート**（会話・壁打ち）。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`）。
+**入力欄の左はモデルとエフォート**（会話・壁打ち）。モデルの一覧は CLI から取る（claude は `list_models` の問い合わせで API のターンは起きない、grok は `grok models`）。「最新（別名）」と「固定の版」を選べ、エフォートはそのモデルが対応する段だけのスライダー。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`、grok は `--reasoning-effort`）。その右の「／」で入っているスキル（`~/.claude/skills`・`~/.agents/skills`・有効なプラグイン・リポジトリの `.claude/skills`）を `/名前`（codex は `$名前`）として差し込む。設定の 06 Skill の「共有」は `~/.agents/skills` と `~/.grok/skills` にリンクを張り、codex / grok からも見えるようにする（押した時だけ書く）。
 
 **ソースを書くのは、人が ⌘S を押した時だけ。**FILES のエディタで人が直して保存した時に限る。開いた後に外で書き換えられていたら上書きしない。
 
@@ -144,7 +144,7 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
   Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Snowman.swift \
   Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift \
   Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift \
-  Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+  Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 ```
 
 Foundation だけで組んであるので Linux でも通る（`FileManager.replaceItemAt` が Linux で常に失敗するので、
