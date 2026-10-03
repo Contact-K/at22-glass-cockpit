@@ -174,33 +174,18 @@ struct SparScreen: View {
     }
 
     private var input: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                ForEach(Sparring.Mode.allCases, id: \.self) { m in
-                    let on = board.mode == m
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(m.en).font(.mono(10)).tracking(1)
-                        Text(m.jp).font(.bodyJP(12))
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
-                    .background(on ? Palette.Light.fg : .clear)
-                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-                    .contentShape(Rectangle())
-                    .onTapGesture { model.boards[ws, default: .init()].mode = m }
-                }
-                Spacer(minLength: 0)
-                Text("読むだけ · 書込なし").font(.mono(9)).tracking(1).foregroundStyle(Palette.Light.fg3)
-            }
+        // 型の札（SparModeChips）は本人の指示（2026-10-03）で外した。部品は後で使うので下に残してある
+        VStack(alignment: .trailing, spacing: 8) {
+            Text("読むだけ · 書込なし").font(.mono(9)).tracking(1).foregroundStyle(Palette.Light.fg3)
             HStack(spacing: 0) {
                 Text("// SPAR · CLAUDE").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
                     .padding(.horizontal, 14)
                 Group {
                     if frozen != nil {
-                        Text(board.mode.jp + " — 空のまま送っても可").foregroundStyle(Palette.Light.fg3)
+                        Text("相談したいこと — 空のまま送ると案を出します").foregroundStyle(Palette.Light.fg3)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        TextField(board.mode.jp + " — 空のまま送っても可", text: $draft)
+                        TextField("相談したいこと — 空のまま送ると案を出します", text: $draft)
                             .textFieldStyle(.plain).onSubmit(send)
                     }
                 }
@@ -262,6 +247,30 @@ struct SparScreen: View {
         model.fresh = n
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { fly(from, rects["dec:\(n)"]) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { if model.fresh == n { model.fresh = nil } }
+    }
+}
+
+/// 壁打ちの型の札（PROPOSE 案を出して / OBJECT 反論して / BREAK DOWN 分解して / DECIDE 決めて）。
+/// いまは画面に出していない（2026-10-03 本人の指示で外した）。後で使うので部品として残す
+struct SparModeChips: View {
+    @Binding var mode: Sparring.Mode
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Sparring.Mode.allCases, id: \.self) { m in
+                let on = mode == m
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(m.en).font(.mono(10)).tracking(1)
+                    Text(m.jp).font(.bodyJP(12))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+                .background(on ? Palette.Light.fg : .clear)
+                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                .contentShape(Rectangle())
+                .onTapGesture { mode = m }
+            }
+        }
     }
 }
 
