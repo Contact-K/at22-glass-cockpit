@@ -55,6 +55,8 @@ enum Launcher {
         var model: String = ""
         /// 考える深さ（`--effort` low / medium / high / xhigh / max）。空なら claude の既定
         var effort: String = ""
+        /// 記憶DBの置き場（`~/.claude/projects/<slug>/memory`）。空なら記憶の約束を渡さない
+        var memoryDir: String = ""
     }
 
     /// `--effort` に渡せる値（claude 2.1 の --help）
@@ -182,7 +184,7 @@ enum Launcher {
     /// `--verbose` は claude 側の要求（`-p` ＋ `--output-format stream-json` に必須）
     nonisolated static func arguments(sessionID: UUID, config: Config) -> [String] {
         // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
-        ["--session-id", sessionID.uuidString.lowercased()] + common(config)
+        ["--session-id", sessionID.uuidString.lowercased()] + common(config, session: sessionID.uuidString.lowercased())
     }
 
     /// **既にある transcript の続きに繋ぐ。** AT22 が起こしていないセッション——
@@ -193,11 +195,11 @@ enum Launcher {
     /// （渡すと claude が弾く）。同じ `<セッションID>.jsonl` の続きが書かれるので、
     /// 会話も盤面も既存の読み取り経路のまま繋がる
     nonisolated static func resumeArguments(sessionID: String, config: Config) -> [String] {
-        ["--resume", sessionID.lowercased()] + common(config)
+        ["--resume", sessionID.lowercased()] + common(config, session: sessionID.lowercased())
     }
 
     /// 起こす時と繋ぐ時で共通の並び。片方だけ直して食い違うのを避けるため1箇所にまとめる
-    private nonisolated static func common(_ config: Config) -> [String] {
+    private nonisolated static func common(_ config: Config, session: String) -> [String] {
         var out = ["--permission-mode", config.level.permissionMode]
         if config.level.background { out.append("--bg") }
         if !config.model.isEmpty {
@@ -208,7 +210,11 @@ enum Launcher {
             out.append(contentsOf: ["--effort", config.effort])
         }
         // 計画を PLAN: / NOW: / DONE: 行で書いてもらう約束（今のモデルには TaskCreate が無い）
-        out.append(contentsOf: ["--append-system-prompt", Sparring.planProtocol + "\n\n" + Hydra.protocolText])
+        // 記憶DBに節目ごとに書いてもらう約束（04 MEMORY が一覧に出し、清書の素にする）
+        var promises = [Sparring.planProtocol, Hydra.protocolText]
+        // plan（壁打ち）は書けないので渡さない
+        if !config.memoryDir.isEmpty && config.level != .plan { promises.append(Memory.protocolText(dir: config.memoryDir, session: session)) }
+        out.append(contentsOf: ["--append-system-prompt", promises.joined(separator: "\n\n")])
         if !config.allowedTools.isEmpty {
             out.append("--allowedTools")
             out.append(contentsOf: config.allowedTools)

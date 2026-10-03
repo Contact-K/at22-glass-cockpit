@@ -816,6 +816,32 @@ final class Cockpit {
     /// 記憶DBの置き場。無ければ作る先を返すだけで、ここでは作らない
     func memoryDirectory() -> URL? { memoryRoot?.appendingPathComponent("memory") }
 
+    /// worktree の記憶DB。**リポジトリ本体で1つ**——Claude Code の自動記憶も worktree をまたいで
+    /// 本体の置き場を使うので、そこに揃える（worktree ごとに分けると本人の記憶と別の DB になる）。
+    /// リポジトリでないフォルダはそのフォルダの置き場
+    func memoryDirectory(cwd: String) -> String {
+        let base = (try? Worktree.root(of: cwd)) ?? cwd
+        return projectsRoot.appendingPathComponent(Self.projectSlug(base)).appendingPathComponent("memory").path
+    }
+
+    /// 清書。記憶DBを読んで PROJECT.md を企画書に書き直す claude を1本起こす。
+    /// 普通のセッションとして会話の一覧に出る——清書のための別の仕組みは作らない。
+    /// 門の段（LEVEL）も選択中の会話も動かさない（壁打ちと同じ）
+    @discardableResult
+    func compose(workspace: String) -> String? {
+        let dir = memoryDirectory(cwd: workspace)
+        let keep = selectedSession
+        let id = launchClaude(prompt: Memory.composePrompt(dir: dir), cwd: workspace, model: "",
+                              allowedTools: Memory.composeTools(dir: dir), level: .normal, writesLevel: false)
+        selectedSession = keep
+        guard let id = id?.uuidString.lowercased() else { return nil }
+        composing[workspace] = id
+        return id
+    }
+
+    /// 清書中のセッション（worktree → セッションID）。終わったかは `isWorking` で見る
+    private(set) var composing: [String: String] = [:]
+
     /// パスから記憶DBの1本を引く。押した先で中身を出すのに使う
     func memoryNode(at path: String) -> Memory.Node? { memory.first { $0.id == path } }
 
@@ -1102,7 +1128,8 @@ final class Cockpit {
         // 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
         if writesLevel { setGateLevel(level, cwd: cwd) }
         let config = Launcher.Config(cwd: cwd, level: level,
-                                     prompt: prompt, allowedTools: allowedTools, model: model, effort: effort)
+                                     prompt: prompt, allowedTools: allowedTools, model: model, effort: effort,
+                                     memoryDir: memoryDirectory(cwd: cwd))
         let sessionID = UUID()
         // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
         let id = sessionID.uuidString.lowercased()
@@ -1154,7 +1181,8 @@ final class Cockpit {
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
         // 壁打ちのセッションは繋ぎ直しても読むだけ
         let config = Launcher.Config(cwd: cwd, level: sparSessions.contains(session) ? .plan : gateLevel, prompt: "",
-                                     model: sessionModel[session] ?? "", effort: sessionEffort[session] ?? "")
+                                     model: sessionModel[session] ?? "", effort: sessionEffort[session] ?? "",
+                                     memoryDir: memoryDirectory(cwd: cwd))
         let token = UUID()
         do {
             let connection = try ClaudeConnection.start(

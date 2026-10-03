@@ -47,3 +47,13 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
 - 旧 03 SPARRING の記憶DBエディタは外した。記憶DBへの書き込みは「HANDOFF に書く」だけ
 
 モックにあってデータが無いものは、作らずに HANDOFF に書く（例: タスク番号は transcript に無い → 最初の指示の一致で束ねる）。
+
+**2026-10-03 追加（本人の指示・モック無し）**（枝 `orca-v10-memory`）:
+
+- 段の選択に Lv.1 壁打ちを戻した（v11 で4段の直書きにした時に落ちていた）。10 SETTINGS と新規の板の両方
+- **04 MEMORY 記憶** のタブを足した（鍵は k。m はメニュー）。上の「記憶DBエディタは外した」は撤回ではなく、編集はせず一覧＋清書だけ
+  - 貯める: AT22 が起こす・繋ぐ claude（plan 以外）に `Memory.protocolText` を渡し、節目ごとに `memory/sessions/each/<ID>.md` と `SHARED.md` に書いてもらう
+  - 置き場はリポジトリ本体の `~/.claude/projects/<slug>/memory`（worktree ごとに分けない。Claude Code の自動記憶と同じ所）
+  - 清書: claude を1本起こし PROJECT.md だけを書かせる（`Memory.composeTools`）。門の段も選択中の会話も動かさない
+- 01 TALK: 見出しに「履歴 ▴」（一覧に戻る）。一覧は「＋ 新しい会話」（いまの worktree）と「＋ 新しいワークスペース」に分けた
+- 03 SPARRING: 「＋ 新しい壁打ち」と「過去の壁打ち ▾」。過去の板は `sparShelf`（UserDefaults）に20枚まで、選ぶと今の板と入れ替え

@@ -33,9 +33,14 @@ final class SparModel {
         var answered: Set<String> = []
         /// 05 PLAN に送って、司令塔が積むのを待っている手順と、送った時のタスク数（残さない）
         var sending: (steps: [String], base: Int)?
+        /// 棚にしまった時刻と題（今の板では空。Optional なので旧データもそのまま読める）
+        var at: Date?
+        var title: String?
+
+        var isEmpty: Bool { session == nil && steps.isEmpty && decisions.isEmpty }
 
         private enum CodingKeys: String, CodingKey {
-            case session, mode, model, effort, steps, decisions, taken, answered
+            case session, mode, model, effort, steps, decisions, taken, answered, at, title
         }
     }
 
@@ -57,6 +62,49 @@ final class SparModel {
     var fresh: Int?
 
     func board(_ ws: String) -> Board { boards[ws] ?? Board() }
+
+    // MARK: 棚（過去の壁打ち）
+
+    /// worktree ごとの過去の板。新しい順。今の板（`sparBoards`）とは別の鍵に置くので、保存の形は変えない
+    var shelf: [String: [Board]] = SparModel.restoreShelf() {
+        didSet { if let data = try? JSONEncoder().encode(shelf) { UserDefaults.standard.set(data, forKey: Self.shelfKey) } }
+    }
+
+    private static let shelfKey = "sparShelf"
+    /// ponytail: 古いのから落とす。足りないと言われたら増やす
+    static let shelfLimit = 20
+
+    private static func restoreShelf() -> [String: [Board]] {
+        guard let data = UserDefaults.standard.data(forKey: shelfKey),
+              let shelf = try? JSONDecoder().decode([String: [Board]].self, from: data) else { return [:] }
+        return shelf
+    }
+
+    /// 今の板を棚にしまって、まっさらな板で始める。空の板はしまわない
+    func startOver(_ ws: String, title: String) {
+        shelve(ws, title: title)
+        boards[ws] = Board()
+    }
+
+    /// 棚の i 番目を今の板に出す。今の板は棚にしまう（入れ替え）
+    func takeOut(_ ws: String, at i: Int, title: String) {
+        guard var picked = shelf[ws]?[i] else { return }
+        shelf[ws]?.remove(at: i)
+        shelve(ws, title: title)
+        picked.at = nil
+        picked.title = nil
+        boards[ws] = picked
+    }
+
+    private func shelve(_ ws: String, title: String) {
+        var b = board(ws)
+        guard !b.isEmpty else { return }
+        b.sending = nil
+        b.at = Date()
+        b.title = title
+        shelf[ws, default: []].insert(b, at: 0)
+        if shelf[ws]!.count > Self.shelfLimit { shelf[ws]!.removeLast(shelf[ws]!.count - Self.shelfLimit) }
+    }
 }
 
 /// 計画を練る場所。案を採ると右の暫定プランに積まれ、合意したものだけ 05 PLAN（司令塔の TaskCreate）へ送る。書込はしない
@@ -91,6 +139,7 @@ struct SparScreen: View {
                             Text("Claude と計画を練る場所です。案を採ると右の暫定プランに積まれ、合意したものだけ 05 PLAN に送ります。書込はしません。")
                                 .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
                                 .fixedSize(horizontal: false, vertical: true)
+                            if workspace != nil { shelfBar }
                         }
                         .padding(.vertical, 8)
                         if workspace == nil {
@@ -125,8 +174,8 @@ struct SparScreen: View {
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
-        // 開き直した後: 覚えておいた壁打ちの会話を transcript から読み直す（選択中の会話は動かさない）
-        .task(id: workspace) {
+        // 開き直した後・棚から出した後: 覚えておいた壁打ちの会話を transcript から読み直す（選択中の会話は動かさない）
+        .task(id: (workspace ?? "") + "|" + (board.session ?? "")) {
             guard frozen == nil, let ws = workspace, let s = model.board(ws).session else { return }
             await cockpit.adoptSparring(s, cwd: ws)
         }
@@ -240,6 +289,36 @@ struct SparScreen: View {
             .frame(height: 48)
             .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
         }
+    }
+
+    // MARK: 棚
+
+    /// 「新しい壁打ち」と「過去の壁打ち」。過去は今の板と入れ替える
+    private var shelfBar: some View {
+        let past = model.shelf[ws] ?? []
+        return HStack(spacing: 8) {
+            Button("＋ 新しい壁打ち") { model.startOver(ws, title: boardTitle(board)); draft = ""; problem = nil }
+                .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                .disabled(board.isEmpty || busy)
+            SumiPicker(sections: [.init(title: "過去の壁打ち", items: past.enumerated().map { i, b in
+                .init(id: String(i), text: (b.title ?? "無題") + "  ·  "
+                      + (b.at?.formatted(.dateTime.month().day().hour().minute()) ?? ""), on: false)
+            })], onPick: { _, id in
+                guard let i = Int(id) else { return }
+                model.takeOut(ws, at: i, title: boardTitle(board))
+                problem = nil
+            }) {
+                Text("過去の壁打ち \(past.count) ▾").font(.mono(11)).tracking(0.9)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+            }
+            .disabled(past.isEmpty || busy)
+        }
+    }
+
+    /// 棚に出す題。最初に決めたこと → 会話の題 → 最初の手順
+    private func boardTitle(_ b: SparModel.Board) -> String {
+        b.decisions.first?.text ?? b.session.flatMap { cockpit.title(for: $0) } ?? b.steps.first?.text ?? "無題"
     }
 
     // MARK: 操作

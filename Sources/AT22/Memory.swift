@@ -229,4 +229,49 @@ enum Memory {
         }
         return (rows, done)
     }
+
+    // MARK: 貯める・清書する
+
+    /// 起こす・繋ぐ claude に `--append-system-prompt` で渡す約束。
+    /// 書くのはエージェント本人——後から AT22 が要約すると、書いた本人しか知らない意図が落ちる。
+    /// 書式は `load` が読める形（frontmatter ＋ ```state）に合わせる。
+    /// ponytail: claude だけ。codex / grok に渡す口ができたら同じ文を渡す
+    nonisolated static func protocolText(dir: String, session: String) -> String {
+        let each = "\(dir)/\(sessionsDir)/\(eachDir)/\(session).md"
+        let shared = "\(dir)/\(sessionsDir)/\(sharedNote)"
+        return """
+        このプロジェクトの記憶DBは \(dir) にあります（AT22 が一覧に出し、清書して \(dir)/PROJECT.md にまとめます）。
+        節目（手順を終えた・何かを決めた・止まる前）ごとに、このセッションのノート \(each) に短い節を足してください。
+        無ければ次の頭を付けて作ります:
+        ---
+        name: 一言の題
+        description: このセッションで何をしているか1行
+        type: progress
+        originSessionId: \(session)
+        ---
+        本文は「決めたこと／分かったこと／残り」を数行ずつ。終えたら末尾に ```state の囲みで `stage: done` と書きます。
+        ほかのセッションにも効く事実（約束・前提・落とし穴）は \(shared) にも1行足してください。
+        PROJECT.md は清書の時にだけ書き換えます。
+        """
+    }
+
+    nonisolated static func projectNotePath(dir: String) -> String { "\(dir)/PROJECT.md" }
+
+    /// 清書の1通。記憶DBを読んで PROJECT.md を企画書として書き直してもらう
+    nonisolated static func composePrompt(dir: String) -> String {
+        let project = projectNotePath(dir: dir)
+        return """
+        記憶DB \(dir) の .md をすべて読み（gate/ は除く）、\(project) を企画書として清書してください。
+        節は「目的」「決めたこと」「未決」「次の一手」。各行の根拠になったノートのファイル名を括弧で添えます。
+        \(project) に人が書いた節がある時は消さずに残し、清書の節（見出し `## 清書`）だけを差し替えます。
+        頭には name / description / type: project の frontmatter を付けます。ほかのファイルは書き換えません。
+        """
+    }
+
+    /// 清書に渡す道具の白名簿。書けるのは PROJECT.md だけ。
+    /// 許可の規則で `/x` は設定ファイルからの相対になるので、絶対パスは `//` で始める
+    nonisolated static func composeTools(dir: String) -> [String] {
+        let project = "/" + projectNotePath(dir: dir)
+        return ["Read", "Glob", "Grep", "Write(\(project))", "Edit(\(project))"]
+    }
 }

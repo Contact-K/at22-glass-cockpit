@@ -221,7 +221,7 @@ struct NewWorkspaceSheet: View {
             }
         default:
             VStack(alignment: .leading, spacing: 10) {
-                ForEach([Gate.Level.each, .normal, .auto, .unattended], id: \.self) { l in
+                ForEach(Gate.Level.allCases, id: \.self) { l in
                     bigPlate(on: level == l) {
                         HStack(alignment: .firstTextBaseline, spacing: 14) {
                             Text(String(l.title.prefix { $0 != " " }).uppercased()).font(.mono(14)).tracking(1.1)
@@ -237,7 +237,7 @@ struct NewWorkspaceSheet: View {
     }
 
     static let levelNote: [Gate.Level: String] = [
-        .each: "道具はすべて訊く", .normal: "書き込みと実行を訊く", .auto: "門だけ訊く", .unattended: "何も訊かない",
+        .plan: "読むだけ・書かない", .each: "道具はすべて訊く", .normal: "書き込みと実行を訊く", .auto: "門だけ訊く", .unattended: "何も訊かない",
     ]
 
     /// プロバイダ → モデルの2段。左でプロバイダを選び、右でモデルを足し外し

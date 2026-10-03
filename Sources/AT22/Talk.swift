@@ -30,9 +30,13 @@ struct TalkScreen: View {
     let onChoose: (Int) -> Void
     let onRewrite: () -> Void
     let onNew: () -> Void
+    /// 新しい会話を起こす先（いまの worktree）。管制塔では nil
+    var workspace: String? = nil
 
     @State private var draft = ""
     @State private var failed = false
+    /// 一覧から「新しい会話」を選んで、最初の1通を書いている間
+    @State private var composing = false
     @Environment(\.frozenTime) private var frozen
 
     /// 処理の段の和名（v10 の `STL`）
@@ -48,8 +52,9 @@ struct TalkScreen: View {
     static let maxEntries = 200
 
     var body: some View {
-        if cockpit.selectedSession == nil {
-            SessionPicker(cockpit: cockpit, width: width, onNew: onNew)
+        if cockpit.selectedSession == nil && !composing {
+            SessionPicker(cockpit: cockpit, width: width, workspace: workspace,
+                          onFresh: { composing = true; failed = false }, onNew: onNew)
                 .frame(width: width, height: height, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 10) {
@@ -61,7 +66,7 @@ struct TalkScreen: View {
                 input
             }
             .frame(width: width, alignment: .topLeading)
-            .onChange(of: cockpit.selectedSession) { failed = false }
+            .onChange(of: cockpit.selectedSession) { failed = false; composing = false }
         }
     }
 
@@ -115,10 +120,21 @@ struct TalkScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionMark(number: "01", title: "TALK", jp: "会話")
-            Text(headline).font(.display(52)).lineSpacing(0).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline) {
+                SectionMark(number: "01", title: "TALK", jp: "会話")
+                Spacer(minLength: 8)
+                // 一覧（SessionPicker）に戻る。会話そのものは閉じない
+                Button("履歴 ▴") { cockpit.selectedSession = nil; composing = false; draft = "" }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    .help("会話の一覧に戻る（いまの会話は閉じない）")
+            }
+            Text(composing && cockpit.selectedSession == nil ? "New talk." : headline)
+                .font(.display(52)).lineSpacing(0).fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(Palette.Light.fg)
-            Text(subtitle).font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
+            Text(composing && cockpit.selectedSession == nil
+                 ? "最初の1通を送ると、\((workspace.map { ($0 as NSString).lastPathComponent }) ?? "worktree") で新しい会話が立ち上がります。"
+                 : subtitle)
+                .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
         }
         .padding(.vertical, 8)
     }
@@ -271,6 +287,7 @@ struct TalkScreen: View {
         let working = cockpit.isWorking(cockpit.selectedSession)
         let empty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let now = cockpit.liveInk(cockpit.selectedSession)
+        let fresh = cockpit.selectedSession == nil && workspace != nil
         return HStack(spacing: 0) {
             Group {
                 if let s = cockpit.selectedSession {
@@ -311,7 +328,7 @@ struct TalkScreen: View {
             }
             .buttonStyle(PressStyle())
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!cockpit.canSend(to: cockpit.selectedSession) && !working || (!working && empty) || modalOpen)
+            .disabled(!(cockpit.canSend(to: cockpit.selectedSession) || fresh) && !working || (!working && empty) || modalOpen)
             .help(working ? "生成を止める（セッションは終わらない）" : "送る（Return / ⌘Return）")
         }
         .frame(height: 48)
@@ -320,6 +337,21 @@ struct TalkScreen: View {
     }
 
     private func send() {
+        if cockpit.selectedSession == nil {
+            // 新しい会話: いまの worktree で、入力欄の左で選んだエージェントとモデルで起こす。
+            // 起こした会話は launch が選択中にする
+            guard let workspace else { failed = true; return }
+            let parts = defaultAgent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            let backend = Backend(rawValue: parts.first ?? "") ?? .claude
+            if cockpit.launch(prompt: draft, cwd: workspace, backend: backend,
+                              model: parts.count > 1 ? parts[1] : "", effort: defaultEffort) != nil {
+                draft = ""
+                failed = false
+            } else {
+                failed = true
+            }
+            return
+        }
         if cockpit.send(draft, to: cockpit.selectedSession) {
             draft = ""
             failed = false
@@ -698,6 +730,9 @@ private struct BusyBox: View {
 struct SessionPicker: View {
     let cockpit: Cockpit
     let width: CGFloat
+    /// いまの worktree。nil（管制塔）の時は「新しい会話」を出さない
+    var workspace: String? = nil
+    var onFresh: () -> Void = {}
     let onNew: () -> Void
 
     var body: some View {
@@ -706,7 +741,14 @@ struct SessionPicker: View {
             Text("Pick a session.").font(.display(52)).foregroundStyle(Palette.Light.fg)
             Text("どの会話を見るかを選ぶと、司令塔とのやり取りがここに流れます。")
                 .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
-            Button("＋ NEW SESSION", action: onNew).buttonStyle(SumiButtonStyle(primary: true))
+            HStack(spacing: 8) {
+                if let workspace {
+                    Button("＋ 新しい会話", action: onFresh).buttonStyle(SumiButtonStyle(primary: true))
+                        .help((workspace as NSString).lastPathComponent + " で新しい会話を始める")
+                }
+                Button("＋ 新しいワークスペース", action: onNew).buttonStyle(SumiButtonStyle(primary: workspace == nil))
+                    .help("worktree を作ってエージェントを起こす")
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if !cockpit.liveSessions.isEmpty {

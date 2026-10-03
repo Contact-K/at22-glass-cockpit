@@ -37,7 +37,7 @@ struct SettingsScreen: View {
             VStack(alignment: .leading, spacing: 0) {
             row("01", "Approval", "承認の段 · 新しいワークスペースの既定と、いまの会話") {
                 HStack(spacing: 0) {
-                    ForEach(Array([Gate.Level.each, .normal, .auto, .unattended].enumerated()), id: \.offset) { i, l in
+                    ForEach(Array(Gate.Level.allCases.enumerated()), id: \.offset) { i, l in
                         let on = level == l.rawValue
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {

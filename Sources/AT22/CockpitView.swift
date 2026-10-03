@@ -289,6 +289,9 @@ struct CockpitView: View {
                                    height: h,
                                    onLaunch: { step in newPrompt = step; overlay = .newWorkspace(from: currentWorkspace) },
                                    fly: { fly(from: $0, to: $1) }, rects: book.rects)
+                    } else if tab == .memory {
+                        MemoryPanels(cockpit: cockpit, workspace: currentWorkspace, height: h,
+                                     onTalk: { go(.talk) })
                     } else if tab == .settings {
                         KeysPanel(height: h)
                     } else if tab == .files {
@@ -429,7 +432,8 @@ struct CockpitView: View {
                        height: h - 72, width: contentW, modalOpen: overlay != nil,
                        onChoose: { choose($0) },
                        onRewrite: { issueRewrite() },
-                       onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
+                       onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) },
+                       workspace: isTower ? nil : currentWorkspace)
                 .offset(x: 220, y: 72)
         case .files:
             FilesScreen(model: shotFiles ?? files, width: contentW, height: h)
@@ -439,6 +443,10 @@ struct CockpitView: View {
             SparScreen(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
                        width: contentW, height: h, fly: { fly(from: $0, to: $1) }, rects: book.rects)
                 .offset(x: 220, y: 72)
+        case .memory:
+            MemoryScreen(cockpit: cockpit, workspace: currentWorkspace, width: contentW, height: h,
+                         onOpen: { overlay = .file($0) })
+                .offset(x: 220, y: 84)
         case .review:
             ReviewScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace, session: cockpit.selectedSession,
                          width: contentW, height: h,
@@ -1292,18 +1300,19 @@ struct CraneStatus: Equatable {
 
 /// v11 のタブ（STRUCTURE は FILES と統合）。`keys` は1文字で飛ぶ鍵
 enum V11Tab: String, CaseIterable {
-    case talk, files, spar, review, git, settings
+    case talk, files, spar, memory, review, git, settings
 
-    var no: String { ["01", "02", "03", "07", "08", "10"][index] }
-    var en: String { ["TALK", "FILES", "SPARRING", "REVIEW", "GIT", "SETTINGS"][index] }
-    var jp: String { ["会話", "構造とファイル", "壁打ち", "差分", "記帳と送出", "設定"][index] }
-    var desc: String { ["会話と門", "木・関係・エディタ", "引き継ぎと記憶", "差分と指摘", "記帳・送出・依頼", "既定と操作"][index] }
-    var keys: [String] { [["a"], ["b", "e"], ["c"], ["d"], ["g"], [","]][index] }
-    /// 畳み込みの見方（構造は FILES、記憶DB は SPARRING）
-    var mode: CockpitMode { self == .files ? .structure : self == .spar ? .memory : .work }
+    var no: String { ["01", "02", "03", "04", "07", "08", "10"][index] }
+    var en: String { ["TALK", "FILES", "SPARRING", "MEMORY", "REVIEW", "GIT", "SETTINGS"][index] }
+    var jp: String { ["会話", "構造とファイル", "壁打ち", "記憶", "差分", "記帳と送出", "設定"][index] }
+    var desc: String { ["会話と門", "木・関係・エディタ", "計画を練る", "貯まったノートと清書", "差分と指摘", "記帳・送出・依頼", "既定と操作"][index] }
+    /// m はメニューを開く鍵なので、記憶は k
+    var keys: [String] { [["a"], ["b", "e"], ["c"], ["k"], ["d"], ["g"], [","]][index] }
+    /// 畳み込みの見方（構造は FILES、記憶DB は MEMORY）
+    var mode: CockpitMode { self == .files ? .structure : self == .memory ? .memory : .work }
 
     init(_ mode: CockpitMode) {
-        self = mode == .structure ? .files : mode == .memory ? .spar : .talk
+        self = mode == .structure ? .files : mode == .memory ? .memory : .talk
     }
 
     private var index: Int { Self.allCases.firstIndex(of: self)! }
