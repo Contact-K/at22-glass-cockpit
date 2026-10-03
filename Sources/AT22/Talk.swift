@@ -15,6 +15,9 @@ struct TalkScreen: View {
     @Binding var gate: GateUI
     let gateFailed: Bool
     let stop: Stop?
+    /// 別の worktree で止まっているもの（カードの下に並べる）
+    var others: [TowerStop] = []
+    var onOther: (TowerStop) -> Void = { _ in }
     let pendingGates: Int
     let trail: [(path: String, kind: TouchKind)]
     let ctxAlarm: Bool
@@ -121,8 +124,8 @@ struct TalkScreen: View {
     @ViewBuilder
     private var tail: some View {
         if let stop {
-            GateCard(stop: stop, pending: pendingGates, failed: gateFailed,
-                     gate: $gate, onChoose: onChoose, onRewrite: onRewrite)
+            GateCard(stop: stop, pending: pendingGates, failed: gateFailed, others: others,
+                     gate: $gate, onChoose: onChoose, onRewrite: onRewrite, onOther: onOther)
         }
         if cockpit.isWorking(cockpit.selectedSession) {
             BusyBox(trail: trail, streaming: cockpit.streaming[cockpit.selectedSession ?? ""] ?? "")
@@ -312,38 +315,47 @@ struct TalkScreen: View {
 
 // MARK: - 門のカード
 
-/// 止まっている指示1件。**複数溜まっていても出すのは待たせている順に1件だけ**——
-/// 並べると「どれに答えているか」が曖昧になる
+/// 止まっている1件。**複数溜まっていても出すのは待たせている順に1件だけ**——
+/// 並べると「どれに答えているか」が曖昧になる。道具の承認は入力を読める形で出す
+/// （Bash はコマンド、Edit / Write は差分、門は行き先）。書き換えは道具なら入力の JSON、門なら指示の文
 private struct GateCard: View {
     let stop: Stop
     let pending: Int
     let failed: Bool
+    let others: [TowerStop]
     @Binding var gate: GateUI
     let onChoose: (Int) -> Void
     let onRewrite: () -> Void
+    let onOther: (TowerStop) -> Void
+    @State private var showJSON = false
     @Environment(\.frozenTime) private var frozen
-
-    private static let choices = [("Allow", "許可して起動"), ("Rewrite", "書き換えて発行"), ("Reject", "却下")]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             bar
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(stop.title).font(.display(40)).lineLimit(1)
-                Text(stop.body).font(.bodyJP(14)).lineSpacing(14 * 0.6 - 4)
-                    .lineLimit(4)
-                Text(stop.meta).font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
+                if !stop.body.isEmpty { Text(stop.body).font(.bodyJP(14)).lineSpacing(14 * 0.6 - 4).lineLimit(4) }
+                if !gate.rewriting {
+                    input
+                    if stop.kind != .gate {
+                        Button(showJSON ? "▾ 読める形に戻す" : "▸ 入力 JSON を見る") { showJSON.toggle() }
+                            .buttonStyle(.plain)
+                            .font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg2)
+                    }
+                }
                 if failed {
                     Text("答えを届けられなかった。相手は待ったままなので、置き場か接続を直してもう一度")
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
+            .padding(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
             if gate.rewriting { rewrite } else { choices }
+            if !others.isEmpty { elsewhere }
         }
         .foregroundStyle(Palette.Light.fg)
-        .frame(maxWidth: 640, alignment: .leading)
+        .frame(maxWidth: 660, alignment: .leading)
         .background(Palette.Light.bg)
         .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
         .modifier(Shake(trigger: gate.shake))
@@ -359,14 +371,10 @@ private struct GateCard: View {
 
     private var bar: some View {
         HStack(spacing: 10) {
-            Ticker(fps: 4) { now in
-                let on = frozen != nil || now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) < 0.6
-                Rectangle().fill(Palette.pink).frame(width: 8, height: 8).opacity(on ? 1 : 0)
-            }
-            .frame(width: 8, height: 8)
-            Text(stop.bar)
-            Text(stop.barJP).font(.brush(14)).tracking(0)
-            Text("· " + stop.target).lineLimit(1)
+            Blink(size: 8)
+            Text(stop.who.uppercased() + " // " + (stop.kind == .gate ? "GATE" : "TOOL"))
+            Text(stop.kind == .gate ? "門" : "道具").font(.brush(14)).tracking(0)
+            Text("· " + stop.target + (stop.kind == .acp ? " · ACP" : "")).lineLimit(1)
             if pending > 1 { Text("· 他 \(pending - 1) 件") }
             Spacer(minLength: 8)
             Ticker(fps: 1) { now in Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
@@ -377,37 +385,106 @@ private struct GateCard: View {
         .background(Palette.Light.fg)
     }
 
-    private var choices: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 14) {
-                ForEach(0..<3, id: \.self) { i in choice(i) }
+    /// 道具の入力を読める形に。JSON の表示に切り替えられる
+    @ViewBuilder
+    private var input: some View {
+        if showJSON {
+            Text(stop.prettyInput).font(.mono(12)).lineSpacing(6).textSelection(.enabled)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 180, alignment: .top).clipped()
+                .background(Palette.Light.bg2)
+                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+        } else {
+            switch stop.kind {
+            case .gate:
+                Text(stop.meta).font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
+            case .bash:
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("$").foregroundStyle(Palette.Light.fg2)
+                        Text(stop.command).textSelection(.enabled)
+                    }
+                    .font(.mono(15)).lineSpacing(6)
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    HStack(spacing: 16) {
+                        Text("cwd " + stop.place)
+                        if let t = stop.timeout { Text("timeout \(t)s") }
+                        Spacer(minLength: 0)
+                        Text(stop.inputDescription).lineLimit(1)
+                    }
+                    .font(.mono(10)).tracking(0.6).foregroundStyle(Palette.Light.fg2)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .overlay(alignment: .top) {
+                        Rectangle().stroke(Palette.Light.line, style: StrokeStyle(lineWidth: 1, dash: [3, 2])).frame(height: 1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.Light.bg2)
+                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+            case .diff, .acp:
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text(stop.diffPath).lineLimit(1).truncationMode(.middle)
+                        if stop.isNewFile { Text("NEW").font(.mono(9)).padding(.horizontal, 5).overlay(Rectangle().stroke(lineWidth: 1)) }
+                        Spacer(minLength: 0)
+                        let lines = stop.diffLines
+                        Text("+\(lines.filter { $0.kind == "+" }.count) −\(lines.filter { $0.kind == "-" }.count)")
+                            .foregroundStyle(Palette.Light.fg2)
+                    }
+                    .font(.mono(11)).tracking(0.2)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Palette.Light.bg2)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(stop.diffLines.prefix(40).enumerated()), id: \.offset) { _, line in
+                            DiffRow(kind: line.kind, old: line.old, new: line.new, text: line.text, dense: true)
+                        }
+                    }
+                    .frame(maxHeight: 170, alignment: .top).clipped()
+                }
+                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+            case .other:
+                Text(stop.inputLine).font(.mono(12)).lineLimit(3)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.hover)
             }
-            .padding(EdgeInsets(top: 12, leading: 20, bottom: 8, trailing: 22))
-            Text("←→ 選ぶ · ENTER 決定 · 1–3 · ⇧⌘G 許可")
-                .font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg3)
-                .padding(EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16))
         }
     }
 
-    private func choice(_ i: Int) -> some View {
+    private var choices: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                ForEach(Array(stop.options.enumerated()), id: \.offset) { i, option in choice(i, option) }
+            }
+            .padding(EdgeInsets(top: 10, leading: 20, bottom: 8, trailing: 22))
+            HStack(spacing: 14) {
+                Text("←→ 選ぶ · ENTER 決定 · 1–\(stop.options.count) · ⇧⌘G 許可")
+                if stop.kind == .acp {
+                    Text("ACP · \(stop.who) は入力の書き換えができないので Rewrite はありません").foregroundStyle(Palette.Light.fg2)
+                }
+            }
+            .font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg3)
+            .padding(EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16))
+        }
+    }
+
+    private func choice(_ i: Int, _ option: Int) -> some View {
         let on = gate.choice == i
-        let (en, jp) = Self.choices[i]
-        return VStack(alignment: .leading, spacing: 3) {
-            Text("#\(i + 1)").font(.mono(10)).tracking(1)
-            Text(en).font(.display(on ? 30 : 24)).foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
-                .lineLimit(1).minimumScaleFactor(0.6)
+        let (en, jp) = [("Allow", "許可"), ("Rewrite", "書き換え"), ("Reject", "却下")][option]
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(i + 1)").font(.mono(10)).tracking(1)
+            Text(en).font(.display(24)).lineLimit(1).minimumScaleFactor(0.6)
             Text(jp).font(.bodyJP(11))
         }
-        .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg2)
-        .opacity(i == 1 && !stop.canRevise ? 0.35 : 1)
-        .padding(EdgeInsets(top: 9, leading: 14, bottom: 10, trailing: 18))
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+        .padding(.leading, 14).padding(.trailing, 26)
+        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
         .background {
-            let plate = Chevron(head: on ? 14 : 0, skew: -18)
-            plate.fill(on ? Palette.Light.fg : Palette.Light.bg)
-                .overlay(plate.stroke(on ? Palette.Light.fg : Palette.Light.line, lineWidth: 1))
+            if on { Chevron(head: 16).fill(Palette.Light.fg) }
+            else { Chevron(head: 16).stroke(Palette.Light.fg, lineWidth: 1) }
         }
-        .offset(y: on ? -2 : 0)
         .contentShape(Rectangle())
         .onTapGesture { onChoose(i) }
         .onHover { if $0 { gate.choice = i } }
@@ -416,23 +493,29 @@ private struct GateCard: View {
 
     private var rewrite: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if frozen != nil {
-                Text(gate.revised).font(.bodyJP(14)).frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-                    .padding(.horizontal, 10).background(Palette.Light.bg2)
-            } else {
-                TextField("書き換えた指示", text: $gate.revised)
-                    .textFieldStyle(.plain)
-                    .font(.bodyJP(14))
-                    .padding(.horizontal, 10)
-                    .frame(height: 38)
-                    .background(Palette.Light.bg2)
-                    .overlay(Rectangle().stroke(Palette.Light.fg, lineWidth: 1))
-                    .onSubmit(onRewrite)
-                    // 書換欄に焦点がある間は Esc が根まで来ないので、欄の側で畳む
-                    .onExitCommand { gate.rewriting = false }
+            Text(stop.kind == .gate ? "指示を書き換える" : "REWRITE // 道具の入力（JSON）を書き換えて許可")
+                .font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg2)
+            Group {
+                if frozen != nil {
+                    Text(gate.revised).frame(maxWidth: .infinity, alignment: .topLeading)
+                } else if stop.kind == .gate {
+                    TextField("書き換えた指示", text: $gate.revised)
+                        .textFieldStyle(.plain)
+                        .onSubmit(onRewrite)
+                        // 書換欄に焦点がある間は Esc が根まで来ないので、欄の側で畳む
+                        .onExitCommand { gate.rewriting = false }
+                } else {
+                    TextEditor(text: $gate.revised).scrollContentBackground(.hidden)
+                        .onExitCommand { gate.rewriting = false }
+                }
             }
+            .font(stop.kind == .gate ? .bodyJP(14) : .mono(12))
+            .padding(.horizontal, 10).padding(.vertical, stop.kind == .gate ? 0 : 8)
+            .frame(height: stop.kind == .gate ? 38 : 150)
+            .background(Palette.Light.bg2)
+            .overlay(Rectangle().stroke(Palette.Light.fg, lineWidth: 1))
             HStack(spacing: 8) {
-                Button("書き換えて発行 ↵", action: onRewrite)
+                Button("書き換えて許可 ↵", action: onRewrite)
                     .buttonStyle(SumiButtonStyle(primary: true))
                     .disabled(gate.revised.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .reportRect("gateBtn:rw")
@@ -440,7 +523,58 @@ private struct GateCard: View {
                     .buttonStyle(SumiButtonStyle(primary: false))
             }
         }
-        .padding(EdgeInsets(top: 10, leading: 16, bottom: 14, trailing: 16))
+        .padding(EdgeInsets(top: 6, leading: 16, bottom: 14, trailing: 16))
+    }
+
+    /// 別の worktree で止まっているもの。押すとそこへ
+    private var elsewhere: some View {
+        HStack(spacing: 8) {
+            Text("別の worktree \(others.count)").font(.mono(9)).tracking(1.1).foregroundStyle(Palette.Light.fg2)
+                .frame(width: 120, alignment: .leading)
+            FlowLayout(spacing: 8, lineSpacing: 6) {
+                ForEach(Array(others.prefix(6).enumerated()), id: \.offset) { _, other in
+                    Text("\(other.name) ▸ \(other.stop.who) · \(other.stop.target)").font(.mono(11)).tracking(0.2)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .overlay(Rectangle().strokeBorder(Palette.Light.fg, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                        .contentShape(Rectangle())
+                        .onTapGesture { onOther(other) }
+                }
+            }
+        }
+        .padding(EdgeInsets(top: 10, leading: 16, bottom: 12, trailing: 16))
+        .overlay(alignment: .top) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
+    }
+}
+
+/// 差分の1行。旧い行番号・新しい行番号・記号・本文。追加は淡い青の地、削除は打ち消し線
+struct DiffRow: View {
+    let kind: Character
+    let old: Int?
+    let new: Int?
+    let text: String
+    var dense = false
+    var commented = false
+    var dim = false
+
+    var body: some View {
+        let num: CGFloat = dense ? 34 : 46
+        HStack(spacing: 0) {
+            Text(old.map(String.init) ?? "").frame(width: num, alignment: .trailing).padding(.trailing, 8)
+                .foregroundStyle(Palette.Light.fg3)
+            Text(new.map(String.init) ?? "").frame(width: num, alignment: .trailing).padding(.trailing, 8)
+                .foregroundStyle(Palette.Light.fg3)
+                .overlay(alignment: .trailing) { Rectangle().fill(Palette.Light.line).frame(width: 1) }
+            Text(kind == " " ? "" : kind == "-" ? "−" : "+").frame(width: dense ? 14 : 16)
+            Text(text).lineLimit(1).truncationMode(.tail)
+                .strikethrough(kind == "-", color: Palette.Blue.fg3)
+                .foregroundStyle(kind == "-" ? Palette.Light.fg3 : Palette.Light.fg)
+            Spacer(minLength: 0)
+            if commented { Rectangle().fill(Palette.Light.fg).frame(width: 8, height: 8).padding(.trailing, 6) }
+        }
+        .font(.mono(dense ? 11 : 12))
+        .frame(minHeight: dense ? 20 : 22)
+        .background(kind == "+" ? Color(hex: 0xDCDCFF) : .clear)
+        .opacity(dim ? 0.4 : 1)
     }
 }
 

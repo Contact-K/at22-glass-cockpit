@@ -349,6 +349,10 @@ struct CockpitView: View {
                        subtitle: subtitle(tasks), showThinking: showThinking,
                        verdicts: verdicts, gate: $gate, gateFailed: gate.failed != nil && gate.failed == stop?.id,
                        stop: stop,
+                       others: Stop.all(cockpit, chips: snap.chips).filter { $0.stop.id != stop?.id
+                           && $0.workspace != currentWorkspace },
+                       onOther: { other in enter(path: other.workspace, stopID: other.stop.id,
+                                                 projects: TowerData.projects(cockpit)) },
                        pendingGates: cockpit.stoppedCount, trail: trail, ctxAlarm: ctxAlarm,
                        height: h - 72, width: contentW, modalOpen: overlay != nil,
                        onChoose: { choose($0) },
@@ -601,17 +605,18 @@ struct CockpitView: View {
 
     // MARK: 門
 
+    /// i はカードに並んだ順（書き換えられない時は 許可・却下 の2つ）
     private func choose(_ i: Int) {
-        guard let stop else { return }
+        guard let stop, stop.options.indices.contains(i) else { return }
         gate.choice = i
         gate.shake += 1
-        if i == 1 {
-            // ACP の承認には書き換えの口が無い。揺れるだけで開かない
-            if stop.canRevise { after(0.11) { gate.rewriting = true } }
+        let option = stop.options[i]
+        if option == 1 {
+            after(0.11) { gate.rewriting = true }
             return
         }
-        answer(stop, i == 0 ? .allow : .deny, revised: "", from: book.rects["gateBtn:\(i)"],
-               word: i == 0 ? "ALLOWED" : "REJECTED")
+        answer(stop, option == 0 ? .allow : .deny, revised: "", from: book.rects["gateBtn:\(i)"],
+               word: option == 0 ? "ALLOWED" : "REJECTED")
     }
 
     private func issueRewrite() {
@@ -690,12 +695,12 @@ struct CockpitView: View {
         guard tab == .talk, stop != nil, !gate.rewriting, wipe == nil,
               Date().timeIntervalSince(gateArmedAt) > 0.6 else { return .ignored }
         switch press.key {
-        case .rightArrow: gate.choice = (gate.choice + 1) % 3; return .handled
-        case .leftArrow: gate.choice = (gate.choice + 2) % 3; return .handled
+        case .rightArrow: gate.choice = (gate.choice + 1) % (stop?.options.count ?? 3); return .handled
+        case .leftArrow: gate.choice = (gate.choice + (stop?.options.count ?? 3) - 1) % (stop?.options.count ?? 3); return .handled
         case .return: choose(gate.choice); return .handled
         default: break
         }
-        if let n = Int(press.characters), (1...3).contains(n) { choose(n - 1); return .handled }
+        if let n = Int(press.characters), (1...(stop?.options.count ?? 3)).contains(n) { choose(n - 1); return .handled }
         return .ignored
     }
 
@@ -969,6 +974,8 @@ struct Stop {
     let canRevise: Bool
     /// 書換欄に最初から入れておく文
     let seed: String
+    /// 動いている worktree の名前（Bash の cwd に出す）
+    var place = "."
 
     @MainActor
     static func current(_ cockpit: Cockpit, chips: [AgentChip]) -> Stop? {
@@ -994,6 +1001,63 @@ struct Stop {
         }
     }
 
+    enum Kind { case bash, diff, acp, gate, other }
+
+    /// カードの出し方。ACP（Grok など）は書き換えの口が無いので別扱い
+    var kind: Kind {
+        guard case let .approval(a) = source else { return .gate }
+        if !a.canRevise { return .acp }
+        if json["command"] != nil { return .bash }
+        if json["old_string"] != nil || json["content"] != nil || json["new_string"] != nil { return .diff }
+        return .other
+    }
+
+    /// 並べる答え（0 許可 / 1 書き換え / 2 却下）。書き換えられない時は2つ
+    var options: [Int] { canRevise ? [0, 1, 2] : [0, 2] }
+
+    /// 頼んできた相手（Claude / Grok …、門は司令塔）
+    var who: String {
+        switch source {
+        case .gate: return "C0"
+        case .approval: return meta.components(separatedBy: " · ").first ?? "Agent"
+        }
+    }
+
+    private var json: [String: Any] {
+        guard case let .approval(a) = source else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:]
+    }
+
+    var prettyInput: String {
+        guard case let .approval(a) = source else { return seed }
+        guard let object = try? JSONSerialization.jsonObject(with: Data(a.input.utf8)),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return a.input }
+        return text
+    }
+
+    var command: String { json["command"] as? String ?? "" }
+    var timeout: Int? { (json["timeout"] as? Double).map { Int($0 / 1000) } ?? (json["timeout"] as? Int).map { $0 / 1000 } }
+    var inputDescription: String { json["description"] as? String ?? "" }
+    var diffPath: String { (json["file_path"] ?? json["path"] ?? json["notebook_path"]) as? String ?? target }
+    var isNewFile: Bool { json["content"] != nil && json["old_string"] == nil }
+
+    /// 差分の行。Edit は old_string → new_string、Write は中身を全部追加として
+    var diffLines: [(kind: Character, old: Int?, new: Int?, text: String)] {
+        if let old = json["old_string"] as? String {
+            let new = json["new_string"] as? String ?? ""
+            let o = old.split(separator: "\n", omittingEmptySubsequences: false)
+            let n = new.split(separator: "\n", omittingEmptySubsequences: false)
+            return o.enumerated().map { ("-", $0.offset + 1, nil, String($0.element)) }
+                + n.enumerated().map { ("+", nil, $0.offset + 1, String($0.element)) }
+        }
+        if let content = json["content"] as? String {
+            return content.split(separator: "\n", omittingEmptySubsequences: false).prefix(200).enumerated()
+                .map { ("+", nil, $0.offset + 1, String($0.element)) }
+        }
+        return []
+    }
+
     /// 道具の入力の1行。Bash ならコマンド、ファイルを触る道具ならパス、門なら行き先
     var inputLine: String {
         switch source {
@@ -1011,7 +1075,8 @@ struct Stop {
         Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
              title: "Run \(a.tool)?", body: a.detail,
              meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
-             since: a.at, canRevise: a.canRevise, seed: a.input)
+             since: a.at, canRevise: a.canRevise, seed: a.input,
+             place: cockpit.workspacePath(of: a.session).map { ".worktrees/" + ($0 as NSString).lastPathComponent } ?? ".")
     }
 
     private static func make(_ g: Gate.Request, chips: [AgentChip]) -> Stop {
