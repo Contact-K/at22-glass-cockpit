@@ -254,6 +254,46 @@ struct SettingsScreen: View {
                     .font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3).fixedSize(horizontal: false, vertical: true)
             }
             .onChange(of: hosts) { Remote.hosts = hosts }
+            row("09", "Schedule", "定期実行 · 決めた worktree に、決めた間隔か毎日の時刻で指示を送る（AT22 が開いていて、03 が入の間だけ）") {
+                let spaces = cockpit.workspaceTree().flatMap(\.workspaces)
+                ForEach(cockpit.schedules.indices, id: \.self) { i in
+                    let s = cockpit.schedules[i]
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Button(s.enabled ? "■" : "□") { cockpit.schedules[i].enabled.toggle() }.buttonStyle(.plain).font(.mono(13))
+                            SumiPicker(sections: [.init(title: "WORKTREE", items: spaces.map {
+                                .init(id: $0.id, text: $0.name, on: $0.id == s.workspace)
+                            })], onPick: { _, id in cockpit.schedules[i].workspace = id }) {
+                                Text((s.workspace.isEmpty ? "worktree を選ぶ" : (s.workspace as NSString).lastPathComponent) + " ▾")
+                                    .font(.mono(12)).padding(.horizontal, 8).frame(height: 30)
+                                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                            }
+                            if s.dailyAt.isEmpty {
+                                stepper(value: Binding(get: { cockpit.schedules[i].everyMinutes },
+                                                       set: { cockpit.schedules[i].everyMinutes = $0 }),
+                                        range: 5...1440, step: 5, unit: "分ごと")
+                            }
+                            hostField("毎日 HH:mm（空なら間隔）", text: Binding(get: { cockpit.schedules[i].dailyAt },
+                                                                            set: { cockpit.schedules[i].dailyAt = $0 }))
+                                .frame(width: 150)
+                            Spacer(minLength: 0)
+                            Button("今すぐ") { cockpit.runSchedule(s.id) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                                .disabled(s.workspace.isEmpty || s.prompt.isEmpty)
+                            Button("×") { cockpit.schedules.remove(at: i) }.buttonStyle(.plain).font(.mono(12))
+                        }
+                        hostField("送る指示（例: 依存を更新して、テストが通るか確かめて報告して）",
+                                  text: Binding(get: { cockpit.schedules[i].prompt }, set: { cockpit.schedules[i].prompt = $0 }))
+                        Text(s.lastRun.map { "前回 " + $0.formatted(.dateTime.month().day().hour().minute()) } ?? "まだ動いていない")
+                            .font(.mono(10)).foregroundStyle(Palette.Light.fg3)
+                    }
+                    .padding(.vertical, 6)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+                }
+                Button("＋ 予定を足す") {
+                    cockpit.schedules.append(.init(workspace: spaces.first?.id ?? "", prompt: ""))
+                }
+                .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+            }
             }
             .frame(width: width, alignment: .leading)
             }

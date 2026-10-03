@@ -505,8 +505,12 @@ struct TowerSide: View {
     @Binding var hover: String?
     let onAnswer: (Stop, Gate.Verdict) -> Void
     let onEnter: (String, String?) -> Void
+    /// 活動フィード（全 worktree の出来事・新しい順）と、押した時に開く会話
+    var activity: [Cockpit.Activity] = []
+    var onOpenSession: (String) -> Void = { _ in }
 
     @State private var all = false
+    @State private var feed = false
 
     var body: some View {
         let lower = max(260, height - 406)
@@ -612,16 +616,43 @@ struct TowerSide: View {
             .sorted { (Set($0.tiles.map(\.project)).count, $0.tiles.count) > (Set($1.tiles.map(\.project)).count, $1.tiles.count) }
         return VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                HStack(spacing: 0) { Text("00").foregroundStyle(Palette.pink); Text("// INSTRUCTIONS") }
+                HStack(spacing: 0) { Text("00").foregroundStyle(Palette.pink); Text(feed ? "// ACTIVITY" : "// INSTRUCTIONS") }
                     .font(.mono(10)).tracking(Palette.caps(10))
-                Text("同じ指示").font(.brush(14))
+                Button("同じ指示") { feed = false }.buttonStyle(.plain).font(.brush(14)).opacity(feed ? 0.4 : 1)
+                Button("活動") { feed = true }.buttonStyle(.plain).font(.brush(14)).opacity(feed ? 1 : 0.4)
                 Spacer(minLength: 0)
-                Button(all ? "重なりだけ" : "全部") { all.toggle() }
-                    .buttonStyle(.plain)
-                    .font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
+                if !feed {
+                    Button(all ? "重なりだけ" : "全部") { all.toggle() }
+                        .buttonStyle(.plain)
+                        .font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
+                }
             }
             .padding(EdgeInsets(top: 10, leading: 14, bottom: 8, trailing: 14))
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
+            if feed {
+                LiveScroll {
+                    VStack(spacing: 0) {
+                        ForEach(activity.prefix(80)) { a in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(a.at.formatted(.dateTime.hour().minute())).font(.mono(10)).foregroundStyle(Palette.Light.fg3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(a.title).font(.bodyJP(12)).lineLimit(1)
+                                    Text(a.text).font(.bodyJP(11)).foregroundStyle(Palette.Light.fg2).lineLimit(2)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onOpenSession(a.session) }
+                            .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+                        }
+                        if activity.isEmpty {
+                            Text("まだ何も起きていない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        }
+                    }
+                }
+            } else {
             LiveScroll {
                 VStack(spacing: 0) {
                     ForEach(groups, id: \.task) { group in instruction(group.task, group.tiles) }
@@ -632,7 +663,8 @@ struct TowerSide: View {
                     }
                 }
             }
-            Text("⑂ 同じ枝から競走 · ⇄ 別のプロジェクトでも")
+            }
+            Text(feed ? "押すとその会話へ · 終わった・止まった・訊いている・失敗した" : "⑂ 同じ枝から競走 · ⇄ 別のプロジェクトでも")
                 .font(.mono(10)).tracking(0.8).foregroundStyle(Palette.Light.fg2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(EdgeInsets(top: 7, leading: 14, bottom: 9, trailing: 14))

@@ -105,6 +105,8 @@ struct CockpitView: View {
         case pick(String)
         /// ⌘P
         case quickOpen
+        /// 内蔵ブラウザ（会話の URL の札から）
+        case browser(URL)
     }
 
     struct Location: Equatable {
@@ -292,7 +294,17 @@ struct CockpitView: View {
                                       answer(stop, verdict, revised: "", from: nil,
                                              word: verdict == .deny ? "REJECTED" : "ALLOWED")
                                   },
-                                  onEnter: { path, stopID in enter(path: path, stopID: stopID, projects: projects) })
+                                  onEnter: { path, stopID in enter(path: path, stopID: stopID, projects: projects) },
+                                  activity: cockpit.activity,
+                                  onOpenSession: { session in
+                                      if let row = cockpit.workspaceTree().flatMap(\.workspaces).flatMap(\.agents).first(where: { $0.id == session }) {
+                                          Task { await cockpit.open(row) }
+                                      } else {
+                                          cockpit.selectedSession = session
+                                      }
+                                      storedTab = .talk
+                                      setTower(false)
+                                  })
                     } else if tab == .review {
                         ReviewPanels(cockpit: cockpit, model: shotReview ?? review, session: cockpit.selectedSession, height: h,
                                      onSent: { fly(from: book.rects["crane"], to: book.rects["crane"]) })
@@ -403,6 +415,9 @@ struct CockpitView: View {
         let all = projects.isEmpty ? TowerData.projects(cockpit) : projects
         let tiles = all.flatMap(\.tiles)
         switch overlay {
+        case let .browser(url):
+            BrowserSheet(start: url, onClose: { self.overlay = nil })
+                .frame(width: w, height: h)
         case let .newWorkspace(from):
             NewWorkspaceSheet(cockpit: cockpit, projects: all, from: from, prompt0: newPrompt, launcherReady: launcherReady,
                               onClose: { self.overlay = nil; newPrompt = "" },
@@ -450,7 +465,8 @@ struct CockpitView: View {
                        onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) },
                        workspace: isTower ? nil : currentWorkspace,
                        composing: $talkComposing,
-                       onRiskyLevel: { riskyLevel = $0 })
+                       onRiskyLevel: { riskyLevel = $0 },
+                       onBrowse: { overlay = .browser($0) })
                 .offset(x: 220, y: 72)
         case .files:
             ZStack(alignment: .topTrailing) {

@@ -44,6 +44,7 @@ struct P0SelfCheck {
         buildsClaudeArguments()
         resumesWithoutMintingANewSession()
         codexServerSpeaksV2()
+        remoteSchedulesAndOverrides()
         remembersWhoWasCalledAndWhatFor()
         readsStdoutWithoutLying()
         interruptLineStopsWithoutKilling()
@@ -2108,6 +2109,38 @@ struct P0SelfCheck {
         // 実行できないものを掴まない（同名のディレクトリやテキストを渡された場合）
         assert(Launcher.parseShellReply("/etc/hosts\n/usr/bin").executable == nil,
                "実行できないものを claude として掴んだ")
+    }
+
+    /// SSH の作業場所・起こし方の上書き・定期実行の時刻。黙って動かなくなる所なので形を固定する
+    static func remoteSchedulesAndOverrides() {
+        // ssh://相手/パス
+        assert(Remote.parse("ssh://me@box/home/me/repo")! == ("me@box", "/home/me/repo"))
+        assert(Remote.parse("/Users/me/repo") == nil && Remote.workspace(target: "box", path: "srv/x") == "ssh://box/srv/x")
+        let ssh = Remote.sshArguments(target: "box", path: "/srv/my repo", command: "claude", arguments: ["-p", "it's"],
+                                      environment: ["A": "1"])
+        assert(ssh.contains("box") && ssh.contains("BatchMode=yes"), "\(ssh)")
+        // 相手のログインシェルで、引用したまま走らせる（空白とクォートを壊さない）
+        assert(ssh.last!.contains("-lc") && ssh.last!.contains("my repo") && ssh.last!.contains("env A="), ssh.last!)
+        // 上書き: 引数は空白区切り、環境変数は ; か改行区切りの K=V
+        assert(LaunchOverrides.arguments(" --foo  bar ") == ["--foo", "bar"])
+        assert(LaunchOverrides.environment("A=1; B = x=y\nC") == ["A": "1", "B": "x=y"])
+        // 定期実行: 間隔／毎日の時刻、止めてあるもの・中身の無いものは動かない
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 3, hour: 9, minute: 30))!
+        var every = Cockpit.Schedule(workspace: "/w", prompt: "p", everyMinutes: 60, lastRun: now.addingTimeInterval(-3601))
+        assert(Cockpit.isDue(every, now: now, calendar: cal))
+        every.lastRun = now.addingTimeInterval(-60)
+        assert(!Cockpit.isDue(every, now: now, calendar: cal), "間隔の前に動いた")
+        var daily = Cockpit.Schedule(workspace: "/w", prompt: "p", dailyAt: "09:00", lastRun: now.addingTimeInterval(-86400))
+        assert(Cockpit.isDue(daily, now: now, calendar: cal))
+        daily.lastRun = now.addingTimeInterval(-60)    // 今日の 09:00 の後にもう動いた
+        assert(!Cockpit.isDue(daily, now: now, calendar: cal), "毎日の予定が1日に2回動いた")
+        daily.dailyAt = "10:00"
+        daily.lastRun = nil
+        assert(!Cockpit.isDue(daily, now: now, calendar: cal), "時刻の前に動いた")
+        assert(!Cockpit.isDue(Cockpit.Schedule(workspace: "/w", prompt: "", lastRun: nil), now: now, calendar: cal))
+        assert(!Cockpit.isDue(Cockpit.Schedule(workspace: "/w", prompt: "p", enabled: false, lastRun: nil), now: now, calendar: cal))
     }
 
     /// codex app-server（v2）の知らせ・承認・段の対応。codex が手元に無いので、形だけはここで固定する

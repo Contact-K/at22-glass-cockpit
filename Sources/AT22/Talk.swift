@@ -36,6 +36,8 @@ struct TalkScreen: View {
     @Binding var composing: Bool
     /// 人の承認なしに書き換える段（Lv.3/4）を選んだ時。確かめてから効かせる（CockpitView の確認）
     var onRiskyLevel: (Gate.Level) -> Void = { _ in }
+    /// 発言の URL の札を押した時（内蔵ブラウザ）
+    var onBrowse: (URL) -> Void = { _ in }
 
     @State private var draft = ""
     @State private var failed = false
@@ -85,11 +87,12 @@ struct TalkScreen: View {
         let items = entries
         // 最後の人の発言は1回だけ求める。行ごとに全メッセージを走ると、遡るほど重くなって固まった
         let lastHuman = cockpit.messages.last { $0.session == cockpit.selectedSession && $0.speaker == .human }?.id
+        let lastReply = cockpit.messages.last { $0.session == cockpit.selectedSession && $0.speaker == .model && !$0.thinking }?.id
         if frozen != nil {
             // `--shot` は ScrollView の中身を焼かないので、素の VStack に積んで下端を見せる
             VStack(alignment: .leading, spacing: 14) {
                 header
-                ForEach(items.suffix(6)) { entry in row(entry, lastHuman: lastHuman) }
+                ForEach(items.suffix(6)) { entry in row(entry, lastHuman: lastHuman, lastReply: lastReply) }
                 tail
             }
             .padding(.trailing, 16)
@@ -100,7 +103,7 @@ struct TalkScreen: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         header
-                        ForEach(items) { entry in row(entry, lastHuman: lastHuman).id(entry.id) }
+                        ForEach(items) { entry in row(entry, lastHuman: lastHuman, lastReply: lastReply).id(entry.id) }
                         tail
                         Color.clear.frame(height: 8).id(Self.bottomID)
                     }
@@ -294,7 +297,7 @@ struct TalkScreen: View {
     }
 
     @ViewBuilder
-    private func row(_ entry: Entry, lastHuman: Int?) -> some View {
+    private func row(_ entry: Entry, lastHuman: Int?, lastReply: Int?) -> some View {
         switch entry {
         case let .human(message):
             HStack {
@@ -317,12 +320,24 @@ struct TalkScreen: View {
                     .foregroundStyle(message.thinking ? Palette.Light.fg3 : Palette.Light.fg)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                if !refs.isEmpty {
+                let links = message.thinking ? [] : LinkCache.links(message.id, message.text)
+                if !refs.isEmpty || !links.isEmpty {
                     FlowLayout(spacing: 6, lineSpacing: 6) {
                         ForEach(refs, id: \.self) { ref in
                             Text("参照 · " + ref).font(.bodyJP(12))
                                 .padding(.horizontal, 8).padding(.vertical, 5)
                                 .overlay(Rectangle().stroke(Palette.Light.line, lineWidth: 1))
+                        }
+                        // 開発サーバーや PR の URL は、押すと内蔵ブラウザで開く
+                        ForEach(links, id: \.self) { url in
+                            Button { onBrowse(url) } label: {
+                                Text("↗ " + (url.host.map { $0 + (url.port.map { ":\($0)" } ?? "") } ?? url.absoluteString) + url.path)
+                                    .font(.mono(11)).lineLimit(1)
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .foregroundStyle(Palette.Light.bg).background(Palette.Light.fg)
+                            }
+                            .buttonStyle(PressStyle())
+                            .help(url.absoluteString)
                         }
                     }
                 }
@@ -332,7 +347,7 @@ struct TalkScreen: View {
             .frame(maxWidth: 680, alignment: .leading)
             .overlay(Rectangle().strokeBorder(Palette.Light.fg,
                                               style: StrokeStyle(lineWidth: 2, dash: message.thinking ? [4, 3] : [])))
-            .reportRect(isLastReply(message) ? "c0last" : "c0:\(message.id)")
+            .reportRect(message.id == lastReply ? "c0last" : "c0:\(message.id)")
         case let .call(call):
             let finished = cockpit.callFinished(call.id)
             rule("CALL // \(call.type.isEmpty ? "AGENT" : call.type.uppercased()) → \(call.title)",
@@ -352,11 +367,6 @@ struct TalkScreen: View {
         }
         .font(.mono(10)).tracking(1.2)
         .foregroundStyle(Palette.Light.fg2)
-    }
-
-    private func isLastReply(_ message: Message) -> Bool {
-        let session = cockpit.selectedSession
-        return cockpit.messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.id == message.id
     }
 
     /// Markdown を解釈しつつ改行を保つ。`**` や `` ` `` の記号が消えるだけで長い発言はだいぶ読める。
@@ -950,5 +960,19 @@ enum MarkdownCache {
         let text = TalkScreen.formatted(raw)
         store[id] = (raw.count, text)
         return text
+    }
+}
+
+/// 発言の URL を覚えておく（毎秒の描き直しで NSDataDetector を回さない）
+@MainActor
+enum LinkCache {
+    private static var store: [Int: (count: Int, links: [URL])] = [:]
+
+    static func links(_ id: Int, _ text: String) -> [URL] {
+        if let hit = store[id], hit.count == text.count { return hit.links }
+        if store.count > 2000 { store.removeAll() }
+        let links = BrowserSheet.links(in: text)
+        store[id] = (text.count, links)
+        return links
     }
 }

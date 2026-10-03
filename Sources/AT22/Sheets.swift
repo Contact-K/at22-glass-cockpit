@@ -36,6 +36,9 @@ struct NewWorkspaceSheet: View {
     @State private var opened = Date()
     @State private var closing: Date?
     @State private var full = false
+    /// 開いている Issue（最初の指示の欄の「Issue から ▾」）。nil は未取得、取れなかった時は理由
+    @State private var issues: [(number: Int, title: String, body: String)]?
+    @State private var issueProblem: String?
     @Environment(\.frozenTime) private var frozen
 
     private static let tan18 = CGFloat(tan(18 * Double.pi / 180))
@@ -205,6 +208,7 @@ struct NewWorkspaceSheet: View {
             agentsEditor
         case 4:
             VStack(alignment: .leading, spacing: 12) {
+                issuePicker
                 Group {
                     if frozen != nil {
                         Text(prompt).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -232,6 +236,39 @@ struct NewWorkspaceSheet: View {
                     }
                     .onTapGesture { level = l }
                 }
+            }
+        }
+    }
+
+    /// リポジトリの開いている Issue を選ぶと、名前と最初の指示に入れる（gh を使う）
+    @ViewBuilder
+    private var issuePicker: some View {
+        HStack(spacing: 10) {
+            if let issues, !issues.isEmpty {
+                SumiPicker(sections: [.init(title: "OPEN ISSUES", items: issues.map {
+                    .init(id: String($0.number), text: "#\($0.number) " + $0.title, on: false)
+                })], onPick: { _, id in
+                    guard let n = Int(id), let issue = issues.first(where: { $0.number == n }) else { return }
+                    name = "issue-\(n)"
+                    prompt = "GitHub Issue #\(n): \(issue.title)\n\n\(issue.body)\n\nこの Issue を片付けてください。終わったら何を変えたかを報告してください。"
+                }) {
+                    Text("Issue から ▾").font(.mono(12)).padding(.horizontal, 10).frame(height: 30)
+                        .background(Palette.white).foregroundStyle(Palette.blue)
+                }
+            } else if issues == nil && issueProblem == nil {
+                Text("Issue を読んでいます…").font(.bodyJP(12)).opacity(0.8)
+            }
+            if let issueProblem { Text("Issue は読めませんでした: " + issueProblem).font(.bodyJP(11)).opacity(0.8).lineLimit(1) }
+            if let issues, issues.isEmpty { Text("開いている Issue は無い").font(.bodyJP(12)).opacity(0.8) }
+        }
+        .task(id: repo) {
+            guard frozen == nil, !repo.isEmpty else { return }
+            issues = nil
+            issueProblem = nil
+            let target = repo
+            switch await Task.detached(operation: { Cockpit.issues(repo: target) }).value {
+            case let .success(list): issues = list
+            case let .failure(error): issueProblem = "\(error)".split(separator: "\n").first.map(String.init) ?? "gh が使えない"
             }
         }
     }

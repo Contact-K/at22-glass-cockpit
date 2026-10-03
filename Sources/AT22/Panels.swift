@@ -337,7 +337,7 @@ struct Modals: View {
                 case let .file(path): FileModal(cockpit: cockpit, path: path, onClose: onClose)
                 case let .agent(id): AgentModal(cockpit: cockpit, chip: snapshot.chips.first { $0.id == id },
                                                 label: Cockpit.agentLabels(snapshot.chips)[id] ?? "", onClose: onClose)
-                case .newWorkspace, .delete, .pick, .quickOpen: EmptyView()
+                case .newWorkspace, .delete, .pick, .quickOpen, .browser: EmptyView()
                 }
             }
             .foregroundStyle(Palette.Light.fg)

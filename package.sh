@@ -110,6 +110,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>MIT License</string>
+  <!-- 内蔵ブラウザ: エージェントが立てた http の開発サーバーと、PR などの外のページを開くため -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+  </dict>
 </dict>
 </plist>
 PLIST

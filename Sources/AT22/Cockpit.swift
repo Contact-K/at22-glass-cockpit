@@ -735,6 +735,92 @@ final class Cockpit {
         autoHideIdleAgents(now: Date())
         watchHandoffs()
         sleepIdleSessions()
+        runSchedules(now: Date())
+    }
+
+    // MARK: 定期実行
+
+    /// 決めた worktree に、決めた間隔か毎日の時刻で指示を送る（新しい会話を起こす）。AT22 が開いている間だけ
+    struct Schedule: Codable, Identifiable, Equatable {
+        var id = UUID()
+        var workspace: String
+        var prompt: String
+        /// 間隔（分）。`dailyAt` が書いてあればそちらが優先
+        var everyMinutes = 60
+        /// 毎日の時刻 "HH:mm"（空なら間隔で）
+        var dailyAt = ""
+        var enabled = true
+        var lastRun: Date? = Date()
+    }
+
+    static let schedulesKey = "schedules"
+
+    var schedules: [Schedule] = {
+        guard let data = UserDefaults.standard.data(forKey: Cockpit.schedulesKey),
+              let list = try? JSONDecoder().decode([Schedule].self, from: data) else { return [] }
+        return list
+    }() {
+        didSet { if let data = try? JSONEncoder().encode(schedules) { UserDefaults.standard.set(data, forKey: Self.schedulesKey) } }
+    }
+
+    /// その予定が今やる時か（純関数。p0 で固定）
+    nonisolated static func isDue(_ schedule: Schedule, now: Date, calendar: Calendar = .current) -> Bool {
+        guard schedule.enabled, !schedule.workspace.isEmpty, !schedule.prompt.isEmpty else { return false }
+        let parts = schedule.dailyAt.split(separator: ":").compactMap { Int($0) }
+        if parts.count == 2, let today = calendar.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: now) {
+            return now >= today && (schedule.lastRun ?? .distantPast) < today
+        }
+        return now.timeIntervalSince(schedule.lastRun ?? .distantPast) >= Double(max(1, schedule.everyMinutes)) * 60
+    }
+
+    /// 今すぐ1回（設定の「今すぐ」）。起こせたら true
+    @discardableResult
+    func runSchedule(_ id: UUID, now: Date = Date()) -> Bool {
+        guard let i = schedules.firstIndex(where: { $0.id == id }) else { return false }
+        let s = schedules[i]
+        schedules[i].lastRun = now
+        // 既定のエージェント（SettingsScreen.agentKey と同じ鍵。Cockpit は SwiftUI を見ない）
+        let parts = (UserDefaults.standard.string(forKey: "defaultAgent") ?? "claude|").split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        let backend = Backend(rawValue: parts.first ?? "") ?? .claude
+        let keep = selectedSession
+        let id = launch(prompt: s.prompt, cwd: s.workspace, backend: backend, model: parts.count > 1 ? parts[1] : "",
+                        level: level(ofWorkspace: s.workspace))
+        selectedSession = keep
+        guard let session = id?.uuidString.lowercased() else {
+            appendLaunchError("定期実行（\((s.workspace as NSString).lastPathComponent)）を起こせなかった")
+            return false
+        }
+        titles[session] = "定期 · " + (Self.titleRule(s.prompt) ?? "")
+        noteAttention(session, "定期実行で起こした")
+        return true
+    }
+
+    private func runSchedules(now: Date) {
+        // 連携が切ってあれば動かさない（入れただけで LLM を起こすアプリにしない）
+        guard UserDefaults.standard.bool(forKey: Self.launcherEnabledKey) else { return }
+        for s in schedules where Self.isDue(s, now: now) { runSchedule(s.id, now: now) }
+    }
+
+    /// worktree の段（その worktree の `memory/gate/LEVEL`）
+    func level(ofWorkspace cwd: String) -> Gate.Level {
+        Gate.level(memoryRoot: projectsRoot.appendingPathComponent(Self.projectSlug(cwd)).appendingPathComponent("memory"))
+    }
+
+    // MARK: Issues から
+
+    /// リポジトリの開いている Issue（`gh issue list`）。gh が無い・ログインしていない時は理由を返す
+    nonisolated static func issues(repo: String) -> Result<[(number: Int, title: String, body: String)], Error> {
+        Result {
+            let out = try Worktree.run("/bin/zsh", ["-lc", "gh issue list --state open --limit 30 --json number,title,body"],
+                                       in: repo, withErrors: true)
+            guard let rows = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [[String: Any]] else {
+                throw Worktree.Failure(message: out.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            return rows.compactMap { r in
+                guard let n = r["number"] as? Int, let t = r["title"] as? String else { return nil }
+                return (n, t, r["body"] as? String ?? "")
+            }
+        }
     }
 
     // MARK: 眠らせて再開
@@ -1611,7 +1697,19 @@ final class Cockpit {
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
 
     /// 人の注意を引く出来事。見ていないセッションなら未読にし、画面の外（通知）にも渡す
+    /// 活動フィード（管制塔）。全 worktree の出来事を新しい順に。ponytail: 200件で古いものから落とす
+    struct Activity: Identifiable, Equatable {
+        let id = UUID()
+        let at: Date
+        let session: String
+        let title: String
+        let text: String
+    }
+    private(set) var activity: [Activity] = []
+
     private func noteAttention(_ session: String, _ what: String) {
+        activity.insert(Activity(at: Date(), session: session, title: title(for: session) ?? String(session.prefix(8)), text: what), at: 0)
+        if activity.count > 200 { activity.removeLast(activity.count - 200) }
         guard session != selectedSession else { return }
         unread.insert(session)
         onAttention?(session, title(for: session) ?? String(session.prefix(8)), what)
