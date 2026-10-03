@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -88,6 +88,7 @@ struct P0SelfCheck {
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
+        hydraReadsHeads()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3777,6 +3778,33 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// Hydra: 返事の ```hydra から head を拾い（壊れた行・知らないエージェントは捨て、上限で切る）、
+    /// 采配の門の書式（Gate.parse が読める・dispatch / model / by が入る）にする
+    static func hydraReadsHeads() {
+        let reply = """
+        並列で回します。
+        ```hydra
+        [{"name":"Fix README!","agent":"codex","model":"gpt-5.5","task":"README","prompt":"README の手順を直して"},
+         {"name":"x","agent":"cursor","prompt":"捨てる"},
+         {"name":"tests","agent":"Grok","prompt":"  "},
+         {"agent":"grok","task":"p0 検査","prompt":"p0 に検査を足して"}]
+        ```
+        """
+        let heads = Hydra.heads(in: reply)
+        assert(heads.map(\.name) == ["fix-readme", "p0"], "\(heads.map(\.name))")
+        assert(heads[0].agent == .codex && heads[0].model == "gpt-5.5" && heads[1].agent == .grok)
+        assert(Hydra.heads(in: "```hydra\nnot json\n```").isEmpty)
+        let many = "```hydra\n[" + (1...6).map { "{\"agent\":\"claude\",\"name\":\"h\($0)\",\"prompt\":\"p\"}" }.joined(separator: ",") + "]\n```"
+        assert(Hydra.heads(in: many).count == Hydra.maxHeads)
+        let text = Hydra.gateText(heads[0], by: "lead-1", at: Date(timeIntervalSince1970: 0))
+        let request = Gate.parse(path: "/p/memory/gate/x.md", text: text)
+        assert(request?.dispatch == .codex && request?.model == "gpt-5.5" && request?.by == "lead-1"
+               && request?.call == "hydra-fix-readme" && request?.name == "fix-readme", "\(String(describing: request))")
+        assert(request?.instruction.contains("README の手順を直して") == true)
+        let report = Hydra.report(name: "fix-readme", agent: "codex", status: "done", workspace: "/w", branch: "at22/fix-readme", reply: "直した")
+        assert(report.hasPrefix("[Hydra] head「fix-readme」（codex）") && report.contains("branch: at22/fix-readme") && report.hasSuffix("直した"))
+    }
+
     /// 壁打ちの「HANDOFF に書く」: ノートが無ければ sessions/HANDOFF.md を作り、あれば末尾に足す
     @MainActor static func handoffIsCreatedWhenMissing() {
         let projects = FileManager.default.temporaryDirectory.appendingPathComponent("p0-handoff-\(UUID().uuidString)")

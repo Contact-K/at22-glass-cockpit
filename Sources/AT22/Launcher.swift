@@ -208,7 +208,7 @@ enum Launcher {
             out.append(contentsOf: ["--effort", config.effort])
         }
         // 計画を PLAN: / NOW: / DONE: 行で書いてもらう約束（今のモデルには TaskCreate が無い）
-        out.append(contentsOf: ["--append-system-prompt", Sparring.planProtocol])
+        out.append(contentsOf: ["--append-system-prompt", Sparring.planProtocol + "\n\n" + Hydra.protocolText])
         if !config.allowedTools.isEmpty {
             out.append("--allowedTools")
             out.append(contentsOf: config.allowedTools)

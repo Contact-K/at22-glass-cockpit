@@ -95,6 +95,8 @@ enum Gate {
         /// 采配で作るワークスペースの名前と基点
         var name = ""
         var base = ""
+        /// 采配で起こすモデル（Hydra の head が指定した時だけ）
+        var model = ""
 
         /// 待たせている時間。司令塔は Bash の中で止まっているので、必ず出す
         func waited(now: Date) -> TimeInterval { max(0, now.timeIntervalSince(issued)) }
@@ -142,7 +144,8 @@ enum Gate {
                        instruction: Memory.body(text),
                        dispatch: front["dispatch"].flatMap(Backend.init(rawValue:)),
                        name: front["name"] ?? front["to"] ?? call,
-                       base: front["base"] ?? "HEAD")
+                       base: front["base"] ?? "HEAD",
+                       model: front["model"] ?? "")
     }
 
     /// ISO8601。壊れていたら nil を返して `distantPast` に落とす（経過時間が伸び続けるだけで落ちない）

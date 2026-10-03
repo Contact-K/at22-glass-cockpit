@@ -632,7 +632,10 @@ final class Cockpit {
                 mergeMCP(call: call, thread: thread)
 
             case let .said(agent, session, text, speaker, thinking, at):
-                if speaker == .model, !thinking, agent == session { adoptPlan(text, session: session, at: at) }
+                if speaker == .model, !thinking, agent == session {
+                    adoptPlan(text, session: session, at: at)
+                    adoptHydra(text, session: session, at: at)
+                }
                 if speaker == .human, let i = echoes[session]?.firstIndex(of: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                     echoes[session]?.remove(at: i)
                     break
@@ -845,9 +848,10 @@ final class Cockpit {
     @discardableResult
     func answer(_ request: Gate.Request, _ verdict: Gate.Verdict,
                 revised: String = "", at: Date = Date()) -> NoteSaveResult {
+        // 門が置かれたプロジェクトへ書く（Hydra の門は選択中とは別の会話のプロジェクトにあることがある）
         let result = saveNote(path: Gate.verdictPath(for: request),
                               text: Gate.verdictText(verdict, at: at, revised: revised),
-                              creating: true)
+                              creating: true, project: Gate.projectDirectory(of: request.id).map { URL(fileURLWithPath: $0) })
         guard result == .saved else { return result }
         refreshGates()
         if let backend = request.dispatch, verdict != .deny {
@@ -861,14 +865,15 @@ final class Cockpit {
 
     private func dispatch(_ request: Gate.Request, backend: Backend, instruction: String) {
         let gate = request.id
-        let cwd = selectedSession.flatMap(cwd(of:)) ?? ""
+        // 頼んだ司令塔の作業場所から（Hydra は門に by: で会話が書いてある）。分からなければ選択中の会話
+        let cwd = cwd(of: request.by) ?? selectedSession.flatMap(cwd(of:)) ?? ""
         let level = gateLevel
         Task {
             let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
             guard let repo else {
                 return writeResult(gate, status: "failed", fields: [("error", "司令塔の作業ディレクトリがリポジトリの外")])
             }
-            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: "",
+            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: request.model,
                             prompt: instruction, level: level) { [weak self] path, session, error in
                 guard let self else { return }
                 if let session, error == nil {
@@ -894,10 +899,58 @@ final class Cockpit {
         guard let gate = dispatched.removeValue(forKey: session) else { return }
         let path = cwd(of: session) ?? ""
         let text = reply ?? messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.text ?? ""
+        let branch = Worktree.branch(for: (path as NSString).lastPathComponent)
         writeResult(gate, status: status,
-                    fields: [("workspace", path), ("branch", Worktree.branch(for: (path as NSString).lastPathComponent)),
+                    fields: [("workspace", path), ("branch", branch),
                              ("agent", backend(of: session).rawValue), ("session", session)],
                     summary: String(text.suffix(4000)))
+        // Hydra の head なら、頼んだ司令塔へ次のメッセージとして返す
+        let front = Memory.frontMatter((try? String(contentsOfFile: gate, encoding: .utf8)) ?? "")
+        if let call = front["call"], call.hasPrefix("hydra-"), let lead = front["by"], !lead.isEmpty {
+            deliverHydra(Hydra.report(name: front["name"] ?? call, agent: backend(of: session).rawValue, status: status,
+                                      workspace: path, branch: branch, reply: text), to: lead)
+        }
+    }
+
+    // MARK: Hydra
+
+    /// 起こした head の重複を防ぐ（会話 → 名前）。transcript を読み直しても二度起こさない
+    private var hydraSeen: Set<String> = []
+    /// 司令塔が作業中で渡せなかった報告。手が空いたら送る
+    private var hydraOutbox: [String: [String]] = [:]
+
+    /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
+    /// Lv.4 / Lv.5 のプロジェクトなら人に訊かずに許可する
+    private func adoptHydra(_ text: String, session: String, at: Date) {
+        guard text.contains("```hydra"), !sparSessions.contains(session),
+              Date().timeIntervalSince(at) < 120, let cwd = cwd(of: session) else { return }
+        let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        let memory = project.appendingPathComponent("memory")
+        let level = Gate.level(memoryRoot: memory)
+        for head in Hydra.heads(in: text) where hydraSeen.insert(session + "#" + head.name).inserted {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            let path = memory.appendingPathComponent("\(Gate.directory)/\(stamp)-hydra-\(head.name).md").path
+            let text = Hydra.gateText(head, by: session, at: Date())
+            guard saveNote(path: path, text: text, creating: true, project: project) == .saved else {
+                appendLaunchError("Hydra の門を書けない: \(head.name)")
+                continue
+            }
+            if level == .auto || level == .unattended, let request = Gate.parse(path: path, text: text) {
+                answer(request, .allow)
+            }
+        }
+        refreshGates()
+    }
+
+    private func deliverHydra(_ report: String, to lead: String) {
+        if !isWorking(lead), canSend(to: lead), send(report, to: lead) { return }
+        hydraOutbox[lead, default: []].append(report)
+    }
+
+    /// 司令塔のターンが終わった時、溜まっていた報告を1通にまとめて送る
+    private func flushHydra(_ session: String) {
+        guard let pending = hydraOutbox.removeValue(forKey: session), !pending.isEmpty else { return }
+        if !send(pending.joined(separator: "\n\n---\n\n"), to: session) { hydraOutbox[session] = pending }
     }
 
     /// 承認の強さを変える。ファイルが正なので、選んだその場で書く
@@ -1228,6 +1281,7 @@ final class Cockpit {
 
         case let .turnEnded(tokens):
             reportDispatched(session, status: "done", reply: streaming[session])
+            defer { flushHydra(session) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             streaming[session] = nil
             stopping.remove(session)

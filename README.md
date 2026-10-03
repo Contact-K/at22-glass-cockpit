@@ -29,6 +29,7 @@ AT22 は初期状態では **読み取るだけ** で、
 
 - **競走** … 新規の板でエージェントを2体以上選ぶと、同じ基点のコミットから1本ずつ worktree を作って同じ指示を送る。管制塔で1組に束ね、⋯ の **採る** で勝ちを残す。負けは未コミットの変更の数を見せてから変更ごと消す（枝は `-d` なので、コミットを積んだものは残る）
 - **采配** … 司令塔が門に `dispatch: grok` などを書くと、許可した時だけ AT22 がワークスペースを作ってそのエージェントを起こし、最初のターンの結果を `<id>.result` に書き戻す（書式は [docs/orchestrator-gate.md](docs/orchestrator-gate.md)）
+- **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.4 / Lv.5 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
 - **レビューと出荷** … 07 REVIEW と 08 GIT。ハンクのステージ・コミット・push・PR は**押した時だけ**（PR は `gh` が自分の認証で作る）
 
 **入力欄の左はモデルとエフォート**（会話・壁打ち）。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`）。
@@ -143,7 +144,7 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
   Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Snowman.swift \
   Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift \
   Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift \
-  Sources/AT22/Sparring.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+  Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 ```
 
 Foundation だけで組んであるので Linux でも通る（`FileManager.replaceItemAt` が Linux で常に失敗するので、
