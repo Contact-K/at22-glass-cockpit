@@ -59,8 +59,15 @@ enum Worktree {
         return trimmed.isEmpty ? "task" : trimmed
     }
 
-    nonisolated static func location(repo: String, name: String) -> String {
-        (repo as NSString).appendingPathComponent(directory + "/" + slug(name))
+    /// 置き場の根（10 SETTINGS の 06 Worktrees）。空ならリポジトリの中の `.claude/worktrees`
+    static let rootKey = "worktreeRoot"
+
+    nonisolated static func location(repo: String, name: String,
+                                     root: String = UserDefaults.standard.string(forKey: rootKey) ?? "") -> String {
+        let root = (root.trimmingCharacters(in: .whitespaces) as NSString).expandingTildeInPath
+        guard !root.isEmpty else { return (repo as NSString).appendingPathComponent(directory + "/" + slug(name)) }
+        // 外に置く時はリポジトリ名で分ける。分けないと別のリポジトリの同じ名前とぶつかる
+        return (root as NSString).appendingPathComponent((repo as NSString).lastPathComponent + "/" + slug(name))
     }
 
     /// AT22 が作る枝の名前

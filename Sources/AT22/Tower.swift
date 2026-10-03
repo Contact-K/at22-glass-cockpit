@@ -139,7 +139,7 @@ enum TowerData {
 // MARK: - 管制塔
 
 /// タイルの ⋯ から選ぶもの
-enum TileAction { case branch, terminal, pick, delete, forget }
+enum TileAction { case branch, terminal, pick, delete, forget, retry }
 
 /// 00 // TOWER。見出し・数、プロジェクトごとの木（本体は見出し行、子は分岐元の右、競走は点線の枠）
 struct TowerScreen: View {
@@ -449,7 +449,7 @@ private struct TowerNode: View {
 
     private var statusText: String {
         if tile.creating { return "作成中" }
-        if tile.failed != nil { return "失敗 · ⋯ で閉じる" }
+        if tile.failed != nil { return "失敗 · ⋯ で再試行か閉じる" }
         return tile.state == .work || tile.state == .wait ? (ActWords.jp[tile.act] ?? tile.state.jp) : tile.state.jp
     }
 
@@ -467,6 +467,7 @@ private struct TowerNode: View {
         Menu {
             Button("ここから生やす") { onAct(.branch, tile) }
             Button("Terminal で開く") { onAct(.terminal, tile) }
+            if tile.failed != nil { Button("再試行") { onAct(.retry, tile) } }
             if tile.race != nil { Button("採る · 競走の勝者に") { onAct(.pick, tile) } }
             if !tile.isMain { Button(tile.failed != nil ? "閉じる" : "消す") { onAct(.delete, tile) } }
             if tile.isMain { Button("登録を外す") { onAct(.forget, tile) } }

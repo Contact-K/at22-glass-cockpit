@@ -66,6 +66,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory）新しい会話を送って立ち上がるか・「履歴 ▴」で戻れるか、壁打ちの棚との入れ替え（ポップオーバーは撮れない）
 - （orca-v10-memory）司令塔が each/<ID>.md と SHARED.md を本当に書くか、「清書 ▸」で PROJECT.md が書かれるか（許可の規則 `Write(//…)` が効くか）
 - （orca-v10-memory）⌘, で 10 SETTINGS に飛ぶか（別窓はやめた）、CLI の場所の欄・ログインの札（TextField は撮れない）
+- （orca-v10-memory）タイルの「再試行」（失敗を起こしにくいので未確認）、置き場を外に書いた時の作成と削除、起こした直後の会話に題が付くか
 
 ## 残り・後で話す
 

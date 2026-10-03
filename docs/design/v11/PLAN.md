@@ -60,3 +60,7 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
 - 10 SETTINGS を再編し、⌘, の別窓（ThresholdSettings）を取り込んで設定を1か所にした。⌘, はこのタブを開く。
   行は 01 Approval（Lv.1〜5）/ 02 Agents（既定＋各 CLI の場所・ログイン、場所の欄は見つからない時か手で書いた時だけ）/
   03 Launch（起こすかどうか）/ 04 Skills / 05 Display（参照回数の閾値を含む）/ 06 Worktrees
+- 途中だったものを仕上げた: 作れなかったワークスペースの「再試行」（タイルの ⋯、同じ分岐元・エージェント・指示・段で作り直す）／
+  置き場の設定（10 SETTINGS 05 Worktrees。空ならリポジトリの中、書けば `<根>/<リポジトリ名>/<名前>`）／
+  会話の題（起こした時点で最初の指示から付ける。grok・hermes も台帳から。`[壁打ち…]` の頭は落とす）／
+  壁打ちの「HANDOFF に書く」も本体の記憶DBへ。設定の並びは Approval / Agents / Launch / Display / Worktrees / Skills

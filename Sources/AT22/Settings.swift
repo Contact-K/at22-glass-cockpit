@@ -26,6 +26,7 @@ struct SettingsScreen: View {
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
     @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
+    @AppStorage(Worktree.rootKey) private var worktreeRoot = ""
     /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
     @State private var logins: [Backend: String] = [:]
     @State private var loginProblem: String?
@@ -103,7 +104,42 @@ struct SettingsScreen: View {
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
                 }
             }
-            row("04", "Skills", "門の手順と、入っているスキル") {
+            row("04", "Display", "表示と片付け") {
+                HStack(spacing: 8) {
+                    Button(showThinking ? "■ 思考を見せる" : "□ 思考を見せる") { showThinking.toggle() }
+                        .buttonStyle(SumiButtonStyle(primary: showThinking, size: 11))
+                    Button("止まったエージェントを畳む") {
+                        cockpit.clearIdleAgents(now: Date())
+                        flash("止まったエージェントを畳みました")
+                    }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    Button("全部まっさらに") {
+                        cockpit.clear()
+                        flash("ここから先だけを数えます")
+                    }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                }
+                HStack(spacing: 8) {
+                    Button("−") { threshold = max(2, threshold - 1) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    Text("\(threshold) 回").font(.mono(13)).frame(width: 44)
+                    Button("＋") { threshold = min(Cockpit.maxReadTicks, threshold + 1) }
+                        .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    // 実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）
+                    Text("同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑ を立てる")
+                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
+                }
+            }
+            row("05", "Worktrees", "置き場 · 新しく作るワークスペースから効く") {
+                TextField("空ならリポジトリの中（<リポジトリ>/" + Worktree.directory + "）· 例 ~/worktrees", text: $worktreeRoot)
+                    .textFieldStyle(.plain).font(.mono(13))
+                    .padding(.horizontal, 10).frame(height: 38)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                Text(Worktree.location(repo: "<リポジトリ>", name: "名前", root: worktreeRoot)
+                     + "  ·  枝は " + Worktree.branch(for: "名前"))
+                    .font(.mono(11)).foregroundStyle(Palette.Light.fg2).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            row("06", "Skills", "門の手順と、入っているスキル") {
                 HStack(spacing: 12) {
                     Button(skill == .current ? "入れ直す" : "門の手順をインストール") { installSkill() }
                         .buttonStyle(SumiButtonStyle(primary: skill != .current, size: 11))
@@ -136,39 +172,6 @@ struct SettingsScreen: View {
                     }
                 }
                 .task { await cockpit.refreshSkills(repo: nil) }
-            }
-            row("05", "Display", "表示と片付け") {
-                HStack(spacing: 8) {
-                    Button(showThinking ? "■ 思考を見せる" : "□ 思考を見せる") { showThinking.toggle() }
-                        .buttonStyle(SumiButtonStyle(primary: showThinking, size: 11))
-                    Button("止まったエージェントを畳む") {
-                        cockpit.clearIdleAgents(now: Date())
-                        flash("止まったエージェントを畳みました")
-                    }
-                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Button("全部まっさらに") {
-                        cockpit.clear()
-                        flash("ここから先だけを数えます")
-                    }
-                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
-                }
-                HStack(spacing: 8) {
-                    Button("−") { threshold = max(2, threshold - 1) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Text("\(threshold) 回").font(.mono(13)).frame(width: 44)
-                    Button("＋") { threshold = min(Cockpit.maxReadTicks, threshold + 1) }
-                        .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    // 実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）
-                    Text("同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑ を立てる")
-                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
-                }
-            }
-            row("06", "Worktrees", "置き場") {
-                // ponytail: 置き場は各リポジトリの中で固定。外に出したい要望が出たら Worktree.location に根を渡す
-                Text("<リポジトリ>/" + Worktree.directory + "/<名前>  ·  枝は " + Worktree.branch(for: "<名前>"))
-                    .font(.mono(13)).lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 10).frame(height: 38)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
             }
             }
             .frame(width: width, alignment: .leading)

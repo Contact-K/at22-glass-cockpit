@@ -835,6 +835,7 @@ final class Cockpit {
                               allowedTools: Memory.composeTools(dir: dir), level: .normal, writesLevel: false)
         selectedSession = keep
         guard let id = id?.uuidString.lowercased() else { return nil }
+        titles[id] = "清書 · PROJECT.md"
         composing[workspace] = id
         return id
     }
@@ -1010,8 +1011,9 @@ final class Cockpit {
     /// 壁打ちで決めたことを、その作業場所の記憶DB の HANDOFF に足す。ノートが無ければ `sessions/HANDOFF.md` を作る
     /// （以前は既にある時しか書けず、worktree の会話ではたいてい「ありません」で終わっていた）
     func appendHandoff(_ section: String, cwd: String) -> (NoteSaveResult, String) {
-        let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
-        let memory = project.appendingPathComponent("memory")
+        // 記憶DBはリポジトリ本体で1つ（`memoryDirectory(cwd:)`）。worktree の置き場に書くと 04 MEMORY に出ない
+        let memory = URL(fileURLWithPath: memoryDirectory(cwd: cwd))
+        let project = memory.deletingLastPathComponent()
         let manager = FileManager.default
         let candidates = [memory.appendingPathComponent("sessions/HANDOFF.md"), memory.appendingPathComponent("HANDOFF.md")]
             + ((try? manager.contentsOfDirectory(atPath: memory.path)) ?? [])
@@ -1134,6 +1136,8 @@ final class Cockpit {
         // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
         let id = sessionID.uuidString.lowercased()
         let token = UUID()
+        // 題は起こした時点で最初の指示から付ける（transcript が一覧に載るのを待たない）
+        if let title = Self.titleRule(prompt) { titles[id] = title }
 
         do {
             let connection = try ClaudeConnection.start(
@@ -1982,6 +1986,16 @@ final class Cockpit {
         let repo: String
         let name: String
         var error: String?
+        /// 失敗した時に同じ中身で作り直すための材料（「再試行」）
+        var retry: Retry?
+
+        struct Retry: Equatable {
+            let base: String
+            let racer: Racer
+            let prompt: String
+            let level: Gate.Level
+            let thinking: String
+        }
     }
 
     /// 登録したリポジトリ。UserDefaults（AT22 自身の記録はここだけに置く）
@@ -2190,7 +2204,22 @@ final class Cockpit {
             then?(made.path, session?.uuidString.lowercased(), session == nil ? (launchError ?? "起こせなかった") : nil)
         case let .failure(error):
             pendingWorkspaces[path]?.error = "\(error)"
+            pendingWorkspaces[path]?.retry = .init(base: base, racer: racer, prompt: prompt, level: level, thinking: thinking)
             then?(path, nil, "\(error)")
+        }
+    }
+
+    /// 作れなかったワークスペースを同じ中身で作り直す。
+    /// ponytail: 競走の1本として作り直しても競走の束には戻さない（勝ちを決める時に並ばない）
+    func retryWorkspace(_ path: String) {
+        guard let pending = pendingWorkspaces[path], pending.error != nil, let r = pending.retry else { return }
+        pendingWorkspaces[path]?.error = nil
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try Worktree.add(repo: pending.repo, name: r.racer.name, base: r.base) }
+            }.value
+            finishWorkspace(repo: pending.repo, racer: r.racer, base: r.base, parent: nil, result: result,
+                            prompt: r.prompt, level: r.level, thinking: r.thinking, then: nil)
         }
     }
 
@@ -2944,8 +2973,8 @@ final class Cockpit {
         // キャッシュが存在するかチェック（nilもキャッシュされている）
         if titles.keys.contains(sessionID) { return titles[sessionID] ?? nil }
 
-        // codex セッション
-        if backend(of: sessionID) == .codex {
+        // codex / grok / hermes のセッション（AT22 の台帳に最初の指示が残っている）
+        if backend(of: sessionID) != .claude {
             if let record = runRecords.first(where: { $0.id == sessionID }) {
                 let result = Self.titleRule(record.title)
                 titles.updateValue(result, forKey: sessionID)
@@ -2955,11 +2984,9 @@ final class Cockpit {
             return nil
         }
 
-        // claude セッション: transcript から最初のユーザー発言を取得
-        guard let recent = recentSessions.first(where: { $0.id == sessionID }) else {
-            titles.updateValue(nil, forKey: sessionID)
-            return nil
-        }
+        // claude セッション: transcript から最初のユーザー発言を取得。
+        // まだ一覧に無い時は覚えない——起こした直後に nil を覚えると、題が付かないまま残る
+        guard let recent = recentSessions.first(where: { $0.id == sessionID }) else { return nil }
         let firstUserText = Self.firstUserMessage(from: recent.transcriptURL)
         let result = Self.titleRule(firstUserText ?? "")
         titles.updateValue(result, forKey: sessionID)
@@ -2995,7 +3022,11 @@ final class Cockpit {
     nonisolated private static func titleRule(_ text: String) -> String? {
         let firstLine = text.split(separator: "\n", omittingEmptySubsequences: false)
             .first.map(String.init) ?? ""
-        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        var trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        // `[壁打ち · 案を出す]` のような AT22 が付けた頭は題にしない
+        if trimmed.hasPrefix("["), let close = trimmed.firstIndex(of: "]") {
+            trimmed = trimmed[trimmed.index(after: close)...].trimmingCharacters(in: .whitespaces)
+        }
         guard trimmed.count >= 6 else { return nil }
         return trimmed.count > 30
             ? String(trimmed.prefix(27)) + "…"

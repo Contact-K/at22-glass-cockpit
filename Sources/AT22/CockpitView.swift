@@ -696,6 +696,7 @@ struct CockpitView: View {
         case .forget: cockpit.removeProject(tile.id)
         case .delete: overlay = .delete(tile.id)
         case .pick: if let race = tile.race { overlay = .pick(race) }
+        case .retry: cockpit.retryWorkspace(tile.id)
         }
     }
 
