@@ -630,6 +630,7 @@ final class Cockpit {
                 mergeMCP(call: call, thread: thread)
 
             case let .said(agent, session, text, speaker, thinking, at):
+                if speaker == .model, !thinking, agent == session { adoptPlan(text, session: session, at: at) }
                 if speaker == .human, let i = echoes[session]?.firstIndex(of: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                     echoes[session]?.remove(at: i)
                     break
@@ -2274,6 +2275,28 @@ final class Cockpit {
     /// `session` が `nil` なら全セッション、指定があればそのセッションだけ。
     /// 並びは `number` 昇順。同じ番号が複数セッションで衝突するので、同番号のときは
     /// `session` 文字列で決定的に並べる。
+    /// 壁打ちの計画を `PLAN:` 行で受け取った司令塔の分。TaskCreate の無い相手のために AT22 が積む
+    /// （セッション → 積んだ順のキー）。`NOW: n` / `DONE: n` で n 番目の状態を進める
+    private var adoptedPlans: [String: [String]] = [:]
+
+    private func adoptPlan(_ text: String, session: String, at: Date) {
+        guard text.contains("PLAN") || text.contains("NOW") || text.contains("DONE") else { return }
+        let steps = Sparring.planLines(text)
+        var next = (tasks.values.filter { $0.session == session }.map(\.number).max() ?? 0) + 1
+        for step in steps where !tasks.values.contains(where: { $0.session == session && $0.subject == step }) {
+            let key = "\(session)#plan\(next)"
+            tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
+                                     detail: "壁打ちの計画（PLAN: 行で受け取り）", status: .pending, at: at)
+            adoptedPlans[session, default: []].append(key)
+            next += 1
+        }
+        for (n, done) in Sparring.progressLines(text) {
+            guard let keys = adoptedPlans[session], keys.indices.contains(n - 1) else { continue }
+            tasks[keys[n - 1]]?.status = done ? .completed : .inProgress
+            tasks[keys[n - 1]]?.at = at
+        }
+    }
+
     func allTasks(session: String?) -> [RoadmapTask] {
         tasks.values
             .filter { session == nil || $0.session == session }

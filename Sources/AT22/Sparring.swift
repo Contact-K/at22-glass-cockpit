@@ -83,9 +83,36 @@ enum Sparring {
     }
 
     /// 合意した手順を司令塔の計画（05 PLAN は TaskCreate を読む）に積んでもらう1通
+    /// **TaskCreate が無い相手もいる**（対話型の Claude Code では出てこないことがある・2026-10-03 実測）。
+    /// 無ければ `PLAN:` 行で書き写してもらい、AT22 が 05 PLAN に積む。進み具合は `NOW: n` / `DONE: n`
     static func planMessage(_ steps: [String]) -> String {
-        "壁打ちで合意した手順です。この順でタスク（TaskCreate）に積んでください。まだ書き始めなくて構いません。\n"
+        "壁打ちで合意した手順です。まだ書き始めなくて構いません。\n"
+            + "TaskCreate が使えるなら、この順でタスクに積んでください。"
+            + "使えなければ、返事の最後にこの手順を1行ずつ `PLAN: 手順` の形で書き写してください（AT22 が 05 PLAN に積みます）。"
+            + "進める時は手順の番号で `NOW: 1`、終えたら `DONE: 1` と1行書いてください。\n"
             + steps.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+    }
+
+    /// 返事の `PLAN: …` 行（頭の番号は落とす）
+    static func planLines(_ text: String) -> [String] {
+        text.split(separator: "\n").compactMap { line -> String? in
+            let t = line.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "-*` "))
+            guard var rest = value(t, "PLAN") else { return nil }
+            if let dot = rest.firstIndex(where: { $0 == "." || $0 == "．" }), rest[..<dot].allSatisfy(\.isNumber), dot != rest.startIndex {
+                rest = rest[rest.index(after: dot)...].trimmingCharacters(in: .whitespaces)
+            }
+            return rest.isEmpty ? nil : rest
+        }
+    }
+
+    /// 返事の `NOW: n` / `DONE: n` 行（n は計画の手順の番号、1 始まり）
+    static func progressLines(_ text: String) -> [(step: Int, done: Bool)] {
+        text.split(separator: "\n").compactMap { line in
+            let t = line.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "-*` "))
+            if let n = value(t, "DONE").flatMap({ Int($0.prefix { $0.isNumber }) }) { return (n, true) }
+            if let n = value(t, "NOW").flatMap({ Int($0.prefix { $0.isNumber }) }) { return (n, false) }
+            return nil
+        }
     }
 
     /// HANDOFF に足す節

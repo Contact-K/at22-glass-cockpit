@@ -86,6 +86,7 @@ struct P0SelfCheck {
         sparringReadsProposals()
         sentMessageIsNotDoubled()
         inkFollowsTheRunningTool()
+        planArrivesWithoutTaskCreate()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3775,6 +3776,23 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// TaskCreate の無い司令塔は `PLAN:` 行で計画を受け取る。AT22 が 05 PLAN に積み、`NOW:` / `DONE:` で進める。
+    /// 同じ手順は二重に積まない
+    @MainActor static func planArrivesWithoutTaskCreate() {
+        assert(Sparring.planLines("受け取りました。\nPLAN: 1. 凡例を作り直す\n- PLAN：検査を足す\nPLAN:") == ["凡例を作り直す", "検査を足す"])
+        assert(Sparring.progressLines("NOW: 2\nDONE: 1 済み").map(\.step) == [2, 1])
+        let cockpit = Cockpit()
+        let at = Date()
+        func say(_ t: String) { cockpit.apply([.said(agent: "s", session: "s", text: t, speaker: .model, thinking: false, at: at)]) }
+        say("PLAN: 1. 凡例を作り直す\nPLAN: 2. 検査を足す")
+        say("PLAN: 凡例を作り直す")
+        var list = cockpit.allTasks(session: "s")
+        assert(list.map(\.subject) == ["凡例を作り直す", "検査を足す"], "\(list.map(\.subject))")
+        say("DONE: 1\nNOW: 2")
+        list = cockpit.allTasks(session: "s")
+        assert(list[0].status == .completed && list[1].status == .inProgress)
+    }
+
     /// 動作の印は最後の道具から。Bash の swift build の最中は build（以前は think だった）、
     /// その後に考え始めたら think、ファイルを触っている間は書込／読取
     static func inkFollowsTheRunningTool() {
