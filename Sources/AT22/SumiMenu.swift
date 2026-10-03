@@ -68,7 +68,8 @@ struct WedgeMenu: View {
     @Environment(\.frozenTime) private var frozen
 
     private static let tan18 = CGFloat(tan(18 * Double.pi / 180))
-    static let openTime = 0.30, closeTime = 0.22
+    /// 閉じる時は長め・厚め（本人の指示 2026-10-03）。開く 300ms、閉じる 520ms
+    static let openTime = 0.30, closeTime = 0.52
 
     var body: some View {
         let full = frozen != nil || state.settled
@@ -190,13 +191,14 @@ private struct WedgeDots: View {
                 let duration = closing == nil ? WedgeMenu.openTime : WedgeMenu.closeTime
                 let frame = 1.0 / 24
                 let k = min(1, floor(now.timeIntervalSince(start) / frame) * frame / duration)
-                Self.draw(&ctx, size: size, p: closing == nil ? k : 1 - k)
+                Self.draw(&ctx, size: size, p: closing == nil ? k : 1 - k, band: closing == nil ? 0.4 : 0.75)
             }
         }
         .allowsHitTesting(false)
     }
 
-    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, p: Double) {
+    /// - Parameter band: 育ちかけのドットが並ぶ帯の厚み（0…1 の距離で）。閉じる時は厚くして、縮むドットを多く見せる
+    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, p: Double, band: Double = 0.4) {
         guard p > 0 else { return }
         let pc: CGFloat = 16
         let apex = (56 + size.height - 44) / 2
@@ -207,7 +209,7 @@ private struct WedgeDots: View {
         func line(_ y: CGFloat) -> CGFloat { 166 + (y - 56) * 0.325 }
         let maxD = max(line(56), xc - line(56), line(size.height - 44), xc - line(size.height - 44))
         ctx.clip(to: BlueSheet.white(p: 1, size: size))
-        let p2 = p * 1.4
+        let p2 = p * (1 + band)
         var y: CGFloat = 56
         while y < size.height - 44 {
             var x: CGFloat = 0
@@ -215,10 +217,10 @@ private struct WedgeDots: View {
             while x < limit {
                 let d = Double(abs(x + 8 - line(y + 8)) / maxD)
                 let f = p2 - d
-                let s = max(0, min(1, f / 0.4))
+                let s = max(0, min(1, f / band))
                 if s > 0 {
                     let sz = ceil(CGFloat(s) * pc), inset = floor((pc - sz) / 2)
-                    let color = f < 0.08 ? Palette.pink : f < 0.4 ? Palette.blue : Palette.white
+                    let color = f < band * 0.2 ? Palette.pink : f < band ? Palette.blue : Palette.white
                     ctx.fill(Path(CGRect(x: x + inset, y: y + inset, width: sz, height: sz)), with: .color(color))
                 }
                 x += pc

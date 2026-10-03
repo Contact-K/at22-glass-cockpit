@@ -559,7 +559,7 @@ struct CockpitView: View {
         if craneFx == "push" { return CraneStatus(busy: "upload", pose: .idle, state: "PUSHING · 送出中", sub: "送っています") }
         if craneFx == "ok" { return CraneStatus(busy: nil, pose: .one, state: "PUSHED · 送りました", sub: "送り終わりました") }
         if busy {
-            let step = trail.last.map { $0.kind == .write ? "write" : "search" } ?? "think"
+            let step = cockpit.liveInk(cockpit.selectedSession)
             return CraneStatus(busy: step, pose: .idle, state: step.uppercased(), sub: TalkScreen.stepLabel[step] ?? "")
         }
         if cockpit.stoppedCount > 0 {

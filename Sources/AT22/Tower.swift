@@ -91,10 +91,8 @@ enum TowerData {
             case .idle: return "idle"
             case .work:
                 if creating { return "download" }
-                guard let session = node.agents.first(where: { $0.status == .working })?.id,
-                      let touch = cockpit.touches.last(where: { $0.session == session }),
-                      touch.finished == nil else { return "think" }
-                return touch.kind == .write ? "write" : "search"
+                guard let session = node.agents.first(where: { $0.status == .working })?.id else { return "think" }
+                return cockpit.liveInk(session)
             }
         }()
         let last = lead.flatMap { row in

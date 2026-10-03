@@ -128,7 +128,8 @@ struct TalkScreen: View {
                      gate: $gate, onChoose: onChoose, onRewrite: onRewrite, onOther: onOther)
         }
         if cockpit.isWorking(cockpit.selectedSession) {
-            BusyBox(trail: trail, streaming: cockpit.streaming[cockpit.selectedSession ?? ""] ?? "")
+            BusyBox(trail: trail, live: cockpit.liveInk(cockpit.selectedSession),
+                    streaming: cockpit.streaming[cockpit.selectedSession ?? ""] ?? "")
         }
     }
 
@@ -267,7 +268,7 @@ struct TalkScreen: View {
     private var input: some View {
         let working = cockpit.isWorking(cockpit.selectedSession)
         let empty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let now = trail.last.map { $0.kind == .write ? "write" : "search" } ?? "think"
+        let now = cockpit.liveInk(cockpit.selectedSession)
         return HStack(spacing: 0) {
             Text("// ASK C0").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
                 .padding(.horizontal, 14)
@@ -603,12 +604,14 @@ struct Shake: ViewModifier {
 /// ponytail: 何段で終わるかは分からないので、ゲージは 1 秒 1 コマで回すだけ
 private struct BusyBox: View {
     let trail: [(path: String, kind: TouchKind)]
+    /// いまの動作（`Cockpit.liveInk`）。段の並びの最後に置く
+    let live: String
     let streaming: String
     @State private var since = Date()
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
-        let steps = Self.steps(trail)
+        let steps = Self.steps(trail, live: live)
         let now = steps.last ?? "think"
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 0) {
@@ -657,15 +660,15 @@ private struct BusyBox: View {
         .overlay(Rectangle().strokeBorder(Palette.Light.fg, style: StrokeStyle(lineWidth: 2, dash: [6, 4])))
     }
 
-    /// 足跡を段の名前へ。読む＝search、書く＝write、最後は必ず考えている段で終える
-    static func steps(_ trail: [(path: String, kind: TouchKind)]) -> [String] {
+    /// 足跡を段の名前へ。読む＝search、書く＝write、最後はいまの動作（ビルド中なら build）で終える
+    static func steps(_ trail: [(path: String, kind: TouchKind)], live: String) -> [String] {
         var out: [String] = []
         for touch in trail {
             let step = touch.kind == .write ? "write" : "search"
             if out.last != step { out.append(step) }
         }
-        out = Array(out.suffix(3))
-        return out.isEmpty ? ["think"] : out
+        if out.last != live { out.append(live) }
+        return Array(out.suffix(3))
     }
 }
 

@@ -35,6 +35,14 @@ enum NoteSaveResult: Equatable {
     case failed
 }
 
+/// ACTIONS の行の動作の和名（「書込中」の並び）。InkLoader の状態名から引く
+enum TaskInk {
+    static let jp: [String: String] = [
+        "write": "書込中", "search": "読取中", "build": "ビルド中", "upload": "送出中",
+        "download": "取得中", "transfer": "受け渡し中", "handoff": "引継中",
+    ]
+}
+
 struct FileCell: Identifiable {
     let id: String            // 絶対パス
     let name: String
@@ -87,6 +95,8 @@ struct AgentChip: Identifiable {
     let share: Double
     /// 人間の返事待ち（`LiveSession.waiting`）。セッション単位の値なので司令塔にだけ載る
     var waiting: String? = nil
+    /// いまの動作を InkLoader の状態名で（`Cockpit.inkStatus`）。動いている時だけ意味がある
+    var ink: String = "think"
 }
 
 struct CockpitSnapshot {
@@ -2392,7 +2402,8 @@ final class Cockpit {
                 },
                 spent: record.spent,
                 share: share,
-                waiting: waiting))
+                waiting: waiting,
+                ink: Self.inkStatus(record, touching: running?.kind)))
         }
 
         for (id, worker) in mcpWorkers {
@@ -2585,6 +2596,41 @@ final class Cockpit {
     /// 動いている間は「今していること」（例: `検索 grep AT22` / `編集 Cockpit.swift`）、
     /// 止まっていれば「してきたこと」の内訳（例: `検索12 閲覧5 編集2`）。
     /// 線が引けない作業はここでしか見えない
+    /// いまの動作を InkLoader の状態名で。ファイルを触っていれば書込／読取、そうでなければ
+    /// 最後の道具（考えた方が新しければ think）。**Bash の swift build の最中に think を出さない**
+    nonisolated static func inkStatus(_ record: AgentRecord, touching: TouchKind?) -> String {
+        if let touching { return touching == .write ? "write" : "search" }
+        guard let latest = record.latest, let acted = record.actedAt,
+              acted >= (record.thoughtAt ?? .distantPast) else { return "think" }
+        return ink(for: latest.kind, detail: latest.detail)
+    }
+
+    /// 道具の種類 → InkLoader の状態名
+    nonisolated static func ink(for kind: WorkKind, detail: String) -> String {
+        let d = detail.lowercased()
+        switch kind {
+        case .edit: return "write"
+        case .read, .search: return "search"
+        case .build: return "build"
+        case .git:
+            if d.contains("push") || d.contains("pr create") { return "upload" }
+            if d.contains("pull") || d.contains("fetch") || d.contains("clone") { return "download" }
+            return "transfer"
+        case .spawn: return "handoff"
+        case .wait: return "think"
+        case .other:
+            if ["curl", "wget", "install", "brew", "webfetch", "download"].contains(where: d.contains) { return "download" }
+            return "transfer"
+        }
+    }
+
+    /// あるセッションの司令塔がいま何をしているか（管制塔・鶴・会話の処理中の箱が使う）
+    func liveInk(_ session: String?) -> String {
+        guard let session, let record = agents[session] else { return "think" }
+        let touching = touches.last { $0.session == session && $0.agent == session && $0.finished == nil }?.kind
+        return Self.inkStatus(record, touching: touching)
+    }
+
     static func doingText(_ record: AgentRecord, working: Bool, now: Date = Date()) -> String {
         // 最後の行動が「考えること」だったなら、今も考えている。
         // ここを見ないと、1つ前に呼んだツールを今やっているかのように出し続ける
@@ -2990,7 +3036,11 @@ extension Cockpit {
                 switch chip.kind {
                 case .write?: return ("WRITE", "書込中", "write")
                 case .read?:  return ("READ", "読取中", "search")
-                case nil:     return ("THINK", "考え中", "think")
+                case nil:
+                    // ファイルを触っていない道具（ビルド・git・起動…）も、その動作の印で出す
+                    let ink = chip.ink
+                    return (ink == "think" ? "THINK" : ink.uppercased(),
+                            ink == "think" ? "考え中" : TaskInk.jp[ink] ?? "作業中", ink)
                 }
             }()
             return ActionRow(id: chip.id, label: labels[chip.id] ?? "W?",

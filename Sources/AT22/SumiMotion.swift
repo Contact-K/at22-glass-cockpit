@@ -609,7 +609,7 @@ struct Suminagashi: View {
 /// - 会話へ: 左（管制塔の白い三角の先）から右へ、まだ白い面が来ていない青い所を全部覆い、右端から抜ける。
 ///   v11 の V11TabRipple は「<」の窓だけだが、本人の指示（2026-10-03）で滑っていく途中の青い所まで広げた
 /// - 管制塔へ: 右端から左へ、画面の左端まで（退いた所は退いた時点で覆い済み）
-/// - 横: メニューでタブを替えた時。白い面は動かず、右の「<」の窓だけを覆って右列を差し替える
+/// - 横: メニューでタブを替えた時。白い面は動かず、右の「<」の窓だけを右端から左へ覆って右列を差し替える
 struct TabRipple: Equatable {
     enum Kind { case toChat, toTower, side }
     let kind: Kind
@@ -651,7 +651,8 @@ struct TabRippleLayer: View {
         ctx.clip(to: window)
         DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16, mid: Palette.Blue.fg3) { x, y in
             let kl = x - 0.37 * abs(y - cy)
-            if ripple.kind == .side { return Double(max(0, min(1, (kl - apex) / 540))) }
+            // 横は右端から「<」の先へ（←）。本人の指示（2026-10-03）。モックは先から右へ
+            if ripple.kind == .side { return Double(max(0, min(1, (w - kl) / (w - apex)))) }
             if ripple.kind == .toChat { return Double(max(0, min(1, (kl - 146) / (w - 146)))) }
             // 白い面が退く速さに合わせ、左ほど遅く覆う（V11TabRipple の戻り）
             let wt = max(0, 1 - abs(y - cy) / half)

@@ -85,6 +85,7 @@ struct P0SelfCheck {
         hunkPatchAndGitReaders()
         sparringReadsProposals()
         sentMessageIsNotDoubled()
+        inkFollowsTheRunningTool()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3774,6 +3775,24 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// 動作の印は最後の道具から。Bash の swift build の最中は build（以前は think だった）、
+    /// その後に考え始めたら think、ファイルを触っている間は書込／読取
+    static func inkFollowsTheRunningTool() {
+        let t0 = Date(timeIntervalSince1970: 1000)
+        var record = Cockpit.AgentRecord(session: "s", lastAt: t0)
+        let (kind, word, target) = TranscriptParser.classifyBash("cd /tmp && swift build -c release")
+        record.latest = (kind, word + " " + target)
+        record.actedAt = t0
+        record.thoughtAt = t0.addingTimeInterval(-5)
+        assert(Cockpit.inkStatus(record, touching: nil) == "build", "ビルド中に think: \(Cockpit.inkStatus(record, touching: nil))")
+        record.thoughtAt = t0.addingTimeInterval(3)
+        assert(Cockpit.inkStatus(record, touching: nil) == "think")
+        assert(Cockpit.inkStatus(record, touching: .write) == "write")
+        assert(Cockpit.ink(for: .git, detail: "git push origin") == "upload")
+        assert(Cockpit.ink(for: .git, detail: "git fetch") == "download")
+        assert(Cockpit.ink(for: .spawn, detail: "Explore") == "handoff")
+    }
+
     /// claude に送った発言は送った時に1件出し、transcript から同じ発言が届いても重ねない。
     /// 2回目に同じ文を送った分は（送っていないので）そのまま出す
     @MainActor static func sentMessageIsNotDoubled() {
