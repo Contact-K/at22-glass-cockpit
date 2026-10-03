@@ -263,60 +263,6 @@ struct DecideLayer: View {
 
 // MARK: - メニューの面（ドットの成長）
 
-/// 白い斜線（18°）から離れる順にドットが育って青い面になる。閉じる時は遠い方から縮む。
-/// 育ちきったら時計を止めて、ただの青い面として描く（v10 の `drawMenu`）
-struct MenuDots: View {
-    let opened: Date
-    let closing: Date?
-    /// 開ききったか。持ち主が時刻を見て立てる（ここで判定すると、時計を止める合図が body に届かない）
-    let settled: Bool
-
-    nonisolated static let lineX: CGFloat = 286
-    nonisolated static let tan18 = CGFloat(tan(18 * Double.pi / 180))
-
-    var body: some View {
-        Ticker(fps: 30, paused: settled && closing == nil) { now in
-            Canvas { ctx, size in
-                if closing == nil, settled || Self.isSettled(since: opened, now: now) {
-                    ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Palette.blue))
-                } else {
-                    draw(&ctx, size: size, now: now)
-                }
-            }
-        }
-    }
-
-    /// 開ききるまでの秒数。最も遠い升（≈1500pt）が育ち終わる時刻
-    static let settleTime = 0.12 + 1500 * 0.22 / 1000 + 0.12
-
-    static func isSettled(since opened: Date, now: Date) -> Bool {
-        now.timeIntervalSince(opened) > settleTime
-    }
-
-    nonisolated private func draw(_ ctx: inout GraphicsContext, size: CGSize, now: Date) {
-        let g: CGFloat = 24, cos18 = CGFloat(cos(18 * Double.pi / 180))
-        let t = (now.timeIntervalSince(closing ?? opened)) * 1000
-        var y: CGFloat = 0
-        while y < size.height {
-            var x: CGFloat = 0
-            while x < size.width {
-                let cx = x + g / 2, cy = y + g / 2
-                let d = Double(abs(cx - (Self.lineX + cy * Self.tan18)) * cos18)
-                let p = closing != nil
-                    ? 1 - max(0, min(1, (t - 80 - (1150 - d) * 0.14) / 90))
-                    : max(0, min(1, (t - 120 - d * 0.22) / 120))
-                let sz = CGFloat(jsRound(p * 4) / 4) * (g + 1)
-                if sz > 0 {
-                    ctx.fill(Path(CGRect(x: cx - sz / 2, y: cy - sz / 2, width: sz, height: sz)),
-                             with: .color(Palette.blue))
-                }
-                x += g
-            }
-            y += g
-        }
-    }
-}
-
 // MARK: - 墨流し
 
 /// Stam の Stable Fluids（半ラグランジュの移流＋ヤコビ反復の射影）に渦の閉じ込めを足した、

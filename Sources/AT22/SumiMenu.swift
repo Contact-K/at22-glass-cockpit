@@ -2,392 +2,346 @@ import SwiftUI
 
 // MARK: - メニューの状態
 
-/// 開いているメニュー1つぶん。時刻で動くもの（ドット・線・帯）は始めた時刻だけを持つ
+/// 開いているメニュー1つぶん。時刻で動くもの（ドット・線）は始めた時刻だけを持つ
 struct MenuState: Equatable {
-    struct Band: Equatable {
-        let at: Date
-        /// 下層へ潜る時は左から右、戻る時は右から左へ白帯が横切る
-        let forward: Bool
+    enum Kind: Equatable {
+        /// M。白い面にドットが育つ。root（プロジェクト）→ proj（worktree）→ ws（タブ）
+        case menu
+        /// ⌘J。青い面に斜線、全エージェントを あなた待ち → 作業中 → 完了 → 待機 の順に
+        case jump
     }
+    enum Level: Equatable { case root, project, workspace }
 
+    let kind: Kind
     let opened: Date
     var closing: Date?
     /// ドットが育ちきったか。立つと面の時計が止まる
     var settled = false
-    var path: [Int] = []
+    var level: Level = .workspace
+    /// 見ているプロジェクト（リポジトリのパス）とワークスペース（worktree のパス）
+    var project: String?
+    var workspace: String?
     var highlight: Int
-    var band: Band?
-    var shake = 0
-    /// 開いた直後の1回だけ、項目を順に迫り出させる（`sm-in` の遅延）
-    var fresh = true
+    /// 階層を移るたびに増える。項目の迫り出しをやり直す
+    var turn = 0
 
-    init(opened: Date, highlight: Int) {
+    init(kind: Kind, opened: Date, highlight: Int) {
+        self.kind = kind
         self.opened = opened
         self.highlight = highlight
     }
 }
 
-// MARK: - 項目（実データ）
-
-/// メニューの1項目。葉は `action` を持ち、枝は `kids` を持つ
-struct MenuItem {
-    enum Action {
-        case tab(CockpitMode)
-        case structure(StructFilter)
-        case note(String)
-        case session(String)
-        case recent(RecentSession)
-        /// セッションの選び口（01 TALK の一覧）へ戻る
-        case picker
-        case codex(Cockpit.RunRecord)
-        case newSession
-        case agent(String)
-        case level(Gate.Level)
-        case model(String)
-        case thinking
-        case clearIdle
-        case clearAll
-        case tasks
-        case settings
-        case none
-    }
-
+/// メニューの1行。`key` で何を押したかを持ち主へ返す
+struct MenuRow: Identifiable {
+    let key: String
+    let num: String
     let en: String
     let jp: String
     let desc: String
-    var kids: [MenuItem]? = nil
-    var action: Action = .none
-
-    /// 葉は全部実データから組む（v10 の `MENU` はデモの台本なので、形だけを借りる）。
-    /// ponytail: 一覧の葉は頭から 12 件で切る。足りなければ 02 / 03 の画面の側で選ぶ
-    @MainActor
-    static func tree(cockpit: Cockpit, chips: [AgentChip], showThinking: Bool, launcherReady: Bool) -> [MenuItem] {
-        let labels = Cockpit.agentLabels(chips)
-        let agents = chips.filter { !$0.done }.map { chip in
-            MenuItem(en: labels[chip.id] ?? "W?", jp: chip.role,
-                     desc: (chip.model.isEmpty ? "—" : chip.model) + " · " + (chip.busy ? "稼働" : "待機"),
-                     action: .agent(chip.id))
-        }
-        let notes = cockpit.memory.filter { !$0.isIndex }
-        let handoff = notes.first { $0.file.uppercased().contains("HANDOFF") } ?? notes.first
-        let session = cockpit.selectedSession
-        let canPickModel = session != nil && !cockpit.isWorking(session)
-
-        var sessions: [MenuItem] = [MenuItem(en: "New session", jp: "新しく起こす",
-                                             desc: launcherReady ? "claude / grok / codex を起こす" : "設定で連携を入にすると使える",
-                                             action: .newSession),
-                                    MenuItem(en: "All sessions", jp: "一覧から選ぶ", desc: "実行中・履歴・Codex を全部並べる",
-                                             action: .picker)]
-        sessions += cockpit.liveSessions.prefix(12).map { live in
-            MenuItem(en: String(live.id.prefix(8)).uppercased(), jp: cockpit.title(for: live.id) ?? live.name,
-                     desc: (live.busy ? "実行中 · " : "") + (live.cwd as NSString).lastPathComponent,
-                     action: .session(live.id))
-        }
-        let liveIDs = Set(cockpit.liveSessions.map(\.id))
-        sessions += cockpit.recentSessions.filter { !liveIDs.contains($0.id) }.prefix(12).map { recent in
-            MenuItem(en: String(recent.id.prefix(8)).uppercased(), jp: cockpit.title(for: recent.id) ?? recent.project,
-                     desc: recent.project + " · " + recent.modifiedAt.formatted(.dateTime.month().day().hour().minute()),
-                     action: .recent(recent))
-        }
-        sessions += cockpit.runRecords.filter { !liveIDs.contains($0.id) }.prefix(5).map { record in
-            MenuItem(en: String(record.id.prefix(8)).uppercased(), jp: cockpit.title(for: record.id) ?? record.backend.title,
-                     desc: record.backend.title + " · " + (record.cwd as NSString).lastPathComponent, action: .codex(record))
-        }
-
-        let models = ModelChoice.models(for: session.map(cockpit.backend(of:)) ?? .claude).map { choice in
-            MenuItem(en: choice.title, jp: choice.id, desc: "次に繋いだ時から効く",
-                     action: canPickModel ? .model(choice.id) : .none)
-        }
-        let keys: [(String, String, String)] = [
-            ("M", "メニュー", "開く · ↑↓ 選ぶ · → 開く · ← 戻る"),
-            ("A  B  C", "画面", "01 WORK · 02 STRUCTURE · 03 SPARRING"),
-            ("⇧⌘T", "タスク", "06 Tasks を開く"),
-            ("⇧⌘G", "門を許可", "←→ 選ぶ · ENTER 決定 · 1–3"),
-            ("⌘Return", "送る", "生成中は止める"),
-            ("Esc", "畳む", "手前から順に"),
-        ]
-
-        return [
-            MenuItem(en: "Work", jp: "作業", desc: "会話と門 · いま動いているもの", kids: [
-                MenuItem(en: "Conversation", jp: "会話", desc: "司令塔とのやり取り", action: .tab(.work)),
-                MenuItem(en: "Agents", jp: "エージェント", desc: "C0 と配下 · \(agents.count) 体",
-                         kids: agents.isEmpty ? [MenuItem(en: "None", jp: "居ない", desc: "動いているエージェントはいない")] : agents),
-                MenuItem(en: "Gates", jp: "門", desc: "止まっている指示 · \(cockpit.gates.count) 件", action: .tab(.work)),
-                MenuItem(en: "Tasks", jp: "タスク", desc: "進行表 · ⇧⌘T", action: .tasks),
-                MenuItem(en: "Thinking", jp: "思考", desc: "思考も会話に出す · いま " + (showThinking ? "ON" : "OFF"), action: .thinking),
-                MenuItem(en: "Clear idle", jp: "非アクティブを消す", desc: "動いていないエージェントだけを消す", action: .clearIdle),
-                MenuItem(en: "Clear", jp: "クリア", desc: "溜まった終了済みとファイルの集計を落とす", action: .clearAll),
-            ], action: .tab(.work)),
-            MenuItem(en: "Structure", jp: "構造", desc: "ファイルの関係 · ホバーで浮かぶ", kids: [
-                MenuItem(en: "Files", jp: "ファイル", desc: "種類で分ける", kids: [
-                    MenuItem(en: "All", jp: "全部", desc: "絞り込まない", action: .structure(.all)),
-                    MenuItem(en: "Sources", jp: "実装", desc: FileCategory.source.title, action: .structure(.category(.source))),
-                    MenuItem(en: "Tests", jp: "検査", desc: FileCategory.test.title, action: .structure(.category(.test))),
-                    MenuItem(en: "Docs", jp: "ノート", desc: FileCategory.note.title, action: .structure(.category(.note))),
-                    MenuItem(en: "Config", jp: "設定", desc: FileCategory.config.title, action: .structure(.category(.config))),
-                ]),
-                MenuItem(en: "Ties", jp: "依存", desc: "関係のあるものだけ", action: .structure(.ties)),
-                MenuItem(en: "Hot spots", jp: "熱い所", desc: "書込量の上位 2%", action: .structure(.hot)),
-            ], action: .tab(.structure)),
-            MenuItem(en: "Sparring", jp: "壁打ち", desc: "引き継ぎと記憶", kids: [
-                MenuItem(en: "Handoff", jp: "引き継ぎ", desc: handoff?.relative ?? "まだ無い",
-                         action: handoff.map { .note($0.id) } ?? .tab(.memory)),
-                MenuItem(en: "Memory", jp: "記憶", desc: "記憶DB · \(notes.count) 件",
-                         kids: notes.isEmpty ? [MenuItem(en: "Empty", jp: "空", desc: "エージェントが memory/ に書くと出る", action: .tab(.memory))]
-                                             : notes.prefix(12).map { MenuItem(en: $0.name, jp: $0.kind, desc: $0.summary, action: .note($0.id)) }),
-                MenuItem(en: "Sessions", jp: "過去の回", desc: (session.map { String($0.prefix(8)).uppercased() } ?? "—")
-                         + " ほか \(max(0, sessions.count - 1)) 回", kids: sessions),
-            ], action: .tab(.memory)),
-            MenuItem(en: "Settings", jp: "設定", desc: "承認レベル · モデル · 鍵", kids: [
-                MenuItem(en: "Approval", jp: "承認レベル", desc: "いま " + cockpit.gateLevel.title,
-                         kids: Gate.Level.allCases.map { level in
-                             MenuItem(en: String(level.title.prefix { $0 != " " }).uppercased(),
-                                      jp: String(level.title.drop { $0 != " " }.dropFirst()),
-                                      desc: level.needsConfirmation ? "確認してから切り替える" : level.permissionMode,
-                                      action: .level(level))
-                         }),
-                MenuItem(en: "Models", jp: "モデル",
-                         desc: canPickModel ? (session.flatMap { cockpit.model(of: $0) } ?? "既定") : "走っている間は切り替えられない",
-                         kids: models),
-                MenuItem(en: "Keys", jp: "鍵", desc: "ショートカット一覧",
-                         kids: keys.map { MenuItem(en: $0.0, jp: $0.1, desc: $0.2) }),
-                MenuItem(en: "Preferences", jp: "環境設定", desc: "⌘, · しきい値と連携", action: .settings),
-            ]),
-        ]
-    }
+    var tag: String? = nil
+    var wait = false
+    var id: String { key }
 }
 
-// MARK: - メニューの画面
+/// パンくずの1段（`~/code / AT22 / .worktrees/legend-fix`）
+struct MenuCrumb {
+    let title: String
+    let level: MenuState.Level
+}
 
-/// P5 風のメニュー。白い斜線（18°）が引かれる → 線から離れる順にドットが育って青い面になる →
-/// 項目が線に沿って並ぶ。選んだ項目だけ白い板（右端が尖る）＋刃。下層は面の色が深くなり、白帯が横切る
-struct SumiMenu: View {
+// MARK: - M のメニュー
+
+/// 白い面（会話の「<」の形）に、斜線から離れる順にドットが育って広がる → 項目が斜線に沿って並ぶ。
+/// 選んだ行だけ青い板（右端が尖る）。閉じる時はドットが縮んで消える（v11 `V11MenuW`）
+struct WedgeMenu: View {
     let state: MenuState
-    let items: [MenuItem]
-    let crumbs: [String]
+    let rows: [MenuRow]
+    let crumbs: [MenuCrumb]
+    let branch: String?
     let size: CGSize
     let onPick: (Int) -> Void
     let onHover: (Int) -> Void
-    let onBack: () -> Void
-    let onRoot: () -> Void
-    let onCrumb: (Int) -> Void
+    let onCrumb: (MenuState.Level) -> Void
+    let onUp: () -> Void
     let onClose: () -> Void
 
+    @Environment(\.frozenTime) private var frozen
+
     private static let tan18 = CGFloat(tan(18 * Double.pi / 180))
-    /// 項目の色の段（選んだ所から離れるほど沈む）
-    private static let tones = [Palette.blue, Palette.Blue.fg2, Palette.Blue.fg3, Palette.Blue.dim]
+    static let openTime = 0.30, closeTime = 0.22
 
     var body: some View {
+        let full = frozen != nil || state.settled
         ZStack(alignment: .topLeading) {
-            MenuDots(opened: state.opened, closing: state.closing, settled: state.settled)
-            Rectangle().fill(Palette.depth[min(2, state.path.count)]).opacity(state.path.isEmpty ? 0 : 1)
-            BandSweep(band: state.band, size: size)
             Color.clear.contentShape(Rectangle()).onTapGesture(perform: onClose)
-            content.modifier(ExitFade(closing: state.closing != nil))
+            if full && state.closing == nil {
+                BlueSheet.white(p: 1, size: size).fill(Palette.white)
+            } else {
+                WedgeDots(opened: state.opened, closing: state.closing)
+            }
+            Path { p in
+                p.move(to: CGPoint(x: 166, y: 56))
+                p.addLine(to: CGPoint(x: 166 + (size.height - 100) * 0.325, y: size.height - 44))
+            }
+            .stroke(Palette.blue, lineWidth: 3)
+            .allowsHitTesting(false)
+            BlueSheet.edge(p: 1, size: size).stroke(Palette.blue, lineWidth: 3).allowsHitTesting(false)
+            if full || state.closing != nil { content.modifier(ExitFade(closing: state.closing != nil)) }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .clipped()
     }
 
+    private var window: (start: Int, rows: ArraySlice<MenuRow>) {
+        let n = rows.count, win = 8
+        let start = max(0, min(state.highlight - 3, n - win))
+        return (start, rows[start..<min(n, start + win)])
+    }
+
+    private var top0: CGFloat { (size.height / 2 + 36) - CGFloat(window.rows.count) * 84 / 2 }
+    private func x0(_ y: CGFloat) -> CGFloat { 206 + (y + 30) * Self.tan18 - 40 }
+
     private var content: some View {
-        ZStack(alignment: .topLeading) {
-            // 鶴の影。ponytail: v10 は鶴の形に切り抜いた墨流し。ここは無地の鶴の影で済ませている
-            Mascot(pitch: 64, lookRight: false, pose: .idle, color: Palette.navy, accent: Palette.navy)
-                .offset(x: size.width - 512 + 40, y: size.height - 512 + 60)
-                .allowsHitTesting(false)
-                .modifier(Late(delay: 0.42))
-            Slash(height: size.height, closing: state.closing != nil)
-                .allowsHitTesting(false)
+        let (start, visible) = window
+        return ZStack(alignment: .topLeading) {
             crumbBar
-                .offset(x: 310, y: 24)
-                .modifier(Late(delay: 0.3))
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(placed.enumerated()), id: \.offset) { i, slot in
-                    item(i, slot: slot)
+                .offset(x: x0(top0 - 60) + 18, y: top0 - 60)
+                .modifier(Late(delay: 0.1))
+            ForEach(Array(visible.enumerated()), id: \.element.id) { j, row in
+                let i = start + j
+                let y = top0 + CGFloat(j) * 84
+                item(row, on: i == state.highlight)
+                    .contentShape(Rectangle())
+                    .onHover { if $0 { onHover(i) } }
+                    .onTapGesture { onPick(i) }
+                    .modifier(StepIn(delay: 0.12 + Double(j) * 0.03, trigger: state.turn))
+                    .offset(x: x0(y), y: y)
+            }
+        }
+    }
+
+    private func item(_ row: MenuRow, on: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                Text(row.num).font(.mono(12)).tracking(1.2).foregroundStyle(Palette.pink).frame(width: 30, alignment: .leading)
+                Text(row.en).font(.display(44))
+                Text(row.jp).font(.brush(16))
+            }
+            .lineLimit(1)
+            .foregroundStyle(on ? Palette.white : Palette.blue)
+            .opacity(on ? 1 : 0.6)
+            .padding(EdgeInsets(top: 8, leading: 18, bottom: 6, trailing: 60))
+            if on && !row.desc.isEmpty {
+                Text(row.desc).font(.bodyJP(13)).foregroundStyle(Palette.Blue.fg3).lineLimit(1)
+                    .padding(EdgeInsets(top: 0, leading: 64, bottom: 8, trailing: 60))
+            }
+        }
+        .fixedSize()
+        .background { if on { Chevron(head: 30).fill(Palette.blue).padding(.trailing, -40) } }
+    }
+
+    private var crumbBar: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 0) {
+                if state.level != .root {
+                    Button(action: onUp) { Text("◂").padding(.horizontal, 8).padding(.vertical, 6) }
+                        .buttonStyle(PressStyle())
+                        .help("上の階層へ (←)")
+                    Rectangle().fill(Palette.white.opacity(0.4)).frame(width: 1, height: 22)
+                }
+                ForEach(Array(crumbs.enumerated()), id: \.offset) { i, crumb in
+                    let last = i == crumbs.count - 1
+                    if i > 0 { Text("/").opacity(0.6).padding(.vertical, 6) }
+                    Button { if !last { onCrumb(crumb.level) } } label: {
+                        Text(crumb.title).underline(!last).padding(.horizontal, 6).padding(.vertical, 6)
+                    }
+                    .buttonStyle(PressStyle())
+                    .disabled(last)
                 }
             }
-            .modifier(Shake(trigger: state.shake))
-            VStack(alignment: .leading, spacing: 14) {
-                Text("[×] CLOSE · ESC").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.white)
+            .font(.mono(10)).tracking(Palette.caps(10))
+            .foregroundStyle(Palette.white)
+            .background(Palette.blue)
+            if state.level == .workspace, let branch {
+                Text(branch).font(.mono(10)).tracking(0.6).foregroundStyle(Palette.Light.fg2)
+            }
+        }
+        .fixedSize()
+    }
+}
+
+/// 白い面に育つドット。斜線 x=166+(y-56)·0.325 から離れる順に、16pt の升が ピンク → 青 → 白 で育つ。
+/// 24fps のコマ送り。開く 300ms、閉じる 220ms（閉じる時は逆に縮む）
+private struct WedgeDots: View {
+    let opened: Date
+    let closing: Date?
+
+    var body: some View {
+        Ticker(fps: 24) { now in
+            Canvas { ctx, size in
+                let start = closing ?? opened
+                let duration = closing == nil ? WedgeMenu.openTime : WedgeMenu.closeTime
+                let frame = 1.0 / 24
+                let k = min(1, floor(now.timeIntervalSince(start) / frame) * frame / duration)
+                Self.draw(&ctx, size: size, p: closing == nil ? k : 1 - k)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, p: Double) {
+        guard p > 0 else { return }
+        let pc: CGFloat = 16
+        let apex = (56 + size.height - 44) / 2
+        let xc = size.width - 394, xt = size.width - 540
+        func edge(_ y: CGFloat) -> CGFloat {
+            y < apex ? xc - (y - 56) / (apex - 56) * (xc - xt) : xt + (y - apex) / (size.height - 44 - apex) * (xc - xt)
+        }
+        func line(_ y: CGFloat) -> CGFloat { 166 + (y - 56) * 0.325 }
+        let maxD = max(line(56), xc - line(56), line(size.height - 44), xc - line(size.height - 44))
+        ctx.clip(to: BlueSheet.white(p: 1, size: size))
+        let p2 = p * 1.4
+        var y: CGFloat = 56
+        while y < size.height - 44 {
+            var x: CGFloat = 0
+            let limit = edge(y < apex ? y + pc : y)
+            while x < limit {
+                let d = Double(abs(x + 8 - line(y + 8)) / maxD)
+                let f = p2 - d
+                let s = max(0, min(1, f / 0.4))
+                if s > 0 {
+                    let sz = ceil(CGFloat(s) * pc), inset = floor((pc - sz) / 2)
+                    let color = f < 0.08 ? Palette.pink : f < 0.4 ? Palette.blue : Palette.white
+                    ctx.fill(Path(CGRect(x: x + inset, y: y + inset, width: sz, height: sz)), with: .color(color))
+                }
+                x += pc
+            }
+            y += pc
+        }
+    }
+}
+
+// MARK: - ⌘J
+
+/// 斜線の世界。青い面が斜線（286→578）から開き、項目が線に沿って並ぶ。選んだ行だけ白い板
+struct JumpMenu: View {
+    let state: MenuState
+    let rows: [MenuRow]
+    let size: CGSize
+    let onPick: (Int) -> Void
+    let onHover: (Int) -> Void
+    let onClose: () -> Void
+
+    @State private var reveal = 0
+    @Environment(\.frozenTime) private var frozen
+
+    private static let tan18 = CGFloat(tan(18 * Double.pi / 180))
+
+    var body: some View {
+        let n = rows.count, win = 8
+        let start = max(0, min(state.highlight - 3, n - win))
+        let visible = Array(rows[start..<min(n, start + win)].enumerated())
+        ZStack(alignment: .topLeading) {
+            // 斜線から全面へ開く（`v11open` 260ms・6コマ）
+            Rectangle().fill(Palette.blue)
+                .clipShape(OpenFromSlash(k: CGFloat(frozen != nil ? 6 : reveal) / 6))
+            Color.clear.contentShape(Rectangle()).onTapGesture(perform: onClose)
+            Path { p in
+                p.move(to: CGPoint(x: 286, y: 0))
+                p.addLine(to: CGPoint(x: 286 + size.height * Self.tan18, y: size.height))
+            }
+            .stroke(Palette.white, lineWidth: 3)
+            .allowsHitTesting(false)
+            HStack(spacing: 16) {
+                Text("⌘J JUMP 移動").font(.mono(10)).tracking(Palette.caps(10))
+                    .foregroundStyle(Palette.blue)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Palette.white)
+                Text("あなた待ち → 作業中 → 完了 → 待機 · ⌘1–6 で直に").font(.mono(9)).tracking(1.1)
+                    .foregroundStyle(Palette.Blue.fg3)
+            }
+            .offset(x: 310, y: 24)
+            .modifier(Late(delay: 0.26))
+            if rows.isEmpty {
+                Text("動いているエージェントはいない").font(.bodyJP(15)).foregroundStyle(Palette.white)
+                    .offset(x: 360, y: 140)
+            }
+            ForEach(visible, id: \.element.id) { j, row in
+                let i = start + j, on = i == state.highlight
+                let y = 110 + CGFloat(j) * 82
+                item(row, on: on)
+                    .contentShape(Rectangle())
+                    .onHover { if $0 { onHover(i) } }
+                    .onTapGesture { onPick(i) }
+                    .modifier(StepIn(delay: 0.08 + Double(j) * 0.03, trigger: 0))
+                    .offset(x: 286 + (y + 30) * Self.tan18 + 28, y: y)
+            }
+            VStack(alignment: .leading, spacing: 12) {
                 Mascot(pitch: 9, lookRight: true, pose: .one, color: Palette.white)
+                Text("[×] CLOSE · ESC").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.white)
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onClose)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .padding(.leading, 40)
             .padding(.bottom, 64)
-            .modifier(Late(delay: 0.3))
+            .modifier(Late(delay: 0.26))
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .modifier(ExitFade(closing: state.closing != nil))
+        .task {
+            guard frozen == nil else { return }
+            for k in 1...6 { try? await Task.sleep(for: .milliseconds(43)); reveal = k }
         }
     }
 
-    // MARK: 並べ方
-
-    private struct Slot {
-        let top: CGFloat
-        let font: CGFloat
-        let distance: Int
-    }
-
-    /// 選んだ項目を大きく、離れるほど小さく。全体を縦の中央に置き、線に沿って右へずらす
-    private var placed: [Slot] {
-        // 一覧が縮んだ時に、選んでいた番号が外へはみ出さないように詰める（v10 の `Math.min(mh, len-1)`）
-        let highlight = min(state.highlight, max(0, items.count - 1))
-        let sizes: [(CGFloat, CGFloat, Int)] = items.indices.map { i in
-            let d = abs(i - highlight)
-            let f: CGFloat = d == 0 ? (state.path.isEmpty ? 112 : 96) : d == 1 ? 44 : 34
-            return (f, d == 0 ? f * 1.12 + 40 : f * 1.32, d)
-        }
-        let total = sizes.reduce(0) { $0 + $1.1 } + 12
-        var y = size.height / 2 - total / 2
-        return sizes.map { f, hh, d in
-            defer { y += hh + 6 }
-            return Slot(top: y, font: f, distance: d)
-        }
-    }
-
-    private func item(_ i: Int, slot: Slot) -> some View {
-        let it = items[i]
-        let on = slot.distance == 0
-        let tone = Self.tones[min(slot.distance, 3)]
-        let number = state.path.map { String($0 + 1) }.joined(separator: "-")
-            + (state.path.isEmpty ? "" : "-") + String(format: "%02d", i + 1)
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                Text(number).font(.mono(11)).tracking(Palette.caps(11))
-                    .foregroundStyle(on ? Palette.Light.fg2 : tone)
-                Text(it.en).font(.display(slot.font))
-                    .foregroundStyle(on ? Palette.blue : tone)
-                Text(it.jp).font(.brush(14))
-                    .foregroundStyle(on ? Palette.blue : Self.tones[min(slot.distance + 1, 3)])
+    private func item(_ row: MenuRow, on: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                Text(row.num).font(.mono(12)).tracking(1.2)
+                    .foregroundStyle(on ? Palette.pink : Palette.white).frame(width: 34, alignment: .leading)
+                Text(row.en).font(.display(44))
+                Text(row.jp).font(.brush(16))
+                if let tag = row.tag {
+                    HStack(spacing: 8) {
+                        if row.wait { Blink() }
+                        Text(tag).font(.mono(10)).tracking(Palette.caps(10))
+                    }
+                }
             }
             .lineLimit(1)
-            .padding(on ? EdgeInsets(top: 4, leading: 20, bottom: 2, trailing: 44)
-                        : EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-            if on {
-                HStack(spacing: 14) {
-                    Text(it.desc + (it.kids.map { "  ▸ \($0.count)" } ?? ""))
-                        .font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
-                    Text("→ 開く · ← 戻る · M 閉じる").font(.mono(9)).tracking(Palette.caps(9))
-                        .foregroundStyle(Palette.Light.fg3)
-                }
-                .padding(EdgeInsets(top: 2, leading: 20, bottom: 10, trailing: 44))
+            .foregroundStyle(on ? Palette.blue : Palette.white)
+            .opacity(on ? 1 : 0.55)
+            .padding(EdgeInsets(top: 8, leading: 18, bottom: 6, trailing: 60))
+            if on && !row.desc.isEmpty {
+                Text(row.desc).font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
+                    .padding(EdgeInsets(top: 0, leading: 68, bottom: 8, trailing: 60))
             }
         }
         .fixedSize()
-        .background {
-            if on { Chevron(head: 22, skew: 18, origin: 1).fill(Palette.white) }
-        }
-        .overlay(alignment: .trailing) {
-            if on {
-                Blade(trigger: "\(i)-\(state.path)")
-                    .frame(width: 150, height: 4)
-                    .offset(x: 156)
-            }
-        }
-        .contentShape(Rectangle())
-        .onHover { if $0 { onHover(i) } }
-        .onTapGesture { onPick(i) }
-        .modifier(StepIn(delay: state.fresh ? 0.38 + Double(i) * 0.045 : 0, trigger: state.path.count))
-        .offset(x: 310 + slot.top * Self.tan18, y: slot.top)
+        .background { if on { Chevron(head: 30).fill(Palette.white).padding(.trailing, -40) } }
     }
+}
 
-    private var crumbBar: some View {
-        HStack(spacing: 0) {
-            Button(action: onRoot) {
-                Text("00 MENU").padding(.horizontal, 10).padding(.vertical, 6)
-                    .foregroundStyle(Palette.blue).background(Palette.white)
-            }
-            .buttonStyle(PressStyle())
-            ForEach(Array(crumbs.enumerated()), id: \.offset) { k, crumb in
-                Rectangle().fill(Palette.white).frame(width: 28, height: 1)
-                Button { onCrumb(k) } label: {
-                    Text(crumb).padding(.horizontal, 10).padding(.vertical, 6)
-                        .overlay(Rectangle().stroke(Palette.white, lineWidth: 1))
-                }
-                .buttonStyle(PressStyle())
-            }
-            if !state.path.isEmpty {
-                Button(action: onBack) { Text("◂ BACK · ←").padding(.horizontal, 8).padding(.vertical, 6) }
-                    .buttonStyle(PressStyle())
-                    .padding(.leading, 20)
-            }
-        }
-        .font(.mono(10)).tracking(Palette.caps(10))
-        .foregroundStyle(Palette.white)
+/// `polygon(286 0,286 0,578 900,578 900)` → 全面。斜線を軸に左右へ開く
+private struct OpenFromSlash: Shape {
+    var k: CGFloat
+
+    nonisolated func path(in r: CGRect) -> Path {
+        let tan18 = CGFloat(tan(18 * Double.pi / 180))
+        let top = 286 * (1 - k), bottom = (286 + r.height * tan18) * (1 - k)
+        let rightTop = 286 + (r.width - 286) * k, rightBottom = 286 + r.height * tan18 + (r.width - 286 - r.height * tan18) * k
+        var p = Path()
+        p.move(to: CGPoint(x: top, y: 0))
+        p.addLine(to: CGPoint(x: rightTop, y: 0))
+        p.addLine(to: CGPoint(x: rightBottom, y: r.height))
+        p.addLine(to: CGPoint(x: bottom, y: r.height))
+        p.closeSubpath()
+        return p
     }
 }
 
 // MARK: - 部品の動き（時計を回さずに、`task` の中で数コマだけ進める）
-
-/// 白い斜線。開く時は 120ms・4コマで引かれ、閉じる時は 300ms 待ってから 130ms で消える
-private struct Slash: View {
-    let height: CGFloat
-    let closing: Bool
-    @State private var drawn: CGFloat = 0
-    @State private var erased: CGFloat = 0
-    @Environment(\.frozenTime) private var frozen
-
-    var body: some View {
-        Path { p in
-            p.move(to: CGPoint(x: MenuDots.lineX, y: 0))
-            p.addLine(to: CGPoint(x: MenuDots.lineX + height * MenuDots.tan18, y: height))
-        }
-        .trim(from: erased, to: drawn)
-        .stroke(Palette.white, lineWidth: 3)
-        .task(id: closing) {
-            if frozen != nil { drawn = 1; return }
-            if !closing {
-                for k in 1...4 { drawn = CGFloat(k) / 4; try? await Task.sleep(for: .milliseconds(30)) }
-            } else {
-                try? await Task.sleep(for: .milliseconds(300))
-                for k in 1...4 { erased = CGFloat(k) / 4; try? await Task.sleep(for: .milliseconds(32)) }
-            }
-        }
-    }
-}
-
-/// 選んだ板の右へ伸びる刃。170ms・4コマ
-private struct Blade: View {
-    let trigger: String
-    @State private var scale: CGFloat = 0
-
-    var body: some View {
-        Rectangle().fill(Palette.white)
-            .scaleEffect(x: scale, anchor: .leading)
-            .task(id: trigger) {
-                scale = 0
-                for k in 1...4 { try? await Task.sleep(for: .milliseconds(42)); scale = CGFloat(k) / 4 }
-            }
-    }
-}
-
-/// 階層を移る時に横切る白帯（220 幅・−18° の斜め）。260ms・8コマ
-private struct BandSweep: View {
-    let band: MenuState.Band?
-    let size: CGSize
-    @State private var step: Int?
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            if let step, let band {
-                let from: CGFloat = band.forward ? -300 : size.width + 260
-                let to: CGFloat = band.forward ? size.width + 260 : -400
-                Rectangle().fill(Palette.white)
-                    .frame(width: 220, height: size.height + 80)
-                    .transformEffect(CGAffineTransform(a: 1, b: 0, c: -MenuDots.tan18, d: 1,
-                                                       tx: MenuDots.tan18 * (size.height + 80) / 2, ty: 0))
-                    .offset(x: from + (to - from) * CGFloat(step) / 8, y: -40)
-            }
-        }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .task(id: band?.at) {
-            guard band != nil else { return }
-            for k in 0...8 { step = k; try? await Task.sleep(for: .milliseconds(32)) }
-            step = nil
-        }
-    }
-}
 
 /// 遅れて現れる（`sm-late`: 指定の時間だけ隠れてから、1コマで出る）
 struct Late: ViewModifier {
@@ -405,7 +359,7 @@ struct Late: ViewModifier {
     }
 }
 
-/// 迫り出し（`sm-in`: 左上 12,4 から 150ms・3コマで定位置へ）
+/// 迫り出し（`v11in`: 左上 12,4 から 160ms・3コマで定位置へ）
 private struct StepIn: ViewModifier {
     let delay: Double
     let trigger: Int
@@ -421,12 +375,12 @@ private struct StepIn: ViewModifier {
                 guard frozen == nil else { return }
                 k = 0
                 try? await Task.sleep(for: .seconds(delay))
-                for step in 1...3 { k = step; try? await Task.sleep(for: .milliseconds(50)) }
+                for step in 1...3 { k = step; try? await Task.sleep(for: .milliseconds(53)) }
             }
     }
 }
 
-/// 閉じる時の引き（`sm-out`: 140ms・3コマで右下へ消える）
+/// 閉じる時の引き（`v11outW`: 140ms・3コマで右下へ消える）
 private struct ExitFade: ViewModifier {
     let closing: Bool
     @State private var k = 0

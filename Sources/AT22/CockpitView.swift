@@ -21,6 +21,8 @@ struct CockpitView: View {
     var shotTab: V11Tab? = nil
     /// `--shot --tower` で管制塔を焼く
     var shotTower = false
+    /// `--shot --menu root|project|workspace|jump` でメニューを開いた所を焼く
+    var shotMenu: String? = nil
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -269,15 +271,25 @@ struct CockpitView: View {
             }
             .environment(\.motionPaused, !windowVisible || menu?.settled == true)
 
-            if let menu {
-                SumiMenu(state: menu, items: menuLevel(menu.path, snap: snap), crumbs: crumbs(menu.path, snap: snap),
-                         size: size,
-                         onPick: { pickMenu($0, snap: snap) },
-                         onHover: { i in self.menu?.highlight = i },
-                         onBack: { menuUp() }, onRoot: { menuShift([], 0) },
-                         onCrumb: { k in menuShift(Array(menu.path.prefix(k + 1)), 0) },
-                         onClose: { hideMenu() })
-                    .zIndex(30)
+            if let menu = self.menu ?? shotMenuState(projects: projects) {
+                let rows = menuRows(menu, projects: projects.isEmpty ? TowerData.projects(cockpit) : projects)
+                Group {
+                    switch menu.kind {
+                    case .menu:
+                        WedgeMenu(state: menu, rows: rows,
+                                  crumbs: menuCrumbs(menu, projects: projects.isEmpty ? TowerData.projects(cockpit) : projects),
+                                  branch: menu.workspace.flatMap { ws in
+                                      TowerData.projects(cockpit).flatMap(\.tiles).first { $0.id == ws }?.branch },
+                                  size: size,
+                                  onPick: { pickMenu($0) }, onHover: { self.menu?.highlight = $0 },
+                                  onCrumb: { menuGo($0) }, onUp: { menuUp() }, onClose: { hideMenu() })
+                    case .jump:
+                        JumpMenu(state: menu, rows: rows, size: size,
+                                 onPick: { pickMenu($0) }, onHover: { self.menu?.highlight = $0 },
+                                 onClose: { hideMenu() })
+                    }
+                }
+                .zIndex(30)
             }
 
             if let overlay {
@@ -619,6 +631,16 @@ struct CockpitView: View {
             setTower(!tower)
             return .handled
         }
+        if press.modifiers == .command, press.characters == "j" {
+            openMenu(.jump)
+            return .handled
+        }
+        if press.modifiers == .command, let n = Int(press.characters), (1...6).contains(n) {
+            let projects = TowerData.projects(cockpit)
+            let rows = jumpRows(projects)
+            if rows.indices.contains(n - 1) { jump(to: String(rows[n - 1].key.dropFirst(2)), projects: projects) }
+            return .handled
+        }
         if press.key == .escape {
             // 手前から順に畳む。一度に全部消すと、戻るつもりで土台まで戻ってしまう
             if overlay != nil { overlay = nil; return .handled }
@@ -673,30 +695,115 @@ struct CockpitView: View {
 
     // MARK: メニュー
 
-    private func openMenu() {
-        guard wipe == nil else { return }
-        let opened = Date()
-        menu = MenuState(opened: opened, highlight: [CockpitMode.work, .structure, .memory].firstIndex(of: mode) ?? 0)
-        // 開ききったら面の時計を止める（以後はただの青い面）
-        after(MenuDots.settleTime + 0.4) { if menu?.opened == opened { menu?.settled = true } }
+    /// いま開いているワークスペース（worktree のパス）と、それを持つプロジェクト
+    private var currentWorkspace: String? { cockpit.selectedSession.flatMap { cockpit.workspacePath(of: $0) } }
+
+    private func project(of workspace: String?, in projects: [TowerProject]) -> TowerProject? {
+        guard let workspace else { return nil }
+        return projects.first { $0.tiles.contains { $0.id == workspace } }
     }
 
-    /// 閉じる。ドットが縮み終わる 560ms 後に外す
+    /// `--shot --menu` の時だけ。開ききった所を1枚焼く
+    private func shotMenuState(projects: [TowerProject]) -> MenuState? {
+        guard shot != nil, let shotMenu else { return nil }
+        var state = MenuState(kind: shotMenu == "jump" ? .jump : .menu, opened: .distantPast, highlight: 1)
+        state.settled = true
+        let all = projects.isEmpty ? TowerData.projects(cockpit) : projects
+        state.project = all.first?.id
+        state.workspace = all.first?.tiles.first { !$0.isMain }?.id
+        state.level = shotMenu == "root" ? .root : shotMenu == "project" ? .project : .workspace
+        return state
+    }
+
+    /// M は白い面（ワークスペースのタブから始める）、⌘J は斜線の世界
+    private func openMenu(_ kind: MenuState.Kind = .menu) {
+        guard wipe == nil else { return }
+        let opened = Date()
+        var state = MenuState(kind: kind, opened: opened, highlight: 0)
+        if kind == .menu {
+            let projects = TowerData.projects(cockpit)
+            state.workspace = currentWorkspace
+            state.project = project(of: currentWorkspace, in: projects)?.id
+            if state.workspace == nil { state.level = state.project == nil ? .root : .project }
+            state.highlight = state.level == .workspace ? (V11Tab.allCases.firstIndex(of: tab) ?? 0) : 0
+        }
+        menu = state
+        after(WedgeMenu.openTime + 0.08) { if menu?.opened == opened { menu?.settled = true } }
+    }
+
+    /// 閉じる。ドットが縮み終わってから外す
     private func hideMenu() {
         guard let state = menu, state.closing == nil else { return }
         menu?.closing = Date()
         menu?.settled = false
-        after(0.56) { if menu?.opened == state.opened { menu = nil } }
+        after(WedgeMenu.closeTime + 0.06) { if menu?.opened == state.opened { menu = nil } }
+    }
+
+    private func menuRows(_ state: MenuState, projects: [TowerProject]) -> [MenuRow] {
+        switch state.kind {
+        case .jump: return jumpRows(projects)
+        case .menu: break
+        }
+        switch state.level {
+        case .root:
+            return projects.map { p in
+                MenuRow(key: "p:" + p.id, num: String(format: "%02d", p.tiles.count), en: p.name, jp: "プロジェクト",
+                        desc: "\(p.tiles.count) worktrees · → で入る")
+            }
+        case .project:
+            let tiles = projects.first { $0.id == state.project }?.tiles ?? []
+            let ordered = tiles.filter(\.isMain) + tiles.filter { !$0.isMain }.sorted { $0.rank < $1.rank }
+            return ordered.map { t in
+                MenuRow(key: "w:" + t.id, num: t.isMain ? "◆" : "·", en: t.name, jp: t.state.jp,
+                        desc: (t.branch ?? "切り離し") + " · → で入る")
+            }
+        case .workspace:
+            let name = state.workspace.map { ($0 as NSString).lastPathComponent } ?? wsName
+            return V11Tab.allCases.map { t in
+                MenuRow(key: "t:" + t.rawValue, num: t.no, en: t.en.capitalized, jp: t.jp,
+                        desc: "\(name) の \(t.jp) · \(t.keys[0].uppercased())")
+            }
+        }
+    }
+
+    /// ⌘J の並び。全ワークスペースのエージェントを あなた待ち → 作業中 → 完了 → 待機 の順に
+    private func jumpRows(_ projects: [TowerProject]) -> [MenuRow] {
+        let stops = Stop.all(cockpit, chips: [])
+        let rows = projects.flatMap(\.tiles).flatMap { tile in tile.rows.map { (tile, $0) } }
+            .sorted { $0.1.status < $1.1.status || ($0.1.status == $1.1.status && $0.1.unread && !$1.1.unread) }
+        return rows.enumerated().map { i, pair in
+            let (tile, row) = pair
+            let stop = stops.first { $0.workspace == tile.id }
+            let state: TileState = [.wait, .work, .fail, .done, .idle][row.status.rawValue]
+            return MenuRow(key: "a:" + row.id, num: i < 6 ? "⌘\(i + 1)" : "", en: tile.name, jp: row.backend.title,
+                           desc: [row.backend.title, cockpit.model(of: row.id) ?? "", "·", row.title]
+                               .filter { !$0.isEmpty }.joined(separator: " "),
+                           tag: row.status == .waiting ? (stop?.stop.title ?? state.jp) : state.jp,
+                           wait: row.status == .waiting)
+        }
+    }
+
+    private func menuCrumbs(_ state: MenuState, projects: [TowerProject]) -> [MenuCrumb] {
+        var crumbs = [MenuCrumb(title: "~/" + "code", level: .root)]
+        if state.level != .root, let p = projects.first(where: { $0.id == state.project }) {
+            crumbs.append(MenuCrumb(title: p.name, level: .project))
+        }
+        if state.level == .workspace, let ws = state.workspace {
+            crumbs.append(MenuCrumb(title: ".worktrees/" + (ws as NSString).lastPathComponent, level: .workspace))
+        }
+        return crumbs
     }
 
     private func menuKey(_ press: KeyPress) -> KeyPress.Result {
         guard let state = menu else { return .ignored }
-        let n = max(1, menuLevel(state.path, snap: cockpit.snapshot(now: Date(), mode: .work)).count)
+        if press.modifiers == .command, press.characters == "j" { hideMenu(); return .handled }
+        let n = max(1, menuRows(state, projects: TowerData.projects(cockpit)).count)
         switch press.key {
         case .downArrow: menu?.highlight = (state.highlight + 1) % n
         case .upArrow: menu?.highlight = (state.highlight + n - 1) % n
-        case .return, .rightArrow: pickMenu(state.highlight, snap: cockpit.snapshot(now: Date(), mode: .work))
-        case .leftArrow, .delete, .escape: menuUp()
+        case .return, .rightArrow: pickMenu(state.highlight)
+        case .leftArrow, .delete: if state.kind == .menu { menuUp() }
+        case .escape: hideMenu()
         default:
             guard press.characters == "m" else { return .ignored }
             hideMenu()
@@ -705,123 +812,61 @@ struct CockpitView: View {
     }
 
     private func menuUp() {
-        guard let path = menu?.path else { return }
-        if path.isEmpty { hideMenu(); return }
-        menuShift(Array(path.dropLast()), path.last ?? 0)
-    }
-
-    /// 階層を移る。白い帯が横切る間（130ms）に中身を差し替える
-    private func menuShift(_ path: [Int], _ highlight: Int) {
         guard let state = menu else { return }
-        menu?.band = MenuState.Band(at: Date(), forward: path.count > state.path.count)
-        menu?.fresh = false
-        after(0.13) {
-            menu?.path = path
-            menu?.highlight = highlight
-            menu?.shake += 1
+        switch state.level {
+        case .workspace: menuGo(.project)
+        case .project: menuGo(.root)
+        case .root: hideMenu()
         }
     }
 
-    private func menuLevel(_ path: [Int], snap: CockpitSnapshot) -> [MenuItem] {
-        var level = MenuItem.tree(cockpit: cockpit, chips: snap.chips, showThinking: showThinking,
-                                  launcherReady: launcherReady)
-        for i in path {
-            guard level.indices.contains(i), let kids = level[i].kids else { return [] }
-            level = kids
-        }
-        return level
+    private func menuGo(_ level: MenuState.Level) {
+        guard menu != nil else { return }
+        menu?.level = level
+        if level == .root { menu?.project = nil }
+        if level != .workspace { menu?.workspace = nil }
+        menu?.highlight = 0
+        menu?.turn += 1
     }
 
-    private func crumbs(_ path: [Int], snap: CockpitSnapshot) -> [String] {
-        path.indices.map { k in
-            let level = menuLevel(Array(path.prefix(k)), snap: snap)
-            let i = path[k]
-            return String(format: "%02d ", i + 1) + (level.indices.contains(i) ? level[i].en.uppercased() : "")
-        }
-    }
-
-    private func pickMenu(_ i: Int, snap: CockpitSnapshot) {
+    private func pickMenu(_ i: Int) {
         guard let state = menu else { return }
-        let level = menuLevel(state.path, snap: snap)
-        let i = min(i, level.count - 1)
-        guard level.indices.contains(i) else { return }
-        let item = level[i]
+        let projects = TowerData.projects(cockpit)
+        let rows = menuRows(state, projects: projects)
+        guard rows.indices.contains(i) else { return }
+        let key = rows[i].key
         menu?.highlight = i
-        if item.kids != nil {
-            menuShift(state.path + [i], 0)
-            return
-        }
-        menu?.shake += 1
-        after(0.11) { perform(item.action) }
-    }
-
-    private var launcherReady: Bool {
-        launcherEnabled && !cockpit.found.isEmpty
-    }
-
-    /// 葉を押した。タブへ移るものは DotWipe で、それ以外はその場で済ませて閉じる
-    private func perform(_ action: MenuItem.Action) {
-        let origin = CGPoint(x: 500, y: 450)
-        // 書きかけの記憶ノートはセッションのプロジェクトに属する。切り替えると捨てることになる。
-        // `case a, b where c` の `where` は最後の1つにしか掛からないので、switch の外で見る
-        if memoryDirty {
-            switch action {
-            case .session, .recent, .codex, .picker: hideMenu(); return
-            default: break
+        let value = String(key.dropFirst(2))
+        switch key.prefix(2) {
+        case "p:":
+            menu?.project = value
+            menuGo(.project)
+        case "w:":
+            menu?.workspace = value
+            menuGo(.workspace)
+        case "t:":
+            guard let to = V11Tab(rawValue: value) else { return }
+            hideMenu()
+            if let ws = state.workspace, ws != currentWorkspace,
+               let tile = projects.flatMap(\.tiles).first(where: { $0.id == ws }) {
+                enter(tile)
+                storedTab = to
+            } else {
+                go(to, origin: CGPoint(x: 500, y: 450), fromMenu: true)
             }
+        case "a:":
+            hideMenu()
+            jump(to: value, projects: projects)
+        default: break
         }
-        switch action {
-        case let .tab(to):
-            go(V11Tab(to), origin: origin, fromMenu: true)
-        case let .structure(filter):
-            structFilter = filter
-            go(.files, origin: origin, fromMenu: true)
-        case let .note(path):
-            if !memoryDirty { editing = path }
-            go(.spar, origin: origin, fromMenu: true)
-        case .picker:
-            cockpit.selectedSession = nil
-            go(.talk, origin: origin, fromMenu: true)
-        case let .session(id):
-            cockpit.selectedSession = id
-            go(.talk, origin: origin, fromMenu: true)
-        case let .recent(session):
-            cockpit.selectedSession = session.id
-            Task { await cockpit.loadSession(session) }
-            go(.talk, origin: origin, fromMenu: true)
-        case let .codex(record):
-            cockpit.selectedSession = record.id
-            cockpit.resumeRunRecord(record)
-            go(.talk, origin: origin, fromMenu: true)
-        case .newSession:
-            hideMenu()
-            if launcherReady { overlay = .newSession } else { openSettings() }
-        case let .agent(id):
-            hideMenu()
-            overlay = .agent(id)
-        case let .level(level):
-            hideMenu()
-            if level.needsConfirmation { riskyLevel = level } else { cockpit.setGateLevel(level) }
-        case let .model(id):
-            hideMenu()
-            if let session = cockpit.selectedSession { cockpit.setModel(id, for: session) }
-        case .thinking:
-            showThinking.toggle()
-        case .clearIdle:
-            hideMenu()
-            cockpit.clearIdleAgents(now: .now)
-        case .clearAll:
-            hideMenu()
-            cockpit.clear()
-        case .tasks:
-            hideMenu()
-            overlay = .tasks
-        case .settings:
-            hideMenu()
-            openSettings()
-        case .none:
-            break
-        }
+    }
+
+    /// ⌘J / ⌘1–6 で選んだエージェントへ飛ぶ
+    private func jump(to session: String, projects: [TowerProject]) {
+        guard let row = projects.flatMap(\.tiles).flatMap(\.rows).first(where: { $0.id == session }) else { return }
+        Task { await cockpit.open(row) }
+        storedTab = .talk
+        setTower(false)
     }
 }
 

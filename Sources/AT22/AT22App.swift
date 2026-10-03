@@ -22,7 +22,8 @@ struct AT22App: App {
                            transcript: Self.shotTranscript(),
                            gate: CommandLine.arguments.contains("--gate"),
                            approval: CommandLine.arguments.contains("--approval"),
-                           workspaces: CommandLine.arguments.contains("--workspaces"))
+                           workspaces: CommandLine.arguments.contains("--workspaces"),
+                           menu: Self.argument("--menu"))
             exit(0)
         }
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。
@@ -46,6 +47,12 @@ struct AT22App: App {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--mode"), i + 1 < args.count else { return .talk }
         return V11Tab(rawValue: args[i + 1]) ?? CockpitMode(rawValue: args[i + 1]).map(V11Tab.init) ?? .talk
+    }
+
+    private static func argument(_ name: String) -> String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+        return args[i + 1]
     }
 
     /// `--transcript <path>` を足すと、その1本を流し込んだ状態で焼く
