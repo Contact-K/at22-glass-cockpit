@@ -349,6 +349,8 @@ final class Cockpit {
     /// 人がセッションごとに選んだモデル。**選ばれていない間は渡さない**——
     /// `--resume` にモデルを渡さなければ、claude は元のセッションの設定をそのまま引き継ぐ
     private var sessionModel: [String: String] = [:]
+    /// 人が選んだ考える深さ（claude の --effort / codex の model_reasoning_effort）。モデルと同じく繋ぎ直しで効く
+    private var sessionEffort: [String: String] = [:]
     /// stdout から拾っている部分テキスト。確定は transcript の担当——ここは「いま書いている途中」だけ。
     /// ターン終了で消える。**セッションごとに持つ**——1本にまとめていた頃は、どれか1つが
     /// 書いている間、`isWorking` が全セッションを稼働中と答えていた
@@ -973,15 +975,20 @@ final class Cockpit {
 
     /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。
     /// 選択中のセッションも、そのプロジェクトの門の段（`memory/gate/LEVEL`）も動かさない
-    func launchSparring(prompt: String, cwd: String) -> String? {
+    func launchSparring(prompt: String, cwd: String, model: String = "", effort: String = "") -> String? {
         let keep = selectedSession
-        let id = launchClaude(prompt: prompt, cwd: cwd, model: "", allowedTools: [], level: .plan, writesLevel: false)
+        let id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: [], level: .plan,
+                              writesLevel: false, effort: effort)
         selectedSession = keep
-        return id?.uuidString.lowercased()
+        guard let id = id?.uuidString.lowercased() else { return nil }
+        if !model.isEmpty { sessionModel[id] = model }
+        if !effort.isEmpty { sessionEffort[id] = effort }
+        return id
     }
 
     private func launchClaude(prompt: String, cwd: String, model: String,
-                              allowedTools: [String], level: Gate.Level, writesLevel: Bool = true) -> UUID? {
+                              allowedTools: [String], level: Gate.Level, writesLevel: Bool = true,
+                              effort: String = "") -> UUID? {
         guard let claude else {
             launchError = "claude が見つからない"
             return nil
@@ -990,7 +997,7 @@ final class Cockpit {
         // 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
         if writesLevel { setGateLevel(level, cwd: cwd) }
         let config = Launcher.Config(cwd: cwd, level: level,
-                                     prompt: prompt, allowedTools: allowedTools, model: model)
+                                     prompt: prompt, allowedTools: allowedTools, model: model, effort: effort)
         let sessionID = UUID()
         // transcript のファイル名は小文字。合わせておかないと起こした本人を見失う
         let id = sessionID.uuidString.lowercased()
@@ -1041,7 +1048,7 @@ final class Cockpit {
         // 言葉は空で繋ぐだけ。最初の1件も呼び出し側の `send` が流す（送る口を1本に保つ）。
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
         let config = Launcher.Config(cwd: cwd, level: gateLevel, prompt: "",
-                                     model: sessionModel[session] ?? "")
+                                     model: sessionModel[session] ?? "", effort: sessionEffort[session] ?? "")
         let token = UUID()
         do {
             let connection = try ClaudeConnection.start(
@@ -1071,6 +1078,16 @@ final class Cockpit {
         run.connection.close()
         forget(session)
     }
+
+    /// 考える深さを選ぶ。モデルと同じく、ターンの合間なら今の接続を畳み、次に送った時に新しい深さで繋がる
+    func setEffort(_ effort: String, for session: String) {
+        sessionEffort[session] = effort
+        guard let run = runs[session], run.connection.acceptsInput else { return }
+        run.connection.close()
+        forget(session)
+    }
+
+    func effort(of session: String) -> String? { sessionEffort[session] }
 
     /// そのセッションが実際に使っているモデル。transcript から観測した値
     func model(of session: String) -> String? {
@@ -1469,7 +1486,8 @@ final class Cockpit {
                 return nil
             }
             let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: "",
-                                              model: sessionModel[session] ?? record.model)
+                                              model: sessionModel[session] ?? record.model,
+                                              effort: sessionEffort[session] ?? "")
             let run = Run(connection: CodexConnection(found: codex, config: config, threadID: thread,
                                                       onEvent: agentStream(session: session)),
                           token: UUID())

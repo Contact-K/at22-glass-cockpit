@@ -270,8 +270,16 @@ struct TalkScreen: View {
         let empty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let now = cockpit.liveInk(cockpit.selectedSession)
         return HStack(spacing: 0) {
-            Text("// ASK C0").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
-                .padding(.horizontal, 14)
+            Group {
+                if let s = cockpit.selectedSession {
+                    ModelPicker(backend: cockpit.backend(of: s), model: cockpit.model(of: s) ?? "",
+                                effort: cockpit.effort(of: s) ?? "",
+                                onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
+                } else {
+                    Text("// ASK C0").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
+                }
+            }
+            .padding(.horizontal, 14)
             if frozen != nil {
                 Text(draft.isEmpty ? "司令塔に聞く" : draft).font(.bodyJP(16)).foregroundStyle(Palette.Light.fg3)
                     .frame(maxWidth: .infinity, alignment: .leading)

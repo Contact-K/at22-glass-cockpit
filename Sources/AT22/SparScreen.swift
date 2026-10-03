@@ -23,6 +23,9 @@ final class SparModel {
     struct Board {
         var session: String?
         var mode = Sparring.Mode.propose
+        /// 壁打ちのセッションを起こす前に選んだモデルとエフォート（起こした後はセッションの値を見る）
+        var model = ""
+        var effort = ""
         var steps: [Step] = []
         var decisions: [Decision] = []
         var taken: Set<String> = []
@@ -189,8 +192,7 @@ struct SparScreen: View {
         VStack(alignment: .trailing, spacing: 8) {
             Text("読むだけ · 書込なし").font(.mono(9)).tracking(1).foregroundStyle(Palette.Light.fg3)
             HStack(spacing: 0) {
-                Text("// SPAR · CLAUDE").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
-                    .padding(.horizontal, 14)
+                sparPicker.padding(.horizontal, 14)
                 Group {
                     if frozen != nil {
                         Text("相談したいこと — 空のまま送ると案を出します").foregroundStyle(Palette.Light.fg3)
@@ -218,6 +220,18 @@ struct SparScreen: View {
 
     private var busy: Bool { board.session.map { cockpit.isWorking($0) } ?? false }
 
+    /// 壁打ちのモデルとエフォート。起こした後はそのセッションに、起こす前は板に覚えておく
+    private var sparPicker: some View {
+        let b = board
+        if let s = b.session, cockpit.liveSessions.contains(where: { $0.id == s }) {
+            return ModelPicker(backend: .claude, model: cockpit.model(of: s) ?? "", effort: cockpit.effort(of: s) ?? "",
+                               onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
+        }
+        return ModelPicker(backend: .claude, model: b.model, effort: b.effort,
+                           onModel: { model.boards[ws, default: .init()].model = $0 },
+                           onEffort: { model.boards[ws, default: .init()].effort = $0 })
+    }
+
     /// 「次に」の札から: 文は空のまま、その型で送る
     private func next(_ mode: Sparring.Mode) {
         model.boards[ws, default: .init()].mode = mode
@@ -234,7 +248,7 @@ struct SparScreen: View {
         if let s = b.session, cockpit.liveSessions.contains(where: { $0.id == s }) {
             guard cockpit.send(prompt, to: s) else { problem = "いまは送れません（前の返事を待っています）"; return }
         } else {
-            guard let s = cockpit.launchSparring(prompt: prompt, cwd: workspace) else {
+            guard let s = cockpit.launchSparring(prompt: prompt, cwd: workspace, model: b.model, effort: b.effort) else {
                 problem = cockpit.launchError ?? "壁打ちのセッションを起こせませんでした"
                 return
             }

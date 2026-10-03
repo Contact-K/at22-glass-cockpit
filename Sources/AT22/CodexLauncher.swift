@@ -12,6 +12,15 @@ enum CodexLauncher {
         var level: Gate.Level
         var prompt: String
         var model: String
+        /// 考える深さ（`-c model_reasoning_effort=`）。空なら codex の既定
+        var effort: String = ""
+    }
+
+    /// codex の reasoning effort に渡せる値
+    static let efforts = ["minimal", "low", "medium", "high"]
+
+    private nonisolated static func effortArguments(_ config: Config) -> [String] {
+        config.effort.isEmpty ? [] : ["-c", "model_reasoning_effort=\"\(config.effort)\""]
     }
 
     /// 承認レベルに応じた sandbox フラグを生成。Launcher と同様に Gate.Level で分岐する
@@ -32,6 +41,7 @@ enum CodexLauncher {
     nonisolated static func launchArguments(config: Config) -> [String] {
         var out = ["exec", "-", "--json", "-m", config.model, "-C", config.cwd]
         out.append(contentsOf: sandboxArguments(for: config.level))
+        out.append(contentsOf: effortArguments(config))
         out.append("--skip-git-repo-check")
         return out
     }
@@ -46,6 +56,7 @@ enum CodexLauncher {
         var out = ["exec", "resume", threadID, prompt, "--json", "-m", config.model]
         let sandbox = sandboxArguments(for: config.level)
         out.append(contentsOf: sandbox.first == "--sandbox" ? ["-c", "sandbox_mode=\"\(sandbox[1])\""] : sandbox)
+        out.append(contentsOf: effortArguments(config))
         out.append("--skip-git-repo-check")
         return out
     }

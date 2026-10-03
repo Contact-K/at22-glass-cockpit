@@ -53,7 +53,12 @@ enum Launcher {
         var allowedTools: [String] = []
         /// Claude モデル選択（例: "opus", "sonnet", "haiku"）。空なら claude の既定に任せる
         var model: String = ""
+        /// 考える深さ（`--effort` low / medium / high / xhigh / max）。空なら claude の既定
+        var effort: String = ""
     }
+
+    /// `--effort` に渡せる値（claude 2.1 の --help）
+    static let efforts = ["low", "medium", "high", "xhigh", "max"]
 
     /// stdout の1行を `StreamEvent` に変換する。知らない型は nil で返す
     nonisolated static func parseStreamLine(_ data: Data) -> StreamEvent? {
@@ -198,6 +203,9 @@ enum Launcher {
         if !config.model.isEmpty {
             out.append("--model")
             out.append(config.model)
+        }
+        if !config.effort.isEmpty {
+            out.append(contentsOf: ["--effort", config.effort])
         }
         if !config.allowedTools.isEmpty {
             out.append("--allowedTools")

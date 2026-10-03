@@ -715,3 +715,65 @@ struct Mascot: View {
         fill(dir > 0 ? tx - q * A : tx + h * A, oy + 2.5 * p + h, q * A, h)
     }
 }
+
+// MARK: - モデルとエフォート
+
+/// 入力欄の左の「モデル · エフォート ▾」。押すとモデルと考える深さを選べる（会話・壁打ちの入力欄で共通）。
+/// 選び直しは次に送った時から効く（`Cockpit.setModel` / `setEffort` が接続を畳み、--resume で繋ぎ直す）
+struct ModelPicker: View {
+    let backend: Backend
+    /// いまのモデル（空なら CLI の既定）・エフォート（空なら既定）
+    let model: String
+    let effort: String
+    let onModel: (String) -> Void
+    let onEffort: (String) -> Void
+    @Environment(\.frozenTime) private var frozen
+
+    var body: some View {
+        let label = (Self.short(model) + (effort.isEmpty ? "" : " · " + effort)).uppercased() + " ▾"
+        Group {
+            if frozen != nil {
+                Text(label)
+            } else {
+                Menu {
+                    Section("モデル") {
+                        ForEach(NewWorkspaceSheet.models(backend), id: \.self) { m in
+                            Button((Self.short(m) == Self.short(model) ? "✓ " : "") + (m.isEmpty ? "既定" : m)) { onModel(m) }
+                        }
+                    }
+                    if !efforts.isEmpty {
+                        Section("エフォート") {
+                            ForEach(efforts, id: \.self) { e in
+                                Button((e == effort ? "✓ " : "") + e) { onEffort(e) }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(label)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("モデルとエフォート（次に送った時から）")
+            }
+        }
+        .font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
+        .lineLimit(1)
+    }
+
+    private var efforts: [String] {
+        switch backend {
+        case .claude: Launcher.efforts
+        case .codex: CodexLauncher.efforts
+        case .grok, .hermes: []
+        }
+    }
+
+    /// `claude-opus-5-5-20260901` → `opus-5-5`。空は既定
+    static func short(_ model: String) -> String {
+        guard !model.isEmpty else { return "default" }
+        var m = model.hasPrefix("claude-") ? String(model.dropFirst(7)) : model
+        if let r = m.range(of: #"-\d{8}$"#, options: .regularExpression) { m.removeSubrange(r) }
+        return m.replacingOccurrences(of: "[1m]", with: "")
+    }
+}
