@@ -28,6 +28,7 @@ struct CockpitView: View {
     /// `--shot --review <worktree>` で読み込み済みの差分
     var shotReview: ReviewModel? = nil
     var shotFiles: FilesModel? = nil
+    var shotTerm = false
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -60,6 +61,9 @@ struct CockpitView: View {
     @State private var review = ReviewModel()
     /// FILES の木と、手で直すために開いた1本
     @State private var files = FilesModel()
+    /// worktree ごとの端末（アプリが閉じるまで生きている）と、引き出しが開いているか
+    @State private var terminals = Terminals()
+    @State private var termOpen = false
     /// 送出の間は鶴が畳んで送る（upload）、終わると片足で立つ
     @State private var craneFx: String?
 
@@ -291,9 +295,16 @@ struct CockpitView: View {
                 FooterBand(width: w, termLine: "\(wsName) % ", busy: busy, stop: stop,
                            stopCount: cockpit.stoppedCount,
                            location: shot != nil ? Location(prev: nil, cur: currentLocation) : location,
-                           onTerm: {}, onGate: { if let id = stop.flatMap(stopWorkspace) { enter(path: id, stopID: stop?.id, projects: projects) } else { setTower(false) } })
+                           onTerm: { termOpen.toggle() }, onGate: { if let id = stop.flatMap(stopWorkspace) { enter(path: id, stopID: stop?.id, projects: projects) } else { setTower(false) } })
                     .frame(width: w, height: 44)
                     .offset(y: h - 44)
+
+                PullDrawer(open: termOpen || shotTerm) {
+                    TerminalDrawer(terminals: terminals, path: currentWorkspace ?? NSHomeDirectory(), name: wsName,
+                                   onClose: { termOpen = false })
+                }
+                .frame(width: max(300, min(1016, w - 424)), height: 396)
+                .offset(x: 24, y: h - 44 - 396)
             }
             .environment(\.motionPaused, !windowVisible || menu?.settled == true)
 
@@ -605,7 +616,13 @@ struct CockpitView: View {
     private func towerAct(_ action: TileAction, _ tile: WsTile) {
         switch action {
         case .branch: overlay = .newWorkspace(from: tile.id)
-        case .terminal: if let lead = tile.lead { _ = cockpit.openInTerminal(lead.id) }
+        case .terminal:
+            // 中の端末で続きを開く（Terminal.app はメニューの葉に残す）
+            if let lead = tile.lead, let command = cockpit.handOff(lead.id) {
+                terminals.add(tile.id, name: "resume", command: command)
+            }
+            enter(tile)
+            termOpen = true
         case .forget: cockpit.removeProject(tile.id)
         case .delete: overlay = .delete(tile.id)
         case .pick: if let race = tile.race { overlay = .pick(race) }
@@ -738,6 +755,7 @@ struct CockpitView: View {
         if press.key == .escape {
             // 手前から順に畳む。一度に全部消すと、戻るつもりで土台まで戻ってしまう
             if overlay != nil { overlay = nil; return .handled }
+            if termOpen { termOpen = false; return .handled }
             if gate.rewriting { gate.rewriting = false; return .handled }
             if !isTower { setTower(true); return .handled }
             return .ignored
@@ -1366,6 +1384,7 @@ private struct FooterBand: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
+            .keyboardShortcut("`", modifiers: .control)
             .help("端末を引き出す (⌃`)")
             Spacer(minLength: 0)
             if let stop {

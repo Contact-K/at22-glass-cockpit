@@ -1247,12 +1247,18 @@ final class Cockpit {
     /// Terminal.app で続きを開く（生の TUI が要る時の逃げ道）。**先に AT22 の接続を閉じる**——
     /// 同じセッションに2つのプロセスが書くと、transcript が混ざる。初回は macOS が操作の許可を訊く
     func openInTerminal(_ session: String) -> String? {
-        guard let command = terminalCommand(for: session) else { return "このセッションの続きを開く手掛かりが無い" }
+        guard let command = handOff(session) else { return "このセッションの続きを開く手掛かりが無い" }
+        return runInTerminal(command)
+    }
+
+    /// 続きを端末に渡す。AT22 の接続を閉じて、端末で打つ1行（`cd … && claude --resume …`）を返す
+    func handOff(_ session: String) -> String? {
+        guard let command = terminalCommand(for: session) else { return nil }
         if let run = runs[session] {
             run.connection.close()
             forget(session)
         }
-        return runInTerminal(command)
+        return command
     }
 
     /// 各 CLI 自身のログインを Terminal で起こす。**トークンはその CLI が持つ**——AT22 は何も預からない

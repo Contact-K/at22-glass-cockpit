@@ -24,7 +24,8 @@ struct AT22App: App {
                            approval: CommandLine.arguments.contains("--approval"),
                            workspaces: CommandLine.arguments.contains("--workspaces"),
                            menu: Self.argument("--menu"), sheet: Self.argument("--sheet"),
-                           review: Self.argument("--review"))
+                           review: Self.argument("--review"),
+                           term: CommandLine.arguments.contains("--term"))
             exit(0)
         }
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。

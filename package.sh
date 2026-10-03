@@ -82,6 +82,8 @@ echo "==> AT22.app を組み立て"
 rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/AT22" "$APP/Contents/MacOS/AT22"
+# SwiftTerm は静的に入る。SwiftTerm_SwiftTerm.bundle（Metal の shader）は既定で使わず、
+# SwiftTerm 自身も Bundle.module を避けているので .app には入れない（入れると署名の外に出る）
 cp "$ROOT/Resources/AT22.icns" "$APP/Contents/Resources/AT22.icns"
 # 書体。SwiftPM の resources: は使わず、起動時に Contents/Resources/Fonts から登録する
 # （Palette.swift の SumiFonts.register）。青柳衡山T が置かれていればそれも一緒に入る

@@ -17,7 +17,8 @@ enum Snapshot {
     @MainActor
     static func write(to path: String, size: CGSize, tab: V11Tab = .talk, tower: Bool = false,
                       transcript: String? = nil, gate: Bool = false, approval: Bool = false,
-                      workspaces: Bool = false, menu: String? = nil, sheet: String? = nil, review: String? = nil) {
+                      workspaces: Bool = false, menu: String? = nil, sheet: String? = nil, review: String? = nil,
+                      term: Bool = false) {
         let cockpit = Cockpit()
         // 空のまま焼くとセッションの選び口しか写らない。実 transcript を1本流し込むと、
         // ACTIONS の行・会話・門まで入った本物の1コマになる
@@ -49,7 +50,7 @@ enum Snapshot {
         }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel, shotFiles: filesModel)
+            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel, shotFiles: filesModel, shotTerm: term)
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, .light))
         // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない

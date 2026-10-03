@@ -52,14 +52,20 @@ struct DotWipeLayer: View {
             ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Palette.blue))
             return
         }
-        let pc: CGFloat = 18, ox = wipe.origin.x, oy = wipe.origin.y
-        let cols = Int(ceil(size.width / pc)), rows = Int(ceil(size.height / pc))
+        let ox = wipe.origin.x, oy = wipe.origin.y
         let maxD = max(hypot(ox, oy), hypot(size.width - ox, oy),
                        hypot(ox, size.height - oy), hypot(size.width - ox, size.height - oy))
+        dots(&ctx, size: size, p: p, covering: covering, pc: 18) { x, y in Double(hypot(x - ox, y - oy) / maxD) }
+    }
+
+    /// 波紋の順（`distance` が 0…1、小さいほど先）にドットが育って覆い、離れた順に縮む。先頭からピンク → 白 → 青
+    nonisolated static func dots(_ ctx: inout GraphicsContext, size: CGSize, p: Double, covering: Bool, pc: CGFloat,
+                                 distance: (CGFloat, CGFloat) -> Double) {
+        let cols = Int(ceil(size.width / pc)), rows = Int(ceil(size.height / pc))
         let p2 = p * 1.35
         for j in 0..<rows {
             for i in 0..<cols {
-                let d = Double(hypot((CGFloat(i) + 0.5) * pc - ox, (CGFloat(j) + 0.5) * pc - oy) / maxD)
+                let d = distance((CGFloat(i) + 0.5) * pc, (CGFloat(j) + 0.5) * pc)
                 let f = p2 - (covering ? d : 1 - d)
                 let s = max(0, min(1, f / 0.35))
                 guard s > 0 else { continue }
