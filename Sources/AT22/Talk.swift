@@ -32,11 +32,16 @@ struct TalkScreen: View {
     let onNew: () -> Void
     /// 新しい会話を起こす先（いまの worktree）。管制塔では nil
     var workspace: String? = nil
+    /// 一覧（右列の履歴）から「新しい会話」を選んで、最初の1通を書いている間
+    @Binding var composing: Bool
+    /// 人の承認なしに書き換える段（Lv.3/4）を選んだ時。確かめてから効かせる（CockpitView の確認）
+    var onRiskyLevel: (Gate.Level) -> Void = { _ in }
 
     @State private var draft = ""
     @State private var failed = false
-    /// 一覧から「新しい会話」を選んで、最初の1通を書いている間
-    @State private var composing = false
+    @AppStorage(SettingsScreen.levelKey) private var defaultLevel = Gate.defaultLevel.rawValue
+    /// 新しい会話を壁打ち（読むだけ）で起こすか
+    @State private var planNext = false
     @Environment(\.frozenTime) private var frozen
 
     /// 処理の段の和名（v10 の `STL`）
@@ -120,14 +125,14 @@ struct TalkScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 SectionMark(number: "01", title: "TALK", jp: "会話")
+                // 題（最初の指示から自動で付く）
+                Text(cockpit.selectedSession.flatMap { cockpit.title(for: $0) } ?? (composing ? "新しい会話" : ""))
+                    .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
                 Spacer(minLength: 8)
-                sessionSwitch
-                // 一覧（SessionPicker）に戻る。会話そのものは閉じない
-                Button("履歴 ▴") { cockpit.selectedSession = nil; composing = false; draft = "" }
-                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    .help("会話の一覧に戻る（いまの会話は閉じない）")
+                levelSwitch
+                planToggle
             }
             Text(composing && cockpit.selectedSession == nil ? "New talk." : headline)
                 .font(.display(52)).lineSpacing(0).fixedSize(horizontal: false, vertical: true)
@@ -140,30 +145,34 @@ struct TalkScreen: View {
         .padding(.vertical, 8)
     }
 
-    /// いまの worktree の会話をその場で切り替える。並びは管制塔のタイルと同じ（動いているもの＋過去5本）
-    @ViewBuilder
-    private var sessionSwitch: some View {
-        if let workspace {
-            let rows = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
-            SumiPicker(sections: [
-                .init(title: "新しく", items: [.init(id: "new", text: "＋ 新しい会話", on: composing && cockpit.selectedSession == nil)]),
-                .init(title: (workspace as NSString).lastPathComponent.uppercased() + " の会話",
-                      items: rows.map { .init(id: $0.id, text: $0.title + "  ·  " + $0.backend.title, on: $0.id == cockpit.selectedSession) }),
-            ], onPick: { _, id in
-                if id == "new" {
-                    cockpit.selectedSession = nil
-                    composing = true
-                    draft = ""
-                } else if let row = rows.first(where: { $0.id == id }) {
-                    Task { await cockpit.open(row) }
-                }
-            }) {
-                Text("会話 \(rows.count) ▾").font(.mono(11)).tracking(0.9)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-            }
-            .help("この worktree の会話を切り替える")
+    /// 壁打ちが入っているか（いまの会話の worktree の段が plan）
+    private var planOn: Bool { cockpit.selectedSession == nil ? planNext : cockpit.gateLevel == .plan }
+
+    /// 段（ハーネス）の切り替え。Lv.1〜4。壁打ちは隣のトグル
+    private var levelSwitch: some View {
+        let current = cockpit.selectedSession == nil
+            ? (Gate.Level(rawValue: defaultLevel) ?? Gate.defaultLevel) : cockpit.gateLevel
+        return SumiPicker(sections: [.init(title: "段（いまの会話の worktree）", items: Gate.Level.ladder.map {
+            .init(id: $0.rawValue, text: $0.title, on: $0 == current)
+        })], onPick: { _, id in
+            guard let l = Gate.Level(rawValue: id) else { return }
+            if l.needsConfirmation { onRiskyLevel(l); return }
+            if cockpit.selectedSession == nil { defaultLevel = l.rawValue } else { cockpit.applyLevel(l, to: cockpit.selectedSession) }
+        }) {
+            Text((current == .plan ? "段 ─" : current.title) + " ▾").font(.mono(11)).tracking(0.6)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
         }
+        .help("承認の段。次に送った時から効く")
+    }
+
+    /// 壁打ち（読むだけ・書かない）のトグル。段とは別枠
+    private var planToggle: some View {
+        Button(planOn ? "■ 壁打ち" : "□ 壁打ち") {
+            if cockpit.selectedSession == nil { planNext.toggle() } else { cockpit.setPlanMode(!planOn, session: cockpit.selectedSession) }
+        }
+        .buttonStyle(SumiButtonStyle(primary: planOn, size: 11))
+        .help("壁打ち: claude を plan モード（読むだけ・書かない）で動かす。切ると元の段に戻る")
     }
 
     @ViewBuilder
@@ -310,6 +319,30 @@ struct TalkScreen: View {
 
     // MARK: 入力欄
 
+    /// 打っている途中の「/名前」（codex は「$名前」）に合うスキル。空白を打ったら閉じる
+    private var slashMatches: [String] {
+        guard let head = draft.first, head == "/" || head == "$", !draft.contains(where: \.isWhitespace) else { return [] }
+        let backend = cockpit.selectedSession.map(cockpit.backend(of:)) ?? .claude
+        let names = Skills.visible(cockpit.skills, to: backend).map { Skills.invocation($0, for: backend) }
+        return Array(Set(names)).filter { $0.lowercased().hasPrefix(draft.lowercased()) }.sorted().prefix(8).map { $0 }
+    }
+
+    private var slashList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(slashMatches, id: \.self) { name in
+                Button { draft = name + " " } label: {
+                    Text(name).font(.mono(12)).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .foregroundStyle(Palette.Light.fg)
+        .background(Palette.Light.bg)
+        .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+        .frame(width: 320)
+    }
+
     private var input: some View {
         let working = cockpit.isWorking(cockpit.selectedSession)
         let empty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -343,7 +376,11 @@ struct TalkScreen: View {
                     .textFieldStyle(.plain)
                     .font(.bodyJP(16))
                     .foregroundStyle(Palette.Light.fg)
-                    .onSubmit { if !working && !empty { send() } }
+                    .onSubmit {
+                        // 候補が出ている間の Return は1つ目で補う
+                        if let first = slashMatches.first { draft = first + " "; return }
+                        if !working && !empty { send() }
+                    }
             }
             Button { working ? interrupt() : send() } label: {
                 Text(working ? "止める ■" : "送る ↵").font(.mono(11)).tracking(0.9)
@@ -361,6 +398,10 @@ struct TalkScreen: View {
         .frame(height: 48)
         .background(Palette.Light.bg)
         .overlay(Rectangle().strokeBorder(ctxAlarm ? Palette.Light.danger : Palette.Light.fg, lineWidth: 2))
+        // 「/」の候補は入力欄の真上に
+        .overlay(alignment: .topLeading) {
+            if !slashMatches.isEmpty { slashList.alignmentGuide(.top) { $0[.bottom] + 4 }.padding(.leading, 14) }
+        }
     }
 
     private func send() {
@@ -370,8 +411,9 @@ struct TalkScreen: View {
             guard let workspace else { failed = true; return }
             let parts = defaultAgent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             let backend = Backend(rawValue: parts.first ?? "") ?? .claude
+            let level = planNext ? Gate.Level.plan : (Gate.Level(rawValue: defaultLevel) ?? Gate.defaultLevel)
             if cockpit.launch(prompt: draft, cwd: workspace, backend: backend,
-                              model: parts.count > 1 ? parts[1] : "", effort: defaultEffort) != nil {
+                              model: parts.count > 1 ? parts[1] : "", level: level, effort: defaultEffort) != nil {
                 draft = ""
                 failed = false
             } else {

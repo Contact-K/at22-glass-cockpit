@@ -69,6 +69,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory）タイルの「再試行」（失敗を起こしにくいので未確認）、置き場を外に書いた時の作成と削除、起こした直後の会話に題が付くか
 - （orca-v10-memory）設定の「ログイン」を裏で起こした時に URL が拾えるか（claude auth login / codex login / grok login。TTY が要る CLI は「止まりました → Terminal で」に落ちる）
 - （orca-v10-memory）足したプロバイダ（Gemini / Qwen / Goose / OpenCode / Copilot / Kimi）が ACP で本当に繋がるか（どれも手元に無く未確認）。続きを Terminal で開く口は出していない
+- （orca-v10-memory）会話の見出しの段の切り替え・壁打ちのトグル（段は worktree ごとなので同じ worktree の会話すべてに効く）、右列の履歴、「/」の候補（どれもポップオーバーや撮影で worktree を選べず未確認）
 
 ## 残り・後で話す
 

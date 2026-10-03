@@ -786,29 +786,45 @@ struct ModelPicker: View {
     let onEffort: (String) -> Void
     @Environment(\.frozenTime) private var frozen
     @State private var open = false
+    @State private var openEffort = false
 
+    /// 札を2つ: [モデル ▾] [エフォート ▾]。押すとそれぞれの板
     var body: some View {
         let current = models.first { $0.matches(model) }
         let name = current?.label ?? Self.short(model)
-        let label = (name + (effort.isEmpty ? "" : " · " + effort)).uppercased() + " ▾"
-        Group {
-            if frozen != nil {
-                Text(label)
-            } else {
-                Button { open.toggle() } label: { Text(label).contentShape(Rectangle()) }
-                    .buttonStyle(.plain)
-                    .help("モデルとエフォート（次に送った時から）")
-                    .popover(isPresented: $open, arrowEdge: .bottom) { board }
+        let levels = AgentCatalog.efforts(for: model, in: models)
+        HStack(spacing: 4) {
+            chip(name + " ▾", open: $open, help: "モデル（次に送った時から）") { board }
+            if !levels.isEmpty {
+                chip((effort.isEmpty ? AgentCatalog.defaultEffort(backend) : effort) + " ▾", open: $openEffort,
+                     help: "エフォート（考える深さ）") {
+                    EffortSlider(levels: levels, value: effort, fallback: AgentCatalog.defaultEffort(backend), onChange: onEffort)
+                        .padding(14).frame(width: 300).background(Palette.Light.bg)
+                }
             }
         }
-        .font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
-        .lineLimit(1)
         .fixedSize()
     }
 
+    private func chip<B: View>(_ text: String, open: Binding<Bool>, help: String, @ViewBuilder board: @escaping () -> B) -> some View {
+        let label = Text(text).font(.mono(11)).tracking(0.6).lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+            .foregroundStyle(Palette.Light.fg)
+        return Group {
+            if frozen != nil {
+                label
+            } else {
+                Button { open.wrappedValue.toggle() } label: { label.contentShape(Rectangle()) }
+                    .buttonStyle(.plain).help(help)
+                    .popover(isPresented: open, arrowEdge: .bottom) { board() }
+            }
+        }
+    }
+
+    /// モデルの板（エフォートは隣の札）
     private var board: some View {
-        let levels = AgentCatalog.efforts(for: model, in: models)
-        return VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("\(backend.title.uppercased()) // MODEL モデル").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
             ForEach([false, true], id: \.self) { pinned in
@@ -819,16 +835,7 @@ struct ModelPicker: View {
                     ForEach(rows) { m in row(m) }
                 }
             }
-            Rectangle().fill(Palette.Light.line).frame(height: 1).padding(.top, 8)
-            Text("EFFORT エフォート").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
-                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
-            if levels.isEmpty {
-                Text("このモデルはエフォートを選べません").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
-                    .padding(.horizontal, 14).padding(.bottom, 12)
-            } else {
-                EffortSlider(levels: levels, value: effort, fallback: AgentCatalog.defaultEffort(backend), onChange: onEffort)
-                    .padding(.horizontal, 14).padding(.bottom, 14)
-            }
+            Color.clear.frame(height: 10)
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: 320, alignment: .leading)

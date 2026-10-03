@@ -13,14 +13,58 @@ struct RightColumn: View {
     let tasks: [RoadmapTask]
     let height: CGFloat
     let onOpen: (ActionRow) -> Void
+    /// いまの worktree（履歴の欄に、その会話を並べる）
+    var workspace: String? = nil
+    var onNew: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
             ActionsPanel(cockpit: cockpit, rows: actions, doneCount: doneCount, snapshot: snapshot, onOpen: onOpen)
+            if let workspace {
+                HistoryPanel(cockpit: cockpit, workspace: workspace, onNew: onNew).padding(.top, 12)
+            }
             Spacer(minLength: 12)
             PlanPanel(tasks: tasks)
         }
         .frame(height: max(300, height - 76 - 117), alignment: .top)
+    }
+}
+
+/// 01 // HISTORY いまの worktree の会話。題は最初の指示から自動で付く。押すと切り替わる
+private struct HistoryPanel: View {
+    let cockpit: Cockpit
+    let workspace: String
+    let onNew: () -> Void
+
+    var body: some View {
+        // 並びは管制塔のタイルと同じ（動いているもの＋過去5本）
+        let rows = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
+        SumiPanel(number: "01", title: "HISTORY", jp: "履歴", right: "\(rows.count)") {
+            ForEach(rows.prefix(6)) { row in
+                let on = row.id == cockpit.selectedSession
+                HStack(spacing: 8) {
+                    Text(on ? "■" : "□").font(.mono(11))
+                    Text(row.title).font(.bodyJP(13)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(row.backend.title).font(.mono(9)).foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg3)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+                .background(on ? Palette.Light.fg : .clear)
+                .contentShape(Rectangle())
+                .onTapGesture { Task { await cockpit.open(row) } }
+                .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+            }
+            if rows.isEmpty {
+                Text("この worktree の会話はまだない").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3)
+                    .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } footer: {
+            HStack {
+                Button("＋ 新しい会話", action: onNew).buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+        }
     }
 }
 

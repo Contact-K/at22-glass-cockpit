@@ -997,6 +997,20 @@ final class Cockpit {
     /// 段をいまの会話にも効かせる。そのプロジェクトの `memory/gate/LEVEL` に書き、ターンの合間なら接続を畳む
     /// （次に送った時に新しい `--permission-mode` で繋ぎ直す）。設定の段は以前は新規の既定にしか効かず、
     /// 留守番にしても今の会話は元の段のまま毎回訊いていた
+    /// 壁打ちを入れる前の段（worktree ごと）。切った時にそこへ戻す
+    private var levelBeforePlan: [String: Gate.Level] = [:]
+
+    /// 壁打ち（plan＝読むだけ）を入れる・切る。段とは別のトグル。段は worktree ごとなので、その worktree の会話すべてに効く
+    @discardableResult
+    func setPlanMode(_ on: Bool, session: String?) -> NoteSaveResult {
+        guard let session, let cwd = cwd(of: session) else { return .failed }
+        if on {
+            if gateLevel != .plan { levelBeforePlan[cwd] = gateLevel }
+            return applyLevel(.plan, to: session)
+        }
+        return applyLevel(levelBeforePlan[cwd] ?? Gate.defaultLevel, to: session)
+    }
+
     @discardableResult
     func applyLevel(_ level: Gate.Level, to session: String?) -> NoteSaveResult {
         guard let session, let cwd = cwd(of: session) else { return .failed }

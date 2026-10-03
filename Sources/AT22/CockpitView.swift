@@ -85,6 +85,10 @@ struct CockpitView: View {
     /// 答えた門の印。会話の流れに `GATE // W6 → ALLOWED` として混ぜる（画面だけの記録）
     @State private var verdicts: [VerdictLine] = []
     @State private var riskyLevel: Gate.Level?
+    /// 会話画面で「新しい会話」の最初の1通を書いている間（右列の履歴からも入る）
+    @State private var talkComposing = false
+    /// FILES で記憶DB を見ているか（ファイル｜記憶DB）
+    @State private var filesMemory = false
     @State private var gateArmedAt = Date.distantPast
     @State private var replySession: String?
     @State private var windowVisible = true
@@ -186,7 +190,11 @@ struct CockpitView: View {
             get: { riskyLevel != nil }, set: { if !$0 { riskyLevel = nil } })) {
             Button("やめる", role: .cancel) { riskyLevel = nil }
             Button("承知した", role: .destructive) {
-                if let level = riskyLevel { cockpit.setGateLevel(level) }
+                if let level = riskyLevel {
+                    // 会話を開いていればその会話に（次に送った時から）、無ければ新しい会話の既定に
+                    if cockpit.selectedSession != nil { cockpit.applyLevel(level, to: cockpit.selectedSession) }
+                    else { UserDefaults.standard.set(level.rawValue, forKey: SettingsScreen.levelKey) }
+                }
                 riskyLevel = nil
             }
         } message: {
@@ -284,18 +292,14 @@ struct CockpitView: View {
                         GitPanels(model: shotReview ?? review,
                                   branch: tiles.first { $0.id == currentWorkspace }?.branch,
                                   branches: tiles.compactMap(\.branch), height: h)
-                    } else if tab == .spar {
-                        SparPanels(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
-                                   height: h,
-                                   onLaunch: { step in newPrompt = step; overlay = .newWorkspace(from: currentWorkspace) },
-                                   fly: { fly(from: $0, to: $1) }, rects: book.rects)
-                    } else if tab == .memory {
-                        MemoryPanels(cockpit: cockpit, workspace: currentWorkspace, height: h,
-                                     onTalk: { go(.talk) })
                     } else if tab == .settings {
                         KeysPanel(height: h)
                     } else if tab == .files {
-                        FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
+                        if filesMemory {
+                            MemoryPanels(cockpit: cockpit, workspace: currentWorkspace, height: h, onTalk: { go(.talk) })
+                        } else {
+                            FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
+                        }
                     } else if tab == .talk {
                         RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
                                     snapshot: snap, tasks: tasks, height: h,
@@ -303,7 +307,9 @@ struct CockpitView: View {
                                         if let path = row.path { openFile(path) }
                                         else if !row.waiting { overlay = .agent(row.id) }
                                         else { go(.talk) }
-                                    })
+                                    },
+                                    workspace: isTower ? nil : currentWorkspace,
+                                    onNew: { cockpit.selectedSession = nil; talkComposing = true })
                     }
                 }
                 .frame(width: 352)
@@ -433,20 +439,27 @@ struct CockpitView: View {
                        onChoose: { choose($0) },
                        onRewrite: { issueRewrite() },
                        onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) },
-                       workspace: isTower ? nil : currentWorkspace)
+                       workspace: isTower ? nil : currentWorkspace,
+                       composing: $talkComposing,
+                       onRiskyLevel: { riskyLevel = $0 })
                 .offset(x: 220, y: 72)
         case .files:
-            FilesScreen(model: shotFiles ?? files, width: contentW, height: h)
-                .offset(x: 220, y: 84)
-                .task(id: currentWorkspace) { if shot == nil { await files.load(root: currentWorkspace) } }
-        case .spar:
-            SparScreen(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
-                       width: contentW, height: h, fly: { fly(from: $0, to: $1) }, rects: book.rects)
-                .offset(x: 220, y: 72)
-        case .memory:
-            MemoryScreen(cockpit: cockpit, workspace: currentWorkspace, width: contentW, height: h,
-                         onOpen: { overlay = .file($0) })
-                .offset(x: 220, y: 84)
+            ZStack(alignment: .topTrailing) {
+                if filesMemory {
+                    MemoryScreen(cockpit: cockpit, workspace: currentWorkspace, width: contentW, height: h,
+                                 onOpen: { overlay = .file($0) })
+                } else {
+                    FilesScreen(model: shotFiles ?? files, width: contentW, height: h)
+                }
+                // ファイル｜記憶DB
+                HStack(spacing: 0) {
+                    Button("ファイル") { filesMemory = false }.buttonStyle(SumiButtonStyle(primary: !filesMemory, size: 11))
+                    Button("記憶DB") { filesMemory = true }.buttonStyle(SumiButtonStyle(primary: filesMemory, size: 11))
+                }
+            }
+            .frame(width: contentW, alignment: .topLeading)
+            .offset(x: 220, y: 84)
+            .task(id: currentWorkspace) { if shot == nil { await files.load(root: currentWorkspace) } }
         case .review:
             ReviewScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace, session: cockpit.selectedSession,
                          width: contentW, height: h,
@@ -1301,19 +1314,19 @@ struct CraneStatus: Equatable {
 
 /// v11 のタブ（STRUCTURE は FILES と統合）。`keys` は1文字で飛ぶ鍵
 enum V11Tab: String, CaseIterable {
-    case talk, files, spar, memory, review, git, settings
+    // 壁打ちは会話画面のトグルに、記憶DB は FILES の中（ファイル｜記憶DB）に移した
+    case talk, files, review, git, settings
 
-    var no: String { ["01", "02", "03", "04", "07", "08", "10"][index] }
-    var en: String { ["TALK", "FILES", "SPARRING", "MEMORY", "REVIEW", "GIT", "SETTINGS"][index] }
-    var jp: String { ["会話", "構造とファイル", "壁打ち", "記憶", "差分", "記帳と送出", "設定"][index] }
-    var desc: String { ["会話と門", "木・関係・エディタ", "計画を練る", "貯まったノートと清書", "差分と指摘", "記帳・送出・依頼", "既定と操作"][index] }
-    /// m はメニューを開く鍵なので、記憶は k
-    var keys: [String] { [["a"], ["b", "e"], ["c"], ["k"], ["d"], ["g"], [","]][index] }
-    /// 畳み込みの見方（構造は FILES、記憶DB は MEMORY）
-    var mode: CockpitMode { self == .files ? .structure : self == .memory ? .memory : .work }
+    var no: String { ["01", "02", "07", "08", "10"][index] }
+    var en: String { ["TALK", "FILES", "REVIEW", "GIT", "SETTINGS"][index] }
+    var jp: String { ["会話", "構造・ファイル・記憶", "差分", "記帳と送出", "設定"][index] }
+    var desc: String { ["会話と門", "木・関係・エディタ・記憶DB", "差分と指摘", "記帳・送出・依頼", "既定と操作"][index] }
+    var keys: [String] { [["a"], ["b", "e"], ["d"], ["g"], [","]][index] }
+    /// 畳み込みの見方（構造は FILES）
+    var mode: CockpitMode { self == .files ? .structure : .work }
 
     init(_ mode: CockpitMode) {
-        self = mode == .structure ? .files : mode == .memory ? .memory : .talk
+        self = mode == .structure || mode == .memory ? .files : .talk
     }
 
     private var index: Int { Self.allCases.firstIndex(of: self)! }

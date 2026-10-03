@@ -18,7 +18,7 @@ struct MemoryScreen: View {
         let outline = Memory.outline(nodes)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                SectionMark(number: "04", title: "MEMORY", jp: "記憶")
+                SectionMark(number: "02", title: "FILES › MEMORY", jp: "記憶DB")
                 Text("What we've learned.").font(.display(52))
                 Text(workspace == nil
                      ? "管制塔で worktree を選ぶと、そのリポジトリの記憶DBが並びます。"
@@ -56,12 +56,18 @@ struct MemoryScreen: View {
         }
     }
 
+    /// ノートの題。頭の name が無ければ、セッションごとのノート（ファイル名＝セッションID）は会話の自動の題を出す
+    private func title(_ node: Memory.Node, label: String) -> String {
+        let stem = (label as NSString).deletingPathExtension
+        if node.name != stem && node.name != (node.file as NSString).deletingPathExtension { return node.name }
+        return cockpit.title(for: stem) ?? label
+    }
+
     private func line(_ node: Memory.Node, label: String) -> some View {
         Button { onOpen(node.id) } label: {
             HStack(spacing: 10) {
                 Rectangle().fill(node.hasState ? Palette.pink : Palette.Light.line).frame(width: 6, height: 6)
-                Text(node.name == (label as NSString).deletingPathExtension ? label : node.name)
-                    .font(.bodyJP(14)).lineLimit(1)
+                Text(title(node, label: label)).font(.bodyJP(14)).lineLimit(1)
                 Text(node.summary).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
                 Spacer(minLength: 8)
                 Text(node.modified.formatted(.dateTime.month().day().hour().minute()))
@@ -89,7 +95,7 @@ struct MemoryPanels: View {
     var body: some View {
         let session = workspace.flatMap { cockpit.composing[$0] }
         let working = session.map { cockpit.isWorking($0) } ?? false
-        SumiPanel(number: "04", title: "COMPOSE", jp: "清書",
+        SumiPanel(number: "02", title: "COMPOSE", jp: "清書",
                   right: project.map { "PROJECT.md · " + $0.at.formatted(.dateTime.month().day().hour().minute()) } ?? "PROJECT.md なし") {
             Text(project?.text ?? "まだ清書していません。「清書 ▸」で記憶DBを読み、企画書（目的・決めたこと・未決・次の一手）にまとめます。")
                 .font(.bodyJP(13)).foregroundStyle(project == nil ? Palette.Light.fg2 : Palette.Light.fg)
