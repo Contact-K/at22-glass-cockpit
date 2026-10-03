@@ -195,7 +195,7 @@ private struct PlanPanel: View {
                 .reportRect(on ? "plan:current" : "plan-\(i)")
             }
 
-            Text(tasks.isEmpty ? "タスクはまだない · TaskCreate が呼ばれると出る"
+            Text(tasks.isEmpty ? "タスクはまだない · 司令塔が PLAN: 行で計画を書くと出る"
                                : "\(window.done) DONE · 読み取り専用（TaskUpdate が更新）")
                 .font(.mono(10)).tracking(0.8)
                 .foregroundStyle(Palette.Light.fg2)
@@ -375,7 +375,7 @@ private struct TasksModal: View {
             .padding(.top, 12)
             Rectangle().fill(Palette.Light.fg).frame(height: 1).padding(.top, 10)
             if shown.isEmpty {
-                Text(all.isEmpty ? "まだタスクが無い。Claude Code 側で TaskCreate が呼ばれると出る"
+                Text(all.isEmpty ? "まだタスクが無い。司令塔が返事に PLAN: 行（または TaskCreate）で計画を書くと出る"
                                  : "この絞り込みに当てはまるタスクが無い")
                     .font(.bodyJP(13)).foregroundStyle(Palette.Light.fg3).padding(.vertical, 24)
             } else if frozen != nil {
