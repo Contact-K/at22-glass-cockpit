@@ -82,6 +82,7 @@ struct P0SelfCheck {
         waitingAgentShowsAsWaitRow()
         towerLaneFoldsQuietAndBundlesRaces()
         shortStatReadsBothHalves()
+        hunkPatchAndGitReaders()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3767,6 +3768,23 @@ struct P0SelfCheck {
         assert(lane.edges.contains { $0.from == "fix" && $0.to == ["tip"] }, "\(lane.edges)")
         assert(lane.rows == 4, "wait / fix(→tip) / 競走2行 で4行: \(lane.rows)")
         assert(Cockpit.towerLane(items, fold: false).quiet.isEmpty, "畳まない時は全部置く")
+    }
+
+    /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    static func hunkPatchAndGitReaders() {
+        let h1 = Worktree.Hunk(header: "@@ -10,3 +10,3 @@", lines: [
+            .init(kind: .context, old: 10, new: 10, text: "a"), .init(kind: .remove, old: 11, new: nil, text: "b"),
+            .init(kind: .add, old: nil, new: 11, text: "B")])
+        let h2 = Worktree.Hunk(header: "@@ -40,3 +52,3 @@", lines: h1.lines.map {
+            .init(kind: $0.kind, old: $0.old.map { $0 + 30 }, new: $0.new.map { $0 + 42 }, text: $0.text) })
+        assert(Worktree.hunkKey(h1) == Worktree.hunkKey(h2) && Worktree.hunkKey(h1) == "-b\n+B")
+        assert(Worktree.patch(path: "x.swift", hunk: h1)
+               == "diff --git a/x.swift b/x.swift\n--- a/x.swift\n+++ b/x.swift\n@@ -10,3 +10,3 @@\n a\n-b\n+B\n")
+        let log = Worktree.parseLog("4c88b07\tCategory: 追加\t2 hours ago\ne21d9a0\t凡例\t3 days ago\n")
+        assert(log.count == 2 && log[0].hash == "4c88b07" && log[1].subject == "凡例", "\(log)")
+        let pr = Worktree.parsePullRequest(#"{"number":45,"state":"OPEN","url":"u","statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"PENDING"}]}"#)
+        assert(pr?.number == 45 && pr?.ci == .running, "\(String(describing: pr))")
+        assert(Worktree.parsePullRequest(#"{"number":1,"statusCheckRollup":[{"conclusion":"FAILURE"}]}"#)?.ci == .fail)
     }
 
     static func shortStatReadsBothHalves() {

@@ -25,6 +25,8 @@ struct CockpitView: View {
     var shotMenu: String? = nil
     /// `--shot --sheet new|delete|pick` で板を開いた所を焼く（見本の worktree を使う）
     var shotSheet: String? = nil
+    /// `--shot --review <worktree>` で読み込み済みの差分
+    var shotReview: ReviewModel? = nil
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -53,6 +55,10 @@ struct CockpitView: View {
     @State private var towerFocus = 0
     @State private var towerHover: String?
     @State private var location = Location(prev: nil, cur: "00 TOWER")
+    /// REVIEW と GIT が同じ差分・ステージ・コミットを見る
+    @State private var review = ReviewModel()
+    /// 送出の間は鶴が畳んで送る（upload）、終わると片足で立つ
+    @State private var craneFx: String?
 
     // 壁打ち
     @State private var editing: String?
@@ -241,6 +247,14 @@ struct CockpitView: View {
                                              word: verdict == .deny ? "REJECTED" : "ALLOWED")
                                   },
                                   onEnter: { path, stopID in enter(path: path, stopID: stopID, projects: projects) })
+                    } else if tab == .review {
+                        ReviewPanels(cockpit: cockpit, model: shotReview ?? review, session: cockpit.selectedSession, height: h,
+                                     onSent: { fly(from: book.rects["crane"], to: book.rects["crane"]) })
+                    } else if tab == .git {
+                        let tiles = project(of: currentWorkspace, in: projects.isEmpty ? TowerData.projects(cockpit) : projects)?.tiles ?? []
+                        GitPanels(model: shotReview ?? review,
+                                  branch: tiles.first { $0.id == currentWorkspace }?.branch,
+                                  branches: tiles.compactMap(\.branch), height: h)
                     } else if tab == .talk || tab == .files {
                         RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
                                     snapshot: snap, tasks: tasks, height: h,
@@ -367,7 +381,23 @@ struct CockpitView: View {
             SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
                            width: contentW, height: h - 84 - 60)
                 .offset(x: 220, y: 84)
-        case .review, .git, .settings:
+        case .review:
+            ReviewScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace, session: cockpit.selectedSession,
+                         width: contentW, height: h,
+                         onOpen: { path, _ in overlay = .file(path) },
+                         onGit: { go(.git) })
+                .offset(x: 220, y: 84)
+        case .git:
+            GitScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace,
+                      branch: currentWorkspace.flatMap { ws in TowerData.projects(cockpit).flatMap(\.tiles).first { $0.id == ws }?.branch },
+                      width: contentW, height: h,
+                      onReview: { go(.review) },
+                      onPushing: { on in
+                          craneFx = on ? "push" : "ok"
+                          if !on { after(1.8) { if craneFx == "ok" { craneFx = nil } } }
+                      })
+                .offset(x: 220, y: 84)
+        case .settings:
             VStack(alignment: .leading, spacing: 12) {
                 SectionMark(number: tab.no, title: tab.en, jp: tab.jp)
                 Text(tab.desc).font(.display(44))
@@ -478,6 +508,8 @@ struct CockpitView: View {
 
     /// 鶴の状態。処理中は畳んで InkLoader に、門が止まっている間は片足で待つ
     private func craneStatus(busy: Bool, trail: [(path: String, kind: TouchKind)]) -> CraneStatus {
+        if craneFx == "push" { return CraneStatus(busy: "upload", pose: .idle, state: "PUSHING · 送出中", sub: "送っています") }
+        if craneFx == "ok" { return CraneStatus(busy: nil, pose: .one, state: "PUSHED · 送りました", sub: "送り終わりました") }
         if busy {
             let step = trail.last.map { $0.kind == .write ? "write" : "search" } ?? "think"
             return CraneStatus(busy: step, pose: .idle, state: step.uppercased(), sub: TalkScreen.stepLabel[step] ?? "")

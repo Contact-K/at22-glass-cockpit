@@ -17,13 +17,23 @@ enum Snapshot {
     @MainActor
     static func write(to path: String, size: CGSize, tab: V11Tab = .talk, tower: Bool = false,
                       transcript: String? = nil, gate: Bool = false, approval: Bool = false,
-                      workspaces: Bool = false, menu: String? = nil, sheet: String? = nil) {
+                      workspaces: Bool = false, menu: String? = nil, sheet: String? = nil, review: String? = nil) {
         let cockpit = Cockpit()
         // 空のまま焼くとセッションの選び口しか写らない。実 transcript を1本流し込むと、
         // ACTIONS の行・会話・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
         if workspaces { stockWorkspaces(cockpit) }
+        var reviewModel: ReviewModel?
+        // 実在の worktree を1本だけ管制塔に載せ、その差分を読み込んだ状態で焼く（REVIEW / GIT の見え方）
+        if let review, let repo = try? Worktree.root(of: review) {
+            cockpit.loadWorkspacesForProbe(projects: [repo], worktrees: [repo: (try? Worktree.list(repo: repo)) ?? []])
+            cockpit.liveSessions = [LiveSession(id: "s-review", name: "review", cwd: review, busy: false)]
+            cockpit.selectedSession = "s-review"
+            let model = ReviewModel()
+            model.loadNow(cockpit, path: review)
+            reviewModel = model
+        }
         // 道具の承認の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
         if approval {
             cockpit.loadApprovalsForProbe([Approval(
@@ -34,7 +44,7 @@ enum Snapshot {
         }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet)
+            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel)
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, .light))
         // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない

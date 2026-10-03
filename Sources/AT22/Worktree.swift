@@ -262,7 +262,9 @@ extension Worktree {
             file.isBinary = true
             return file
         }
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).prefix(400)
+        // 末尾の改行のぶんの空行は数えない（1行のファイルが +2 にならないように）
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .dropLast(text.hasSuffix("\n") ? 1 : 0).prefix(400)
         file.hunks = [Hunk(header: "@@ 追跡外の新規ファイル @@", lines: lines.enumerated().map {
             DiffLine(kind: .add, old: nil, new: $0.offset + 1, text: String($0.element))
         })]
@@ -275,6 +277,103 @@ extension Worktree {
         let untracked = try git(["ls-files", "--others", "--exclude-standard"], in: path)
             .split(separator: "\n").map { untrackedDiff(String($0), root: path) }
         return tracked + untracked
+    }
+
+    // MARK: v11 の REVIEW と GIT（どれも押した時だけ）
+
+    /// ハンクの中身の鍵。基点からの差分と、索引との差分で同じハンクを突き合わせるのに使う
+    /// （行番号は基点の取り方で変わるので、増減した行の本文だけで比べる）
+    nonisolated static func hunkKey(_ hunk: Hunk) -> String {
+        hunk.lines.filter { $0.kind != .context }
+            .map { ($0.kind == .add ? "+" : "-") + $0.text }.joined(separator: "\n")
+    }
+
+    /// 1ハンクだけの patch。`git apply --cached` に渡す（行番号は索引との差分のもの）
+    nonisolated static func patch(path: String, hunk: Hunk) -> String {
+        var out = "diff --git a/\(path) b/\(path)\n--- a/\(path)\n+++ b/\(path)\n\(hunk.header)\n"
+        for line in hunk.lines {
+            out += (line.kind == .add ? "+" : line.kind == .remove ? "-" : " ") + line.text + "\n"
+        }
+        return out
+    }
+
+    /// 作業中（索引に入っていない）と、索引に入った（ステージした）差分
+    nonisolated static func stagingState(_ path: String) throws -> (unstaged: [DiffFile], staged: [DiffFile]) {
+        (parseDiff(try git(["diff", "--no-color", "--no-ext-diff"], in: path)),
+         parseDiff(try git(["diff", "--cached", "--no-color", "--no-ext-diff"], in: path)))
+    }
+
+    /// 1ハンクをステージする／外す。追跡外の新規ファイルはファイルごと（`add` / `reset`）
+    nonisolated static func stage(_ path: String, file: String, hunk: Hunk?, on: Bool) throws {
+        guard let hunk else {
+            _ = try git(on ? ["add", "--", file] : ["reset", "-q", "--", file], in: path)
+            return
+        }
+        let patchFile = FileManager.default.temporaryDirectory.appendingPathComponent("at22-\(UUID().uuidString).patch")
+        try patch(path: file, hunk: hunk).write(to: patchFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: patchFile) }
+        _ = try git(["apply", "--cached"] + (on ? [] : ["-R"]) + ["--recount", patchFile.path], in: path)
+    }
+
+    /// ステージした分だけをコミットする
+    nonisolated static func commitStaged(_ path: String, message: String) throws -> String {
+        try git(["commit", "-m", message], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    struct Commit: Equatable, Sendable {
+        let hash: String
+        let subject: String
+        let when: String
+    }
+
+    /// 基点からのコミット（新しい順）
+    nonisolated static func log(_ path: String, base: String) -> [Commit] {
+        let range = base == "HEAD" ? ["-n", "12"] : [base + "..HEAD"]
+        let out = (try? git(["log", "--format=%h%x09%s%x09%cr"] + range, in: path)) ?? ""
+        return parseLog(out)
+    }
+
+    nonisolated static func parseLog(_ text: String) -> [Commit] {
+        text.split(separator: "\n").compactMap { line in
+            let f = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+            return f.count == 3 ? Commit(hash: f[0], subject: f[1], when: f[2]) : nil
+        }
+    }
+
+    /// 送っていない数と、遠くに遅れている数。上流が無ければ基点からの数を「未送出」とする
+    nonisolated static func aheadBehind(_ path: String, base: String) -> (ahead: Int, behind: Int, upstream: String?) {
+        if let up = try? git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], in: path)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !up.isEmpty,
+           let counts = try? git(["rev-list", "--left-right", "--count", "@{u}...HEAD"], in: path) {
+            let n = counts.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" }).compactMap { Int($0) }
+            if n.count == 2 { return (n[1], n[0], up) }
+        }
+        // 上流が無い: 基点が分かればそこから、分からなければ（HEAD）どの遠くにも無いコミットを数える
+        let range = base == "HEAD" ? ["HEAD", "--not", "--remotes"] : [base + "..HEAD"]
+        let ahead = Int(((try? git(["rev-list", "--count"] + range, in: path)) ?? "0")
+            .trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return (ahead, 0, nil)
+    }
+
+    struct PullRequest: Equatable, Sendable {
+        enum CI: Equatable, Sendable { case ok, fail, running, none }
+        let number: Int
+        let state: String
+        let ci: CI
+        let url: String
+    }
+
+    /// `gh pr view --json number,state,url,statusCheckRollup` を読む
+    nonisolated static func parsePullRequest(_ json: String) -> PullRequest? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              let number = object["number"] as? Int else { return nil }
+        let checks = object["statusCheckRollup"] as? [[String: Any]] ?? []
+        let states = checks.map { (($0["conclusion"] as? String) ?? ($0["state"] as? String) ?? "").uppercased() }
+        let ci: PullRequest.CI = states.isEmpty ? .none
+            : states.contains { ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"].contains($0) } ? .fail
+            : states.allSatisfy { ["SUCCESS", "NEUTRAL", "SKIPPED"].contains($0) } ? .ok : .running
+        return PullRequest(number: number, state: object["state"] as? String ?? "", ci: ci,
+                           url: object["url"] as? String ?? "")
     }
 
     /// 全部をコミットする。**押した時だけ**呼ぶ
