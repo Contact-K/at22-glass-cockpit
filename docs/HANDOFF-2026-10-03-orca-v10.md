@@ -72,6 +72,9 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory）会話の見出しの段の切り替え・壁打ちのトグル（段は worktree ごとなので同じ worktree の会話すべてに効く）、右列の履歴、「/」の候補（どれもポップオーバーや撮影で worktree を選べず未確認）
 - （orca-v10-memory）文脈 85% の引き継ぎの通し（本物の会話を 85% まで伸ばしていない）。書き終えたかは「ターンが終わった」で見ているだけで、ノートの中身は確かめていない
 - （orca-v10-memory）質問の窓に答えて claude が本当に答えを受け取るか（`answers` を足した updatedInput。SDK の canUseTool と同じ形のはず）、エフォートの効果、「最新へ ↓」、遡った時に固まらないか
+- （orca-v10-memory, 2026-10-04）**確かめたこと**: Hydra の通し（`hydra-check.swift` で PASS、約19秒）。**確かめていないこと**: SSH の先での起動、
+  Codex の app-server（手元に無い・形は p0 で固定）、ACP 相手への約束の効き方、/model /effort の途中切替、眠らせた後の --resume、定期実行の発火、
+  内蔵ブラウザで http の開発サーバー（Xcode から走らせる時は Info.plist が無く ATS に止められるかもしれない）、Issues の一覧（gh）、活動フィード
 
 ## 残り・後で話す
 

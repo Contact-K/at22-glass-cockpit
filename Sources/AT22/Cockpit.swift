@@ -736,6 +736,9 @@ final class Cockpit {
         watchHandoffs()
         sleepIdleSessions()
         runSchedules(now: Date())
+        // Hydra の報告の送り待ち。司令塔の「次のターンの終わり」だけを待っていると、報告が届いた時に
+        // 司令塔がもうターンを終えていた場合、二度と送られなかった（2026-10-04 に本物の claude で通して見つけた）
+        for lead in hydraOutbox.keys where !isWorking(lead) && canSend(to: lead) { flushHydra(lead) }
     }
 
     // MARK: 定期実行

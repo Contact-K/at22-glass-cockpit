@@ -147,6 +147,9 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
   Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift Sources/AT22/Remote.swift Sources/AT22/CodexServer.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 ```
 
+Hydra の通し（本物の claude を haiku で2本起こす・料金がかかる）は `hydra-check.swift` を同じ Sources と組んで走らせる。
+使い捨てのリポジトリで ```hydra → 門（Lv.3 で自動許可）→ worktree → head → 報告が司令塔に届く、までを確かめ、後片付けもする。
+
 Foundation だけで組んであるので Linux でも通る（`FileManager.replaceItemAt` が Linux で常に失敗するので、
 既存ノートの上書きを確かめる2箇所だけは `#if os(macOS)` で外してある）。
 
