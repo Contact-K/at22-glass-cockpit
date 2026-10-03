@@ -478,10 +478,10 @@ enum Launcher {
         let custom = LaunchOverrides.current(for: command)
         let extra = extra.merging(custom.environment) { _, new in new }
         if let remote = Remote.parse(cwd) {
-            // 作業場所が ssh://… なら、相手のマシンで同じコマンドを起こす（stdio は ssh がそのまま繋ぐ）
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            task.arguments = Remote.sshArguments(target: remote.target, path: remote.path, command: command,
-                                                 arguments: custom.arguments + arguments, environment: extra)
+            // 作業場所が ssh://… なら、相手のマシンで同じコマンドを起こす（stdio は ssh / tailscale ssh がそのまま繋ぐ）
+            let local = Remote.local(remote, command: command, arguments: custom.arguments + arguments, environment: extra)
+            task.executableURL = local.executable
+            task.arguments = local.arguments
             task.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
         } else {
             task.executableURL = executable

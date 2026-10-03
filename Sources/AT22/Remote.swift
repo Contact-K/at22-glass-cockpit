@@ -9,50 +9,128 @@ import Foundation
 /// ponytail: 相手のマシンの transcript・記憶DB・門（`memory/gate`）は読めない。会話は stdout から、
 /// 門の段は手元の値を相手に渡さない（相手の claude は相手の `~/.claude` を見る）。要れば相手に AT22 の門を入れる
 enum Remote {
+    /// どう繋ぐか。VPN（WireGuard など）は繋がっていれば素の ssh で届くので、選ぶのは2つだけ
+    enum Via: String, Codable, CaseIterable {
+        /// 素の ssh（鍵は ~/.ssh に任せる）。踏み台やポートは `options` に書く（-J bastion / -p 2222）
+        case ssh
+        /// Tailscale SSH。鍵を置かずに、Tailscale のログインで入る（相手で `tailscale up --ssh` が要る）
+        case tailscale
+
+        var title: String { self == .ssh ? "SSH" : "Tailscale" }
+    }
+
     struct Host: Codable, Identifiable, Equatable {
         var id = UUID()
         /// 表示名
         var name: String
-        /// `ssh` に渡す相手（`user@host` や `~/.ssh/config` の Host 名）
+        /// 相手（`user@host`・`~/.ssh/config` の Host 名・Tailscale のマシン名）
         var target: String
         /// 相手のマシンの作業フォルダ（絶対パス）
         var path: String
+        /// 前の版の保存には無いので Optional（無ければ ssh）
+        var via: Via?
+        /// ssh に足すオプション（例 `-J bastion -p 2222`）。Tailscale では使わない
+        var options: String?
 
         /// 作業場所としての書き方
-        var workspace: String { Remote.workspace(target: target, path: path) }
+        var workspace: String { Remote.workspace(target: target, path: path, via: via ?? .ssh, options: options ?? "") }
+    }
+
+    struct Place: Equatable {
+        var target: String
+        var path: String
+        var via: Via = .ssh
+        var options = ""
     }
 
     static let hostsKey = "remoteHosts"
     static let scheme = "ssh://"
 
-    static func workspace(target: String, path: String) -> String {
-        scheme + target + (path.hasPrefix("/") ? path : "/" + path)
+    /// `ssh://相手/パス`。経由とオプションは `?via=tailscale&opt=…` に載せる（作業場所の文字列1本で起こせるように）
+    nonisolated static func workspace(target: String, path: String, via: Via = .ssh, options: String = "") -> String {
+        var out = scheme + target + (path.hasPrefix("/") ? path : "/" + path)
+        var query: [URLQueryItem] = []
+        if via != .ssh { query.append(.init(name: "via", value: via.rawValue)) }
+        if !options.trimmingCharacters(in: .whitespaces).isEmpty { query.append(.init(name: "opt", value: options)) }
+        if !query.isEmpty {
+            var c = URLComponents()
+            c.queryItems = query
+            out += "?" + (c.percentEncodedQuery ?? "")
+        }
+        return out
     }
 
     nonisolated static func isRemote(_ cwd: String) -> Bool { cwd.hasPrefix(scheme) }
 
-    /// `ssh://user@host/abs/path` → (相手, パス)
-    nonisolated static func parse(_ cwd: String) -> (target: String, path: String)? {
+    /// `ssh://user@host/abs/path?via=…&opt=…` → 相手・パス・経由・オプション
+    nonisolated static func parse(_ cwd: String) -> Place? {
         guard isRemote(cwd) else { return nil }
-        let rest = cwd.dropFirst(scheme.count)
-        guard let slash = rest.firstIndex(of: "/") else { return (String(rest), "~") }
-        let target = String(rest[..<slash])
+        let body = cwd.dropFirst(scheme.count)
+        let (head, query) = body.firstIndex(of: "?").map { (body[..<$0], String(body[body.index(after: $0)...])) } ?? (body, "")
+        var c = URLComponents()
+        c.percentEncodedQuery = query
+        let items = c.queryItems ?? []
+        let via = items.first { $0.name == "via" }?.value.flatMap(Via.init(rawValue:)) ?? .ssh
+        let options = items.first { $0.name == "opt" }?.value ?? ""
+        guard let slash = head.firstIndex(of: "/") else {
+            return head.isEmpty ? nil : Place(target: String(head), path: "~", via: via, options: options)
+        }
+        let target = String(head[..<slash])
         guard !target.isEmpty else { return nil }
-        return (target, String(rest[slash...]))
+        return Place(target: target, path: String(head[slash...]), via: via, options: options)
     }
 
     /// シェルの1語として安全に引用する
     nonisolated static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-    /// 相手のマシンで走らせる ssh の引数。コマンドは相手の PATH で引くので名前だけ渡す。
-    /// 相手のログインシェルを通す——素の ssh のシェルには `~/.local/bin` などが入っていない
-    nonisolated static func sshArguments(target: String, path: String, command: String, arguments: [String],
-                                         environment: [String: String]) -> [String] {
+    /// 相手のマシンで走らせるコマンド（相手のログインシェルを通す——素のシェルには `~/.local/bin` などが入っていない）
+    nonisolated static func remoteCommand(path: String, command: String, arguments: [String], environment: [String: String]) -> String {
         let env = environment.sorted { $0.key < $1.key }.map { "\($0.key)=\(quote($0.value))" }.joined(separator: " ")
         let cd = path == "~" ? "cd" : "cd \(quote(path))"
         let inner = "\(cd) && exec \(env.isEmpty ? "" : "env \(env) ")\(([command] + arguments).map(quote).joined(separator: " "))"
-        return ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", target, "--",
-                "exec \"${SHELL:-/bin/sh}\" -lc \(quote(inner))"]
+        return "exec \"${SHELL:-/bin/sh}\" -lc \(quote(inner))"
+    }
+
+    /// 手元で起こすもの（実行ファイルと引数）。ssh は直に、Tailscale は手元のログインシェル越しに `tailscale ssh`
+    nonisolated static func local(_ place: Place, command: String, arguments: [String],
+                                  environment: [String: String]) -> (executable: URL, arguments: [String]) {
+        let remote = remoteCommand(path: place.path, command: command, arguments: arguments, environment: environment)
+        switch place.via {
+        case .ssh:
+            let options = place.options.split(whereSeparator: \.isWhitespace).map(String.init)
+            return (URL(fileURLWithPath: "/usr/bin/ssh"),
+                    ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30"] + options + [place.target, "--", remote])
+        case .tailscale:
+            return (URL(fileURLWithPath: "/bin/zsh"),
+                    ["-lc", "exec \(quote(tailscaleBinary)) ssh \(quote(place.target)) \(quote(remote))"])
+        }
+    }
+
+    /// Tailscale の CLI。Mac App Store 版・公式アプリ版はアプリの中、brew 版は PATH の tailscale
+    nonisolated static var tailscaleBinary: String {
+        let app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        return FileManager.default.isExecutableFile(atPath: app) ? app : "tailscale"
+    }
+
+    /// Tailscale の相手の一覧（`tailscale status --json` の Peer）。MagicDNS の名前、無ければホスト名
+    nonisolated static func tailscalePeers() -> Result<[(name: String, online: Bool, os: String)], Error> {
+        Result {
+            let out = try Worktree.run("/bin/zsh", ["-lc", "\(quote(tailscaleBinary)) status --json"], in: NSHomeDirectory(), withErrors: true)
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any] else {
+                throw Worktree.Failure(message: out.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            return Self.peers(object)
+        }
+    }
+
+    nonisolated static func peers(_ status: [String: Any]) -> [(name: String, online: Bool, os: String)] {
+        ((status["Peer"] as? [String: Any]) ?? [:]).values.compactMap { value in
+            guard let p = value as? [String: Any] else { return nil }
+            let dns = (p["DNSName"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let name = dns.isEmpty ? (p["HostName"] as? String ?? "") : dns
+            return name.isEmpty ? nil : (name, p["Online"] as? Bool ?? false, p["OS"] as? String ?? "")
+        }
+        .sorted { ($0.online ? 0 : 1, $0.name) < ($1.online ? 0 : 1, $1.name) }
     }
 
     @MainActor static var hosts: [Host] {

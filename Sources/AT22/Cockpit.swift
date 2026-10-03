@@ -2407,6 +2407,60 @@ final class Cockpit {
         UserDefaults.standard.set(projects, forKey: "projects")
     }
 
+    /// プロジェクトの立ち上げ方
+    enum NewProject: Equatable {
+        /// リモートのリポジトリを置き場の下にクローンする（名前が空なら URL の末尾）
+        case clone(url: String, parent: String, name: String)
+        /// 置き場の下に新しいフォルダを作り、git init と最初のコミットまで。`github` なら gh repo create で GitHub にも作る
+        case local(parent: String, name: String, github: Bool)
+        /// 手元の既存のフォルダを登録する（git でなければ git init する）
+        case existing(path: String)
+    }
+
+    /// クローン先のフォルダ名（URL の末尾から .git を落とす）
+    nonisolated static func cloneName(_ url: String) -> String {
+        let last = url.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")).split(whereSeparator: { $0 == "/" || $0 == ":" }).last.map(String.init) ?? ""
+        return last.hasSuffix(".git") ? String(last.dropLast(4)) : last
+    }
+
+    /// 立ち上げる。git と gh は手元のログインシェルで走らせる（認証も名前の設定も本人のもの）。
+    /// 終わったら登録し、本体のパスを返す
+    func createProject(_ how: NewProject) async -> Result<String, Error> {
+        let result: Result<String, Error> = await Task.detached {
+            Result {
+                let q = Remote.quote
+                func sh(_ command: String, in dir: String) throws { _ = try Worktree.run("/bin/zsh", ["-lc", command], in: dir, withErrors: true) }
+                switch how {
+                case let .clone(url, parent, name):
+                    let folder = name.isEmpty ? Self.cloneName(url) : name
+                    guard !url.isEmpty, !folder.isEmpty else { throw Worktree.Failure(message: "URL を書いてください") }
+                    let dest = (parent as NSString).appendingPathComponent(folder)
+                    guard !FileManager.default.fileExists(atPath: dest) else { throw Worktree.Failure(message: "同じ名前のフォルダが既にある: \(dest)") }
+                    try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+                    try sh("git clone -- \(q(url)) \(q(dest))", in: parent)
+                    return dest
+                case let .local(parent, name, github):
+                    guard !name.isEmpty else { throw Worktree.Failure(message: "名前を書いてください") }
+                    let dest = (parent as NSString).appendingPathComponent(name)
+                    guard !FileManager.default.fileExists(atPath: dest) else { throw Worktree.Failure(message: "同じ名前のフォルダが既にある: \(dest)") }
+                    try FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
+                    try "# \(name)\n".write(toFile: dest + "/README.md", atomically: true, encoding: .utf8)
+                    // worktree を作るには最初のコミットが要る
+                    try sh("git init -q -b main && git add -A && git commit -qm 'はじめ'", in: dest)
+                    if github { try sh("gh repo create \(q(name)) --private --source . --push", in: dest) }
+                    return dest
+                case let .existing(path):
+                    if (try? Worktree.root(of: path)) == nil {
+                        try sh("git init -q -b main && git add -A && git commit -qm 'はじめ' --allow-empty", in: path)
+                    }
+                    return try Worktree.root(of: path)
+                }
+            }
+        }.value
+        if case let .success(repo) = result { addProject(repo) }
+        return result
+    }
+
     /// 選んだフォルダをリポジトリとして登録する。worktree の中を選んでも本体を登録する
     func addProject(containing folder: String) async -> String? {
         let result = await Task.detached { Result { try Worktree.root(of: folder) } }.value

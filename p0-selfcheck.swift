@@ -2114,13 +2114,25 @@ struct P0SelfCheck {
     /// SSH の作業場所・起こし方の上書き・定期実行の時刻。黙って動かなくなる所なので形を固定する
     static func remoteSchedulesAndOverrides() {
         // ssh://相手/パス
-        assert(Remote.parse("ssh://me@box/home/me/repo")! == ("me@box", "/home/me/repo"))
+        assert(Remote.parse("ssh://me@box/home/me/repo") == .init(target: "me@box", path: "/home/me/repo"))
         assert(Remote.parse("/Users/me/repo") == nil && Remote.workspace(target: "box", path: "srv/x") == "ssh://box/srv/x")
-        let ssh = Remote.sshArguments(target: "box", path: "/srv/my repo", command: "claude", arguments: ["-p", "it's"],
-                                      environment: ["A": "1"])
-        assert(ssh.contains("box") && ssh.contains("BatchMode=yes"), "\(ssh)")
+        // 経由とオプションは作業場所の文字列に乗って、読み戻せる
+        let via = Remote.workspace(target: "mini", path: "/r", via: .tailscale, options: "")
+        assert(Remote.parse(via) == .init(target: "mini", path: "/r", via: .tailscale), via)
+        let jump = Remote.workspace(target: "box", path: "/r", options: "-J bastion -p 2222")
+        assert(Remote.parse(jump)?.options == "-J bastion -p 2222" && Remote.parse(jump)?.path == "/r", jump)
+        let ssh = Remote.local(Remote.parse(jump)!, command: "claude", arguments: ["-p", "it's"], environment: ["A": "1"])
+        assert(ssh.executable.path == "/usr/bin/ssh" && ssh.arguments.contains("BatchMode=yes")
+               && ssh.arguments.contains("-J") && ssh.arguments.contains("bastion"), "\(ssh.arguments)")
         // 相手のログインシェルで、引用したまま走らせる（空白とクォートを壊さない）
-        assert(ssh.last!.contains("-lc") && ssh.last!.contains("my repo") && ssh.last!.contains("env A="), ssh.last!)
+        let remote = Remote.remoteCommand(path: "/srv/my repo", command: "claude", arguments: ["it's"], environment: ["A": "1"])
+        assert(remote.contains("-lc") && remote.contains("my repo") && remote.contains("env A="), remote)
+        let ts = Remote.local(Remote.parse(via)!, command: "claude", arguments: [], environment: [:])
+        assert(ts.executable.path == "/bin/zsh" && ts.arguments.last!.contains(" ssh 'mini' "), "\(ts.arguments)")
+        // Tailscale の相手: MagicDNS の名前（末尾の . を落とす）、つながっているものが先
+        let peers = Remote.peers(["Peer": ["a": ["DNSName": "mini.tail1.ts.net.", "HostName": "mini", "Online": false, "OS": "macOS"],
+                                           "b": ["DNSName": "", "HostName": "pi", "Online": true, "OS": "linux"]]])
+        assert(peers.map(\.name) == ["pi", "mini.tail1.ts.net"], "\(peers.map(\.name))")
         // 上書き: 引数は空白区切り、環境変数は ; か改行区切りの K=V
         assert(LaunchOverrides.arguments(" --foo  bar ") == ["--foo", "bar"])
         assert(LaunchOverrides.environment("A=1; B = x=y\nC") == ["A": "1", "B": "x=y"])

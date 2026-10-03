@@ -36,6 +36,23 @@ struct NewWorkspaceSheet: View {
     @State private var opened = Date()
     @State private var closing: Date?
     @State private var full = false
+    /// 新しいプロジェクトの立ち上げ（01 Repository の一番下）
+    enum ProjectMode: String, CaseIterable { case clone = "リモートをクローン", local = "ローカルで新しく", existing = "既存のフォルダ" }
+    @State private var newProject = false
+    @State private var projectMode = ProjectMode.clone
+    @State private var cloneURL = ""
+    @State private var newProjectName = ""
+    @State private var parentFolder = NewWorkspaceSheet.defaultParent
+    @State private var existingFolder = ""
+    @State private var withGitHub = false
+    @State private var projectBusy = false
+    @State private var projectProblem: String?
+
+    /// 置き場の既定: 最後に使った置き場、無ければ ~/Developer
+    static var defaultParent: String {
+        UserDefaults.standard.string(forKey: "newProjectParent") ?? (NSHomeDirectory() as NSString).appendingPathComponent("Developer")
+    }
+
     /// 開いている Issue（最初の指示の欄の「Issue から ▾」）。nil は未取得、取れなかった時は理由
     @State private var issues: [(number: Int, title: String, body: String)]?
     @State private var issueProblem: String?
@@ -160,9 +177,10 @@ struct NewWorkspaceSheet: View {
                         fromID = p.main?.id ?? p.tiles.first?.id ?? ""
                     }
                 }
-                if projects.isEmpty {
-                    Text("リポジトリがまだ無い。管制塔にプロジェクトが並ぶと選べる。").font(.bodyJP(14))
+                if projects.isEmpty && !newProject {
+                    Text("リポジトリがまだ無い。下の「＋ 新しいプロジェクト」から立ち上げる。").font(.bodyJP(14))
                 }
+                newProjectPanel
             }
         case 1:
             VStack(alignment: .leading, spacing: 0) {
@@ -236,6 +254,107 @@ struct NewWorkspaceSheet: View {
                     }
                     .onTapGesture { level = l }
                 }
+            }
+        }
+    }
+
+    /// 新しいプロジェクト: リモートをクローン／ローカルで新しく（git init と最初のコミット、GitHub にも）／既存のフォルダ
+    @ViewBuilder
+    private var newProjectPanel: some View {
+        if !newProject {
+            Button { newProject = true } label: {
+                Text("＋ 新しいプロジェクト").font(.mono(13)).tracking(0.9).padding(.horizontal, 14).frame(height: 40)
+                    .overlay(Rectangle().strokeBorder(Palette.white, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 0) {
+                    ForEach(ProjectMode.allCases, id: \.self) { m in
+                        Button(m.rawValue) { projectMode = m; projectProblem = nil }
+                            .font(.bodyJP(13)).padding(.horizontal, 12).frame(height: 32)
+                            .foregroundStyle(projectMode == m ? Palette.blue : Palette.white)
+                            .background(projectMode == m ? Palette.white : .clear)
+                            .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 1))
+                            .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                    Button("やめる") { newProject = false; projectProblem = nil }.buttonStyle(.plain).font(.mono(11))
+                }
+                switch projectMode {
+                case .clone:
+                    sheetField("https://github.com/you/repo.git または git@github.com:you/repo.git", text: $cloneURL)
+                    HStack(spacing: 8) {
+                        sheetField("置き場（この下にクローンする）", text: $parentFolder)
+                        Button("選ぶ") { if let p = Self.chooseFolder() { parentFolder = p } }.buttonStyle(.plain).font(.mono(11))
+                    }
+                    sheetField("名前（空なら URL の末尾: \(Cockpit.cloneName(cloneURL))）", text: $newProjectName)
+                case .local:
+                    sheetField("名前（フォルダ名）", text: $newProjectName)
+                    HStack(spacing: 8) {
+                        sheetField("置き場（この下に作る）", text: $parentFolder)
+                        Button("選ぶ") { if let p = Self.chooseFolder() { parentFolder = p } }.buttonStyle(.plain).font(.mono(11))
+                    }
+                    Button(withGitHub ? "■ GitHub にも作る（非公開・gh repo create）" : "□ GitHub にも作る（非公開・gh repo create）") {
+                        withGitHub.toggle()
+                    }
+                    .buttonStyle(.plain).font(.bodyJP(13))
+                case .existing:
+                    HStack(spacing: 8) {
+                        sheetField("フォルダ（git でなければ git init する）", text: $existingFolder)
+                        Button("選ぶ") { if let p = Self.chooseFolder() { existingFolder = p } }.buttonStyle(.plain).font(.mono(11))
+                    }
+                }
+                HStack(spacing: 10) {
+                    Button(projectBusy ? "立ち上げています…" : "立ち上げる ▸") { startProject() }
+                        .font(.mono(12)).padding(.horizontal, 14).frame(height: 34)
+                        .foregroundStyle(Palette.blue).background(Palette.white)
+                        .buttonStyle(.plain).disabled(projectBusy)
+                    if projectBusy { InkLoader(status: "download", pitch: 1.4, color: Palette.white) }
+                    if let projectProblem { Text(projectProblem).font(.bodyJP(12)).lineLimit(2) }
+                }
+            }
+            .padding(14)
+            .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 1))
+        }
+    }
+
+    private func sheetField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text).textFieldStyle(.plain).font(.mono(13))
+            .padding(.horizontal, 10).frame(height: 32)
+            .foregroundStyle(Palette.blue).background(Palette.white)
+    }
+
+    private static func chooseFolder() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+
+    private func startProject() {
+        let how: Cockpit.NewProject
+        let parent = (parentFolder as NSString).expandingTildeInPath
+        switch projectMode {
+        case .clone: how = .clone(url: cloneURL.trimmingCharacters(in: .whitespaces), parent: parent, name: newProjectName)
+        case .local: how = .local(parent: parent, name: newProjectName.trimmingCharacters(in: .whitespaces), github: withGitHub)
+        case .existing: how = .existing(path: (existingFolder as NSString).expandingTildeInPath)
+        }
+        projectBusy = true
+        projectProblem = nil
+        Task {
+            let result = await cockpit.createProject(how)
+            projectBusy = false
+            switch result {
+            case let .success(path):
+                UserDefaults.standard.set(parent, forKey: "newProjectParent")
+                repo = path
+                fromID = path
+                newProject = false
+            case let .failure(error):
+                projectProblem = "\(error)".split(separator: "\n").prefix(2).joined(separator: " ")
             }
         }
     }

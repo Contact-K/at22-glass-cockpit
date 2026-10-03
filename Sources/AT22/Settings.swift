@@ -39,6 +39,9 @@ struct SettingsScreen: View {
     @AppStorage(Cockpit.sleepAfterKey) private var sleepAfter = 15
     @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 4
     @AppStorage(Hydra.maxRoundsKey) private var hydraRounds = 3
+    /// Tailscale の相手（08 Remote の「Tailscale から選ぶ」）。nil は未取得
+    @State private var tsPeers: [(name: String, online: Bool, os: String)]?
+    @State private var tsProblem: String?
     /// 会話を起こした後に会話画面へ（08 Remote の「会話を起こす」）
     var onTalk: () -> Void = {}
     @State private var note: String?
@@ -236,17 +239,38 @@ struct SettingsScreen: View {
                     stepper(value: $hydraRounds, range: 1...10, step: 1, unit: "回")
                 }
             }
-            row("08", "Remote", "SSH の先のマシンで動かす · 鍵は ~/.ssh の設定に任せる（パスワードは訊かない）") {
+            row("08", "Remote", "ほかのマシンで動かす · SSH か Tailscale で。VPN（WireGuard など）は繋がっていれば SSH で届く") {
                 ForEach($hosts) { $host in
-                    HStack(spacing: 8) {
-                        hostField("名前", text: $host.name).frame(width: 110)
-                        hostField("user@host または Host 名", text: $host.target)
-                        hostField("相手の作業フォルダ（絶対パス）", text: $host.path)
-                        Button("会話を起こす ▸") { startRemote(host) }
-                            .buttonStyle(SumiButtonStyle(primary: true, size: 11))
-                            .disabled(host.target.isEmpty || host.path.isEmpty)
-                        Button("×") { hosts.removeAll { $0.id == host.id } }.buttonStyle(.plain).font(.mono(12))
+                    let via = host.via ?? .ssh
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            hostField("名前", text: $host.name).frame(width: 110)
+                            hostField(via == .tailscale ? "Tailscale のマシン名" : "user@host または Host 名", text: $host.target)
+                            hostField("相手の作業フォルダ（絶対パス）", text: $host.path)
+                            Button("会話を起こす ▸") { startRemote(host) }
+                                .buttonStyle(SumiButtonStyle(primary: true, size: 11))
+                                .disabled(host.target.isEmpty || host.path.isEmpty)
+                            Button("×") { hosts.removeAll { $0.id == host.id } }.buttonStyle(.plain).font(.mono(12))
+                        }
+                        HStack(spacing: 8) {
+                            Text("経由").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).frame(width: 110, alignment: .leading)
+                            HStack(spacing: 0) {
+                                ForEach(Remote.Via.allCases, id: \.self) { v in
+                                    Button(v.title) { host.via = v }.buttonStyle(SumiButtonStyle(primary: via == v, size: 11))
+                                }
+                            }
+                            if via == .ssh {
+                                hostField("ssh の追加オプション（例 -J bastion -p 2222 -i ~/.ssh/work）",
+                                          text: Binding(get: { host.options ?? "" }, set: { host.options = $0 }))
+                            } else {
+                                tailscalePicker { host.target = $0 }
+                                Text("相手で tailscale up --ssh を済ませておく。鍵は要らない")
+                                    .font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3)
+                            }
+                        }
                     }
+                    .padding(.vertical, 4)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
                 }
                 Button("＋ 接続先を足す") { hosts.append(.init(name: "", target: "", path: "")) }
                     .buttonStyle(SumiButtonStyle(primary: false, size: 11))
@@ -503,6 +527,31 @@ struct SettingsScreen: View {
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+    }
+
+    /// Tailscale の相手を選ぶ（`tailscale status --json`）。開いた時に1回だけ訊く
+    private func tailscalePicker(onPick: @escaping (String) -> Void) -> some View {
+        Group {
+            if let tsPeers, !tsPeers.isEmpty {
+                SumiPicker(sections: [.init(title: "TAILSCALE", items: tsPeers.map {
+                    .init(id: $0.name, text: ($0.online ? "● " : "○ ") + $0.name + ($0.os.isEmpty ? "" : "  ·  " + $0.os), on: false)
+                })], onPick: { _, name in onPick(name) }) {
+                    Text("Tailscale から選ぶ ▾").font(.mono(11)).padding(.horizontal, 8).frame(height: 30)
+                        .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                }
+            } else if let tsProblem {
+                Text("Tailscale を読めない: " + tsProblem).font(.bodyJP(11)).foregroundStyle(Palette.Light.danger).lineLimit(1)
+            } else if tsPeers?.isEmpty == true {
+                Text("Tailscale の相手がいない").font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3)
+            }
+        }
+        .task {
+            guard frozen == nil, tsPeers == nil, tsProblem == nil else { return }
+            switch await Task.detached(operation: { Remote.tailscalePeers() }).value {
+            case let .success(list): tsPeers = list
+            case let .failure(error): tsProblem = "\(error)".split(separator: "\n").first.map(String.init) ?? "tailscale が無い"
+            }
+        }
     }
 
     private func stepper(value: Binding<Int>, range: ClosedRange<Int>, step: Int, unit: String) -> some View {
