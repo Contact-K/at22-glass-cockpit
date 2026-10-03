@@ -123,6 +123,7 @@ struct TalkScreen: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionMark(number: "01", title: "TALK", jp: "会話")
                 Spacer(minLength: 8)
+                sessionSwitch
                 // 一覧（SessionPicker）に戻る。会話そのものは閉じない
                 Button("履歴 ▴") { cockpit.selectedSession = nil; composing = false; draft = "" }
                     .buttonStyle(SumiButtonStyle(primary: false, size: 11))
@@ -137,6 +138,32 @@ struct TalkScreen: View {
                 .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
         }
         .padding(.vertical, 8)
+    }
+
+    /// いまの worktree の会話をその場で切り替える。並びは管制塔のタイルと同じ（動いているもの＋過去5本）
+    @ViewBuilder
+    private var sessionSwitch: some View {
+        if let workspace {
+            let rows = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
+            SumiPicker(sections: [
+                .init(title: "新しく", items: [.init(id: "new", text: "＋ 新しい会話", on: composing && cockpit.selectedSession == nil)]),
+                .init(title: (workspace as NSString).lastPathComponent.uppercased() + " の会話",
+                      items: rows.map { .init(id: $0.id, text: $0.title + "  ·  " + $0.backend.title, on: $0.id == cockpit.selectedSession) }),
+            ], onPick: { _, id in
+                if id == "new" {
+                    cockpit.selectedSession = nil
+                    composing = true
+                    draft = ""
+                } else if let row = rows.first(where: { $0.id == id }) {
+                    Task { await cockpit.open(row) }
+                }
+            }) {
+                Text("会話 \(rows.count) ▾").font(.mono(11)).tracking(0.9)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+            }
+            .help("この worktree の会話を切り替える")
+        }
     }
 
     @ViewBuilder
