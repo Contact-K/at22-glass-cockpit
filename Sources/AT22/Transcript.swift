@@ -606,6 +606,9 @@ final class TranscriptWatcher {
 
     private let root: URL
     private var offsets: [String: UInt64] = [:]
+    /// ファイルごとに、どこから読み始めたか。会話を開き直す時は、ここより前だけを読み直す
+    /// （ここから先はもう流し込んである。丸ごと読み直すと発言が二重になった）
+    private(set) var startOffsets: [String: UInt64] = [:]
     private var carry: [String: Data] = [:]       // 改行で切れなかった端数
     private var skipPartial: Set<String> = []     // 途中から読み始めた分の先頭1行は捨てる
     private var labeled: Set<String> = []         // meta.json を読み終えたサブエージェント
@@ -688,6 +691,7 @@ final class TranscriptWatcher {
                     budget -= min(budget, size - start)
                 }
                 offsets[key] = start
+                startOffsets[key] = start
                 if start > 0 { skipPartial.insert(key) }
                 if recent { events += label(for: url) }
             }

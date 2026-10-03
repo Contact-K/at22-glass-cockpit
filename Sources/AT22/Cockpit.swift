@@ -3227,17 +3227,24 @@ final class Cockpit {
         var cwd = ""
     }
 
-    nonisolated private static func tail(of url: URL, maximum: UInt64) -> (data: Data, partial: Bool)? {
+    /// 末尾の `maximum` バイト。`end` を渡すとそこまで（そこから先は読まない）
+    nonisolated private static func tail(of url: URL, maximum: UInt64, end: UInt64? = nil) -> (data: Data, partial: Bool)? {
         guard maximum > 0, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return nil }
-        let start = size > maximum ? size - maximum : 0
+        let stop = min(size, end ?? size)
+        guard stop > 0 else { return nil }
+        let start = stop > maximum ? stop - maximum : 0
         try? handle.seek(toOffset: start)
-        guard let data = try? handle.readToEnd() else { return nil }
+        guard let data = try? handle.read(upToCount: Int(stop - start)) else { return nil }
         return (data, start > 0)
     }
 
-    nonisolated private static func replay(_ session: RecentSession) -> SessionReplay {
+    /// transcript を追いかけている側が、ファイルごとにどこから読み始めたか（App が繋ぐ）
+    var watchedFrom: (() -> [String: UInt64])?
+
+    /// `limits` はファイルごとの「ここから先はもう流し込んである」位置。その手前だけを読む
+    nonisolated private static func replay(_ session: RecentSession, limits: [String: UInt64] = [:]) -> SessionReplay {
         let fm = FileManager.default
         let subagents = session.transcriptURL.deletingPathExtension().appendingPathComponent("subagents")
         let files = (try? fm.contentsOfDirectory(at: subagents, includingPropertiesForKeys: nil)) ?? []
@@ -3257,7 +3264,7 @@ final class Cockpit {
         var budget = TranscriptWatcher.defaultTotalBudget
         for source in sources {
             let maximum = min(TranscriptWatcher.defaultTailBytes, budget)
-            guard let chunk = tail(of: source, maximum: maximum) else { continue }
+            guard let chunk = tail(of: source, maximum: maximum, end: limits[source.path]) else { continue }
             budget -= min(budget, UInt64(chunk.data.count))
             var lines = chunk.data.split(separator: 0x0A, omittingEmptySubsequences: true)
             if chunk.partial, !lines.isEmpty { lines.removeFirst() }
@@ -3269,6 +3276,15 @@ final class Cockpit {
                 replay.events += TranscriptParser.parse(line, fallbackSession: session.id)
             }
             if budget == 0 { break }
+        }
+        // 全部もう流し込んであって読まなかった時も、作業場所（cwd）だけは頭から拾う
+        if replay.cwd.isEmpty, let handle = try? FileHandle(forReadingFrom: session.transcriptURL) {
+            defer { try? handle.close() }
+            let head = (try? handle.read(upToCount: 65_536)) ?? Data()
+            for line in head.split(separator: 0x0A) {
+                if let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                   let cwd = obj["cwd"] as? String { replay.cwd = cwd; break }
+            }
         }
         return replay
     }
@@ -3296,7 +3312,8 @@ final class Cockpit {
         }
         let selectionBeforeLoad = selectedSession
         loadingSessions.insert(session.id)
-        let replay = await Task.detached(priority: .utility) { Self.replay(session) }.value
+        let limits = watchedFrom?() ?? [:]
+        let replay = await Task.detached(priority: .utility) { Self.replay(session, limits: limits) }.value
         loadingSessions.remove(session.id)
         loadedSessions.insert(session.id)
         apply(replay.events)

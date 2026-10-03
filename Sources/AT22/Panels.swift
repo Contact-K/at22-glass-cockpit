@@ -35,10 +35,15 @@ private struct HistoryPanel: View {
     let cockpit: Cockpit
     let workspace: String
     let onNew: () -> Void
+    /// 並びを固定する。管制塔の並び（動いているもの順）のままだと、裏で状態が変わるたびに行が入れ替わり、
+    /// 選んでいる青が動いて見えた。初めて見えた順に固定し、新しい会話だけ上に足す
+    @State private var order: [String] = []
 
     var body: some View {
-        // 並びは管制塔のタイルと同じ（動いているもの＋過去5本）
-        let rows = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
+        // 中身は管制塔のタイルと同じ（動いているもの＋過去5本）。並びだけ固定する
+        let found = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
+        let ids = found.map(\.id)
+        let rows = found.sorted { (order.firstIndex(of: $0.id) ?? -1) < (order.firstIndex(of: $1.id) ?? -1) }
         SumiPanel(number: "01", title: "HISTORY", jp: "履歴", right: "\(rows.count)") {
             ForEach(rows.prefix(6)) { row in
                 let on = row.id == cockpit.selectedSession
@@ -65,6 +70,9 @@ private struct HistoryPanel: View {
                 Spacer(minLength: 0)
             }
         }
+        .onAppear { order = ids }
+        .onChange(of: ids) { _, now in order = now.filter { !order.contains($0) } + order.filter(now.contains) }
+        .onChange(of: workspace) { order = [] }
     }
 }
 

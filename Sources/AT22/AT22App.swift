@@ -79,6 +79,7 @@ struct AT22App: App {
             CockpitView(cockpit: cockpit)
                 .task {
                     watcher.onEvents = { [cockpit] events in cockpit.apply(events) }
+                    cockpit.watchedFrom = { [watcher] in watcher.startOffsets }
                     watcher.start()
                     NSApp.activate(ignoringOtherApps: true)
                 }

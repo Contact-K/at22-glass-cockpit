@@ -969,8 +969,11 @@ struct SkillPicker: View {
 
 // MARK: - エフォートの効果
 
-/// エフォートを上げるほど派手に。0（low）は何もせず、0.5（high）で墨の縁が回り、
-/// 0.75（xhigh）で桃色に滲み、1（max）で四角い火の粉が舞う。動きを減らす設定の時は止める
+/// エフォートを上げるほど派手に。段は相対（そのモデルの選べる幅の中の位置 0…1）:
+/// - 0.5（claude の high）: 墨の縁が回り、桃色に滲み、四角い火の粉が舞う
+/// - 0.75（xhigh）: 縁が太く速くなり、地に墨が流れ、青と桃の二重の滲み、火の粉が倍
+/// - 1（max）: さらに四角い波紋が外へ広がり、火の粉が尾を引き、札が息をする
+/// 動きを減らす設定の時は止める
 struct EffortAura: ViewModifier {
     let rank: Double
     @Environment(\.accessibilityReduceMotion) private var still
@@ -980,31 +983,63 @@ struct EffortAura: ViewModifier {
         if rank < 0.5 {
             content
         } else {
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: still || frozen != nil)) { context in
+            TimelineView(.animation(minimumInterval: 1 / 40, paused: still || frozen != nil)) { context in
                 let t = context.date.timeIntervalSinceReferenceDate
+                let tier = rank >= 0.99 ? 3 : rank >= 0.75 ? 2 : 1
+                let speed = [0, 120.0, 220, 360][tier]
                 content
+                    // 地に流れる墨（xhigh から）
+                    .background {
+                        if tier >= 2 {
+                            LinearGradient(colors: [Palette.pink.opacity(0), Palette.pink.opacity(tier == 3 ? 0.55 : 0.3),
+                                                    Palette.blue.opacity(tier == 3 ? 0.45 : 0.25), Palette.pink.opacity(0)],
+                                           startPoint: UnitPoint(x: -1 + (t * 0.8).truncatingRemainder(dividingBy: 3), y: 0),
+                                           endPoint: UnitPoint(x: (t * 0.8).truncatingRemainder(dividingBy: 3), y: 1))
+                        }
+                    }
+                    // 回る縁
                     .overlay {
                         Rectangle().strokeBorder(
-                            AngularGradient(colors: [Palette.blue, Palette.pink, Palette.blue, Palette.pink, Palette.blue],
-                                            center: .center, angle: .degrees(t * 90 * (0.5 + rank))),
-                            lineWidth: 1 + rank * 1.5)
+                            AngularGradient(colors: [Palette.blue, Palette.pink, .white, Palette.pink, Palette.blue],
+                                            center: .center, angle: .degrees(t * speed)),
+                            lineWidth: [0, 1.75, 3, 4][tier])
                     }
-                    .shadow(color: Palette.pink.opacity(rank >= 0.75 ? 0.45 + 0.25 * sin(t * 3) : 0), radius: rank >= 0.75 ? 7 : 0)
+                    .scaleEffect(tier == 3 ? 1 + 0.05 * sin(t * 5) : 1)
+                    // 滲み（桃、xhigh から青も重ねる）
+                    .shadow(color: Palette.pink.opacity(0.5 + 0.3 * sin(t * 3)), radius: [0, 7, 12, 18][tier])
+                    .shadow(color: Palette.blue.opacity(tier >= 2 ? 0.45 + 0.3 * cos(t * 2.3) : 0), radius: tier >= 2 ? 10 : 0)
+                    // 波紋（max）
                     .overlay {
-                        if rank >= 0.99 {
-                            Canvas { ctx, size in
-                                for i in 0..<10 {
-                                    let phase = t * 1.4 + Double(i) * 0.63
-                                    let x = size.width / 2 + cos(phase) * (size.width / 2 + 6 + Double(i % 3) * 3)
-                                    let y = size.height / 2 + sin(phase * 1.3) * (size.height / 2 + 5)
-                                    let s = 2.0 + Double(i % 2)
-                                    ctx.fill(Path(CGRect(x: x - s / 2, y: y - s / 2, width: s, height: s)),
-                                             with: .color(i % 3 == 0 ? Palette.blue : Palette.pink))
-                                }
+                        if tier == 3 {
+                            ForEach(0..<3, id: \.self) { i in
+                                let p = (t * 0.9 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                                Rectangle().stroke(i % 2 == 0 ? Palette.pink : Palette.blue, lineWidth: 2 * (1 - p))
+                                    .scaleEffect(1 + p * 1.6)
+                                    .opacity(1 - p)
                             }
-                            .padding(-14)
                             .allowsHitTesting(false)
                         }
+                    }
+                    // 火の粉
+                    .overlay {
+                        Canvas { ctx, size in
+                            let count = [0, 10, 20, 34][tier]
+                            for i in 0..<count {
+                                let trail = tier == 3 ? 4 : 1
+                                for k in 0..<trail {
+                                    let phase = (t - Double(k) * 0.035) * (1.2 + Double(tier) * 0.5) + Double(i) * 0.63
+                                    let reach = Double(tier) * 4 + Double(i % 4) * 3
+                                    let x = size.width / 2 + cos(phase) * (size.width / 2 + reach)
+                                    let y = size.height / 2 + sin(phase * 1.3) * (size.height / 2 + reach * 0.8)
+                                    let s = (2.0 + Double(i % 2) + (tier == 3 ? 1 : 0)) * (1 - Double(k) * 0.2)
+                                    let color: Color = i % 5 == 0 ? .white : i % 3 == 0 ? Palette.blue : Palette.pink
+                                    ctx.fill(Path(CGRect(x: x - s / 2, y: y - s / 2, width: s, height: s)),
+                                             with: .color(color.opacity(1 - Double(k) * 0.22)))
+                                }
+                            }
+                        }
+                        .padding(-28)
+                        .allowsHitTesting(false)
                     }
             }
         }
