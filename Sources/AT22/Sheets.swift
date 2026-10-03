@@ -283,7 +283,7 @@ struct NewWorkspaceSheet: View {
                         Text(cockpit.found[org] == nil ? "見つからない" : org.isACP ? "ACP · 書換なし" : "")
                             .font(.mono(10)).tracking(1).opacity(0.7)
                     }
-                    ForEach(Self.models(org), id: \.self) { m in
+                    ForEach(cockpit.models(org).map(\.id), id: \.self) { m in
                         let on = picks.contains(Pick(backend: org, model: m))
                         HStack(spacing: 12) {
                             Text(on ? "■" : "□").font(.mono(13))

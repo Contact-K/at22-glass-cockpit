@@ -249,10 +249,11 @@ struct SparScreen: View {
     private var sparPicker: some View {
         let b = board
         if let s = b.session, cockpit.liveSessions.contains(where: { $0.id == s }) {
-            return ModelPicker(backend: .claude, model: cockpit.model(of: s) ?? "", effort: cockpit.effort(of: s) ?? "",
+            return ModelPicker(backend: .claude, models: cockpit.models(.claude),
+                               model: cockpit.model(of: s) ?? "", effort: cockpit.effort(of: s) ?? "",
                                onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
         }
-        return ModelPicker(backend: .claude, model: b.model, effort: b.effort,
+        return ModelPicker(backend: .claude, models: cockpit.models(.claude), model: b.model, effort: b.effort,
                            onModel: { model.boards[ws, default: .init()].model = $0 },
                            onEffort: { model.boards[ws, default: .init()].effort = $0 })
     }

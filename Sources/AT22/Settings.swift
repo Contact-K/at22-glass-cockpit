@@ -64,7 +64,7 @@ struct SettingsScreen: View {
             }
             row("02", "Agent", "既定のエージェント") {
                 SumiPicker(sections: Backend.allCases.map { backend in
-                    .init(title: backend.title.uppercased(), items: NewWorkspaceSheet.models(backend).map { m in
+                    .init(title: backend.title.uppercased(), items: cockpit.models(backend).map(\.id).map { m in
                         .init(id: backend.rawValue + "|" + m, text: label(backend, m), on: agent == backend.rawValue + "|" + m)
                     })
                 }, onPick: { _, id in agent = id }) {

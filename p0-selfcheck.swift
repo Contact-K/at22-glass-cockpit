@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -89,6 +89,7 @@ struct P0SelfCheck {
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
         hydraReadsHeads()
+        catalogReadsModelLists()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3778,6 +3779,20 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// モデルの一覧: claude の list_models の応答（default と使えない行は捨てる・固定の版は claude- で始まる・
+    /// エフォートはモデルごと）と grok models の出力を読む
+    static func catalogReadsModelLists() {
+        let json = #"{"type":"control_response","response":{"subtype":"success","request_id":"m","response":{"models":[{"value":"default","displayName":"Default"},{"value":"opus","displayName":"Opus 5.5","description":"For complex work","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"haiku","displayName":"Haiku 4.5"},{"value":"claude-opus-4-6","displayName":"Opus 4.6","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]},{"value":"x","disabled":true}]}}}"#
+        let claude = AgentCatalog.parseClaude(Data(json.utf8))
+        assert(claude.map(\.id) == ["opus", "haiku", "claude-opus-4-6"], "\(claude.map(\.id))")
+        assert(claude[0].pinned == false && claude[2].pinned && claude[1].efforts.isEmpty && claude[2].efforts.count == 4)
+        assert(AgentCatalog.efforts(for: "", in: claude) == AgentCatalog.claudeEfforts, "既定は先頭のモデルの段")
+        let grok = AgentCatalog.parseGrok("You are logged in.\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n")
+        assert(grok.map(\.id) == ["grok-4.7", "grok-4.6"] && grok[0].detail == "既定")
+        assert(Cockpit.acpArguments(.grok, model: "grok-4.6", level: .normal, effort: "high")
+               == ["agent", "-m", "grok-4.6", "--reasoning-effort", "high", "stdio"])
+    }
+
     /// Hydra: 返事の ```hydra から head を拾い（壊れた行・知らないエージェントは捨て、上限で切る）、
     /// 采配の門の書式（Gate.parse が読める・dispatch / model / by が入る）にする
     static func hydraReadsHeads() {

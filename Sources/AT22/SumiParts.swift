@@ -773,29 +773,32 @@ struct SumiPicker<Label: View>: View {
 
 // MARK: - モデルとエフォート
 
-/// 入力欄の左の「モデル · エフォート ▾」。押すとモデルと考える深さを選べる（会話・壁打ちの入力欄で共通）。
+/// 入力欄の左の「モデル · エフォート ▾」。押すと板が開き、上でモデル（最新の別名・固定の版）、下でエフォートを
+/// スライダーで選ぶ（会話・壁打ちの入力欄と新規の既定で共通。Orca と同じく一覧は CLI から取る）。
 /// 選び直しは次に送った時から効く（`Cockpit.setModel` / `setEffort` が接続を畳み、--resume で繋ぎ直す）
 struct ModelPicker: View {
     let backend: Backend
+    let models: [AgentCatalog.Model]
     /// いまのモデル（空なら CLI の既定）・エフォート（空なら既定）
     let model: String
     let effort: String
     let onModel: (String) -> Void
     let onEffort: (String) -> Void
     @Environment(\.frozenTime) private var frozen
+    @State private var open = false
 
     var body: some View {
-        let label = (Self.short(model) + (effort.isEmpty ? "" : " · " + effort)).uppercased() + " ▾"
+        let current = models.first { $0.matches(model) }
+        let name = current?.label ?? Self.short(model)
+        let label = (name + (effort.isEmpty ? "" : " · " + effort)).uppercased() + " ▾"
         Group {
             if frozen != nil {
                 Text(label)
             } else {
-                SumiPicker(sections: sections, onPick: { section, id in
-                    if section == "MODEL モデル" { onModel(id) } else { onEffort(id) }
-                }) {
-                    Text(label)
-                }
-                .help("モデルとエフォート（次に送った時から）")
+                Button { open.toggle() } label: { Text(label).contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .help("モデルとエフォート（次に送った時から）")
+                    .popover(isPresented: $open, arrowEdge: .bottom) { board }
             }
         }
         .font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
@@ -803,24 +806,51 @@ struct ModelPicker: View {
         .fixedSize()
     }
 
-    private var sections: [SumiPicker<Text>.Section] {
-        var out = [SumiPicker<Text>.Section(title: "MODEL モデル", items: NewWorkspaceSheet.models(backend).map { m in
-            .init(id: m, text: m.isEmpty ? "既定" : m, on: Self.short(m) == Self.short(model))
-        })]
-        if !efforts.isEmpty {
-            out.append(.init(title: "EFFORT エフォート", items: ([""] + efforts).map { e in
-                .init(id: e, text: e.isEmpty ? "既定" : e, on: e == effort)
-            }))
+    private var board: some View {
+        let levels = AgentCatalog.efforts(for: model, in: models)
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("\(backend.title.uppercased()) // MODEL モデル").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
+                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
+            ForEach([false, true], id: \.self) { pinned in
+                let rows = models.filter { $0.pinned == pinned }
+                if !rows.isEmpty {
+                    Text(pinned ? "固定の版" : "最新（別名）").font(.bodyJP(10)).foregroundStyle(Palette.Light.fg3)
+                        .padding(.horizontal, 14).padding(.top, 6).padding(.bottom, 2)
+                    ForEach(rows) { m in row(m) }
+                }
+            }
+            Rectangle().fill(Palette.Light.line).frame(height: 1).padding(.top, 8)
+            Text("EFFORT エフォート").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
+                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+            if levels.isEmpty {
+                Text("このモデルはエフォートを選べません").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
+                    .padding(.horizontal, 14).padding(.bottom, 12)
+            } else {
+                EffortSlider(levels: levels, value: effort, fallback: AgentCatalog.defaultEffort(backend), onChange: onEffort)
+                    .padding(.horizontal, 14).padding(.bottom, 14)
+            }
         }
-        return out
+        .foregroundStyle(Palette.Light.fg)
+        .frame(width: 320, alignment: .leading)
+        .background(Palette.Light.bg)
     }
 
-    private var efforts: [String] {
-        switch backend {
-        case .claude: Launcher.efforts
-        case .codex: CodexLauncher.efforts
-        case .grok, .hermes: []
+    private func row(_ m: AgentCatalog.Model) -> some View {
+        let on = m.matches(model)
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(on ? "■" : "□").font(.mono(11))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m.label).font(.mono(12))
+                if !m.detail.isEmpty { Text(m.detail).font(.bodyJP(10)).foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg2) }
+            }
+            Spacer(minLength: 0)
+            if m.pinned { Text(m.id).font(.mono(9)).foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg3) }
         }
+        .padding(.horizontal, 14).padding(.vertical, 5)
+        .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+        .background(on ? Palette.Light.fg : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture { onModel(m.id) }
     }
 
     /// `claude-opus-5-5-20260901` → `opus-5-5`。空は既定
@@ -829,5 +859,51 @@ struct ModelPicker: View {
         var m = model.hasPrefix("claude-") ? String(model.dropFirst(7)) : model
         if let r = m.range(of: #"-\d{8}$"#, options: .regularExpression) { m.removeSubrange(r) }
         return m.replacingOccurrences(of: "[1m]", with: "")
+    }
+}
+
+/// エフォートのスライダー。段はモデルが対応するものだけ（左が軽く、右が深い）。つまみを動かすか目盛りを押す。
+/// 空（既定）の間は、既定の段の位置につまみを薄く出す
+struct EffortSlider: View {
+    let levels: [String]
+    let value: String
+    let fallback: String
+    let onChange: (String) -> Void
+
+    var body: some View {
+        let shown = levels.firstIndex(of: value) ?? levels.firstIndex(of: fallback) ?? (levels.count - 1) / 2
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { geo in
+                let step = levels.count > 1 ? (geo.size.width - 12) / CGFloat(levels.count - 1) : 0
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Palette.Light.line).frame(height: 2).padding(.horizontal, 6)
+                    Rectangle().fill(Palette.Light.fg).frame(width: step * CGFloat(shown), height: 2).padding(.leading, 6)
+                    ForEach(levels.indices, id: \.self) { i in
+                        Rectangle().fill(i <= shown ? Palette.Light.fg : Palette.Light.line)
+                            .frame(width: 2, height: 8).offset(x: 5 + step * CGFloat(i))
+                    }
+                    Rectangle().fill(value.isEmpty ? Palette.Light.fg3 : Palette.Light.fg)
+                        .frame(width: 12, height: 18).offset(x: step * CGFloat(shown))
+                }
+                .frame(height: 20)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { g in
+                    guard step > 0 else { return }
+                    let i = max(0, min(levels.count - 1, Int(((g.location.x - 6) / step).rounded())))
+                    if levels[i] != value { onChange(levels[i]) }
+                })
+            }
+            .frame(height: 20)
+            HStack(spacing: 0) {
+                ForEach(levels.indices, id: \.self) { i in
+                    Text(levels[i]).font(.mono(9)).tracking(0.6)
+                        .foregroundStyle(i == shown ? Palette.Light.fg : Palette.Light.fg3)
+                        .frame(maxWidth: .infinity, alignment: i == 0 ? .leading : i == levels.count - 1 ? .trailing : .center)
+                        .onTapGesture { onChange(levels[i]) }
+                }
+            }
+            Text(value.isEmpty ? "既定（\(fallback)）· 動かすと指定" : "指定: \(value)")
+                .font(.bodyJP(10)).foregroundStyle(Palette.Light.fg2)
+        }
     }
 }

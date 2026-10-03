@@ -1195,6 +1195,70 @@ final class Cockpit {
 
     func effort(of session: String) -> String? { sessionEffort[session] }
 
+    // MARK: モデルの一覧
+
+    /// CLI から取れたモデルの一覧（取れるまでは AgentCatalog.seed）
+    private(set) var catalog: [Backend: [AgentCatalog.Model]] = [:]
+
+    func models(_ backend: Backend) -> [AgentCatalog.Model] { catalog[backend] ?? AgentCatalog.seed(backend) }
+
+    /// 見つかっている CLI に一覧を訊く。claude は list_models（API のターンは起きない）、grok は `grok models`
+    func refreshCatalog() async {
+        let claude = found[.claude], grok = found[.grok]
+        if let claude, catalog[.claude] == nil {
+            let list = await Task.detached { Self.probeClaudeModels(claude) }.value
+            if !list.isEmpty { catalog[.claude] = list }
+        }
+        if let grok, catalog[.grok] == nil {
+            let text = await Task.detached {
+                (try? Worktree.run(grok.executable.path, ["models"], in: NSHomeDirectory(), path: grok.path)) ?? ""
+            }.value
+            let list = AgentCatalog.parseGrok(text)
+            if !list.isEmpty { catalog[.grok] = list }
+        }
+    }
+
+    /// `claude -p --input-format stream-json` に list_models を流し、control_response を待つ（20 秒で諦める）
+    nonisolated static func probeClaudeModels(_ cli: Launcher.Found) -> [AgentCatalog.Model] {
+        let task = Process()
+        task.executableURL = cli.executable
+        task.arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        task.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        if let path = cli.path {
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = path
+            task.environment = env
+        }
+        let input = Pipe(), output = Pipe()
+        task.standardInput = input
+        task.standardOutput = output
+        task.standardError = FileHandle.nullDevice
+        guard (try? task.run()) != nil else { return [] }
+        let request = #"{"type":"control_request","request_id":"at22-models","request":{"subtype":"list_models"}}"# + "\n"
+        input.fileHandleForWriting.write(Data(request.utf8))
+        // 応答が来ないまま読み取りが止まらないよう、20 秒で相手を止める（止まれば読み取りは空で返る）
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20) { if task.isRunning { task.terminate() } }
+        let deadline = Date().addingTimeInterval(20)
+        var buffer = Data()
+        var found: [AgentCatalog.Model] = []
+        while Date() < deadline, task.isRunning, found.isEmpty {
+            let chunk = output.fileHandleForReading.availableData
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[..<newline]
+                buffer.removeSubrange(...newline)
+                if line.range(of: Data("control_response".utf8)) != nil {
+                    found = AgentCatalog.parseClaude(Data(line))
+                    break
+                }
+            }
+        }
+        task.terminate()
+        try? input.fileHandleForWriting.close()
+        return found
+    }
+
     /// そのセッションが実際に使っているモデル。transcript から観測した値
     func model(of session: String) -> String? {
         sessionModel[session] ?? agents[session]?.model
@@ -1615,11 +1679,13 @@ final class Cockpit {
     /// grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
     /// それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する。
     /// Hermes はモデルも承認も自身の設定（hermes model / hermes setup）に従う
-    nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level) -> [String] {
+    nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level,
+                                         effort: String = "") -> [String] {
         switch backend {
         case .grok:
             var arguments = ["agent"]
             if !model.isEmpty { arguments += ["-m", model] }
+            if !effort.isEmpty { arguments += ["--reasoning-effort", effort] }
             if level.needsConfirmation { arguments.append("--always-approve") }
             return arguments + ["stdio"]
         case .hermes:
@@ -1639,7 +1705,8 @@ final class Cockpit {
         let token = UUID()
         do {
             let connection = try ACPConnection.start(
-                cli.executable, arguments: Self.acpArguments(backend, model: model, level: level), cwd: cwd,
+                cli.executable, arguments: Self.acpArguments(backend, model: model, level: level,
+                                                             effort: sessionEffort[session] ?? ""), cwd: cwd,
                 path: cli.path, session: session, resume: resume,
                 onEvent: agentStream(session: session),
                 onExit: exitHandler(label: backend.command, session: session, token: token))

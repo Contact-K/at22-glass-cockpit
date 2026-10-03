@@ -274,14 +274,16 @@ struct TalkScreen: View {
         return HStack(spacing: 0) {
             Group {
                 if let s = cockpit.selectedSession {
-                    ModelPicker(backend: cockpit.backend(of: s), model: cockpit.model(of: s) ?? "",
+                    ModelPicker(backend: cockpit.backend(of: s), models: cockpit.models(cockpit.backend(of: s)),
+                                model: cockpit.model(of: s) ?? "",
                                 effort: cockpit.effort(of: s) ?? "",
                                 onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
                 } else {
                     // 会話を選ぶ前は、新しく起こす時の既定を選ぶ（壁打ちの入力欄と同じ）
                     let parts = defaultAgent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
                     let backend = Backend(rawValue: parts.first ?? "") ?? .claude
-                    ModelPicker(backend: backend, model: parts.count > 1 ? parts[1] : "", effort: defaultEffort,
+                    ModelPicker(backend: backend, models: cockpit.models(backend),
+                                model: parts.count > 1 ? parts[1] : "", effort: defaultEffort,
                                 onModel: { defaultAgent = backend.rawValue + "|" + $0 }, onEffort: { defaultEffort = $0 })
                 }
             }

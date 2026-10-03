@@ -149,6 +149,8 @@ struct CockpitView: View {
         .onChange(of: claudePath) { findCLIs(force: true) }
         .onChange(of: codexPath) { findCLIs(force: true) }
         .onChange(of: grokPath) { findCLIs(force: true) }
+        // CLI が見つかったら、モデルの一覧を CLI に訊く（claude は list_models・grok は grok models）
+        .task(id: cockpit.found.keys.map(\.rawValue).sorted()) { if shot == nil { await cockpit.refreshCatalog() } }
         // Dock のバッジ＝人の番で止まっている／見ていない間に何か起きたセッションの数。
         // 画像焼き（--shot）では NSApplication が無いので何もしない
         .onChange(of: cockpit.attentionCount, initial: true) { _, count in
