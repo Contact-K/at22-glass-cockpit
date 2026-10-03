@@ -27,6 +27,7 @@ struct CockpitView: View {
     var shotSheet: String? = nil
     /// `--shot --review <worktree>` で読み込み済みの差分
     var shotReview: ReviewModel? = nil
+    var shotFiles: FilesModel? = nil
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -57,6 +58,8 @@ struct CockpitView: View {
     @State private var location = Location(prev: nil, cur: "00 TOWER")
     /// REVIEW と GIT が同じ差分・ステージ・コミットを見る
     @State private var review = ReviewModel()
+    /// FILES の木と、手で直すために開いた1本
+    @State private var files = FilesModel()
     /// 送出の間は鶴が畳んで送る（upload）、終わると片足で立つ
     @State private var craneFx: String?
 
@@ -64,7 +67,6 @@ struct CockpitView: View {
     @State private var editing: String?
     @State private var memoryDirty = false
     // 構造
-    @State private var structFilter = StructFilter.all
     // 門
     @State private var gate = GateUI()
     /// 答えた門の印。会話の流れに `GATE // W6 → ALLOWED` として混ぜる（画面だけの記録）
@@ -85,6 +87,8 @@ struct CockpitView: View {
         case delete(String)
         /// 競走の勝者を採る（組の鍵）
         case pick(String)
+        /// ⌘P
+        case quickOpen
     }
 
     struct Location: Equatable {
@@ -255,11 +259,13 @@ struct CockpitView: View {
                         GitPanels(model: shotReview ?? review,
                                   branch: tiles.first { $0.id == currentWorkspace }?.branch,
                                   branches: tiles.compactMap(\.branch), height: h)
-                    } else if tab == .talk || tab == .files {
+                    } else if tab == .files {
+                        FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
+                    } else if tab == .talk {
                         RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
                                     snapshot: snap, tasks: tasks, height: h,
                                     onOpen: { row in
-                                        if let path = row.path { overlay = .file(path) }
+                                        if let path = row.path { openFile(path) }
                                         else if !row.waiting { overlay = .agent(row.id) }
                                         else { go(.talk) }
                                     })
@@ -340,6 +346,9 @@ struct CockpitView: View {
             if let tile = tiles.first(where: { $0.id == id }) {
                 DeleteSheet(cockpit: cockpit, tile: tile, onClose: { self.overlay = nil }).frame(width: w, height: h)
             }
+        case .quickOpen:
+            QuickOpen(files: files.files, onPick: { f in self.overlay = nil; openFile(f) }, onClose: { self.overlay = nil })
+                .frame(width: w, height: h)
         case let .pick(race):
             PickSheet(cockpit: cockpit, group: tiles.filter { $0.race == race }, onClose: { self.overlay = nil })
                 .frame(width: w, height: h)
@@ -374,9 +383,9 @@ struct CockpitView: View {
                        onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
                 .offset(x: 220, y: 72)
         case .files:
-            StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW, height: h - 84 - 60,
-                            onOpen: { overlay = .file($0) })
+            FilesScreen(model: shotFiles ?? files, width: contentW, height: h)
                 .offset(x: 220, y: 84)
+                .task(id: currentWorkspace) { if shot == nil { await files.load(root: currentWorkspace) } }
         case .spar:
             SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
                            width: contentW, height: h - 84 - 60)
@@ -384,7 +393,7 @@ struct CockpitView: View {
         case .review:
             ReviewScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace, session: cockpit.selectedSession,
                          width: contentW, height: h,
-                         onOpen: { path, _ in overlay = .file(path) },
+                         onOpen: { path, line in openFile(path, line: line) },
                          onGit: { go(.git) })
                 .offset(x: 220, y: 84)
         case .git:
@@ -691,12 +700,29 @@ struct CockpitView: View {
         after(1.15) { fly(from: plan, to: book.rects["act:last"]) }
     }
 
+    /// ファイルをその行で FILES に開く。worktree の外のもの（記憶DB など）は従来の板で読む
+    private func openFile(_ path: String, line: Int = 1) {
+        guard let root = currentWorkspace, !path.hasPrefix("/") || path.hasPrefix(root + "/") else {
+            overlay = .file(path)
+            return
+        }
+        let relative = path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : path
+        if files.root != root { files.loadNow(root: root, open: nil) }
+        files.show(relative, line: line)
+        if tab != .files { go(.files) }
+    }
+
     // MARK: キー
 
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         if menu != nil { return menuKey(press) }
         if press.modifiers == .command, press.characters == "0" {
             setTower(!tower)
+            return .handled
+        }
+        if press.modifiers == .command, press.characters == "p" {
+            Task { await files.load(root: currentWorkspace) }
+            overlay = .quickOpen
             return .handled
         }
         if press.modifiers == .command, press.characters == "j" {
@@ -1169,14 +1195,6 @@ struct CraneStatus: Equatable {
     var pose: Mascot.Pose
     var state: String
     var sub: String
-}
-
-/// 02 STRUCTURE の絞り込み。メニューの Structure の葉から選ぶ
-enum StructFilter: Equatable {
-    case all
-    case category(FileCategory)
-    case ties
-    case hot
 }
 
 // MARK: - タブ

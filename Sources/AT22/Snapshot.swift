@@ -25,6 +25,7 @@ enum Snapshot {
         if gate { stopOneGate(cockpit) }
         if workspaces { stockWorkspaces(cockpit) }
         var reviewModel: ReviewModel?
+        var filesModel: FilesModel?
         // 実在の worktree を1本だけ管制塔に載せ、その差分を読み込んだ状態で焼く（REVIEW / GIT の見え方）
         if let review, let repo = try? Worktree.root(of: review) {
             cockpit.loadWorkspacesForProbe(projects: [repo], worktrees: [repo: (try? Worktree.list(repo: repo)) ?? []])
@@ -33,6 +34,10 @@ enum Snapshot {
             let model = ReviewModel()
             model.loadNow(cockpit, path: review)
             reviewModel = model
+            let files = FilesModel()
+            files.loadNow(root: review, open: model.files.first?.path)
+            files.line = 3
+            filesModel = files
         }
         // 道具の承認の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
         if approval {
@@ -44,7 +49,7 @@ enum Snapshot {
         }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel)
+            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel, shotFiles: filesModel)
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, .light))
         // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない

@@ -284,7 +284,7 @@ struct Modals: View {
                 case let .file(path): FileModal(cockpit: cockpit, path: path, onClose: onClose)
                 case let .agent(id): AgentModal(cockpit: cockpit, chip: snapshot.chips.first { $0.id == id },
                                                 label: Cockpit.agentLabels(snapshot.chips)[id] ?? "", onClose: onClose)
-                case .newWorkspace, .delete, .pick: EmptyView()
+                case .newWorkspace, .delete, .pick, .quickOpen: EmptyView()
                 }
             }
             .foregroundStyle(Palette.Light.fg)
@@ -563,129 +563,6 @@ private struct AgentModal: View {
             }
         }
         .frame(width: 460)
-    }
-}
-
-// MARK: - 02 STRUCTURE
-
-/// ファイル名の流し組み。**字の大きさが書込量**（16 + w×4 pt）。
-/// ホバーで関係（使っている／使われている）だけが浮かび、無関係は沈む。押すと // FILE
-struct StructureScreen: View {
-    let cockpit: Cockpit
-    let filter: StructFilter
-    let width: CGFloat
-    /// 下帯の上で止める。これが無いと ScrollView が窓の下端まで伸び、最後の行が帯の下に潜る
-    let height: CGFloat
-    let onOpen: (String) -> Void
-
-    @State private var hovered: String?
-    @Environment(\.frozenTime) private var frozen
-
-    /// ponytail: 流し組みに並べる上限。400 件並べると字が小さい側から読めなくなる
-    static let maxShown = 160
-
-    var body: some View {
-        let graph = cockpit.structure
-        let files = shown(graph: graph)
-        let paths = Set(files.map(\.id))
-        let ties = files.reduce(0) { $0 + (graph.dependsOn[$1.id] ?? []).intersection(paths).count }
-        VStack(alignment: .leading, spacing: 0) {
-            SectionMark(number: "02", title: "STRUCTURE", jp: "構造")
-            Text("\(Self.count(files.count, "file", "files")), \(ties == 0 ? "no ties" : Self.count(ties, "tie", "ties")).")
-                .font(.display(52)).foregroundStyle(Palette.Light.fg).padding(.top, 12)
-            Text("ホバーで関係だけが浮かび、無関係は沈みます。大きさは書込量です。" + filterNote)
-                .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2).padding(.top, 8)
-            Group {
-                if frozen != nil {
-                    flow(files, graph: graph)
-                } else {
-                    ScrollView { flow(files, graph: graph).padding(.bottom, 24) }.scrollIndicators(.never)
-                }
-            }
-            .padding(.top, 36)
-        }
-        .frame(width: width, height: height, alignment: .topLeading)
-    }
-
-    private var filterNote: String {
-        switch filter {
-        case .all: ""
-        case let .category(c): " いまは「\(c.title)」だけ。"
-        case .ties: " いまは関係のあるものだけ。"
-        case .hot: " いまは書込量の上位だけ。"
-        }
-    }
-
-    private func shown(graph: Structure.Graph) -> [FileCell] {
-        var files = cockpit.snapshot(now: Date(), mode: .structure).cards.flatMap(\.files)
-        switch filter {
-        case .all: break
-        case let .category(c): files = files.filter { FileCategory.classify(path: $0.id) == c }
-        case .ties: files = files.filter { !(graph.dependsOn[$0.id] ?? []).isEmpty || !(graph.usedBy[$0.id] ?? []).isEmpty }
-        case .hot:
-            // 書込量の上位 2%（最低1件）
-            let sorted = files.filter { $0.added + $0.removed > 0 }.sorted { $0.added + $0.removed > $1.added + $1.removed }
-            files = Array(sorted.prefix(max(1, Int(ceil(Double(files.count) * 0.02)))))
-        }
-        return Array(files.prefix(Self.maxShown))
-    }
-
-    private func flow(_ files: [FileCell], graph: Structure.Graph) -> some View {
-        // 二重下線は書込量の上位 2%（最低1件）
-        let lines = files.map { $0.added + $0.removed }.filter { $0 > 0 }.sorted(by: >)
-        let hotCut = lines.isEmpty ? Int.max : lines[min(lines.count - 1, max(0, Int(ceil(Double(files.count) * 0.02)) - 1))]
-        return FlowLayout(spacing: 18, lineSpacing: 6) {
-            ForEach(files) { file in
-                let w = Cockpit.writeWeight(added: file.added, removed: file.removed)
-                let hot = file.added + file.removed >= hotCut
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(FileCategory.classify(path: file.id).mark).font(.mono(9)).foregroundStyle(Palette.Light.fg2)
-                        .alignmentGuide(.firstTextBaseline) { d in d[.bottom] + CGFloat(1 + w * 3) }
-                    Text(file.name)
-                        .font(.mono(CGFloat(16 + w * 4)))
-                        .foregroundStyle(w == 0 ? Palette.Light.fg3 : Palette.Light.fg)
-                        .lineLimit(1)
-                        .overlay(alignment: .bottom) {
-                            if hot {
-                                VStack(spacing: 1.5) {
-                                    Rectangle().frame(height: 1.25)
-                                    Rectangle().frame(height: 1.25)
-                                }
-                                .foregroundStyle(Palette.Light.fg)
-                                .offset(y: 4)
-                            } else if w >= 2 {
-                                Rectangle().fill(Palette.Light.fg3).frame(height: 1).offset(y: 2)
-                            }
-                        }
-                }
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(hovered == file.id ? Palette.Light.bg3 : Color.clear)
-                .opacity(related(file.id, graph: graph) ? 1 : 0.22)
-                .contentShape(Rectangle())
-                .onHover { inside in
-                    if inside { hovered = file.id } else if hovered == file.id { hovered = nil }
-                }
-                .onTapGesture { onOpen(file.id) }
-                .help(file.id)
-            }
-        }
-        .frame(width: width, alignment: .leading)
-    }
-
-    private func related(_ path: String, graph: Structure.Graph) -> Bool {
-        guard let hovered else { return true }
-        return path == hovered
-            || (graph.dependsOn[hovered] ?? []).contains(path) || (graph.usedBy[hovered] ?? []).contains(path)
-            || (graph.dependsOn[path] ?? []).contains(hovered) || (graph.usedBy[path] ?? []).contains(hovered)
-    }
-
-    /// `Thirteen files`。20 までは英語の数詞で、それより上は数字で書く
-    static func count(_ n: Int, _ one: String, _ many: String) -> String {
-        let words = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
-                     "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen",
-                     "Eighteen", "Nineteen", "Twenty"]
-        let word = n < words.count ? words[n] : "\(n)"
-        return word + " " + (n == 1 ? one : many)
     }
 }
 
