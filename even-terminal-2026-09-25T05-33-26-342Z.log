@@ -1,0 +1,25 @@
+[2026-09-25 14:33:26] [server] Even Terminal v0.10.4
+[2026-09-25 14:33:26] [server] Logging to /Users/konnotakuto/Swift_PRJS/AT22_Glass_Cockpit/even-terminal-2026-09-25T05-33-26-342Z.log (level=debug)
+[2026-09-25 14:35:59] [100.123.56.89] 200 GET /api/info 221.6ms
+[2026-09-25 14:36:14] [100.123.56.89] 200 GET /api/info 189.3ms
+[2026-09-25 14:37:33] [100.123.56.89] 200 GET /api/info 200.4ms
+[2026-09-25 14:37:33] [100.123.56.89] 200 GET /api/sessions?provider=claude 18.9ms
+[2026-09-25 14:37:33] [codex] app-server starting on ws://127.0.0.1:8765
+[2026-09-25 14:37:34] [codex-app-server] codex app-server (WebSockets)
+  listening on: ws://127.0.0.1:8765
+  readyz: http://127.0.0.1:8765/readyz
+  healthz: http://127.0.0.1:8765/healthz
+  note: binds localhost only (use SSH port-forwarding for remote access)
+[2026-09-25 14:37:34] [codex-app-server] notification remoteControl/status/changed {"status":"disabled","serverName":"net.local","installationId":"c2e25fb6-9b48-42dc-9129-1b5f67c70920","environmentId":null}
+[2026-09-25 14:37:34] [codex-provider] notification missing threadId: method=remoteControl/status/changed
+[2026-09-25 14:37:34] [100.123.56.89] 200 GET /api/sessions?provider=codex 536.7ms
+[2026-09-25 14:37:34] [100.123.56.89] 200 GET /api/sessions?provider=claude 12.9ms
+[2026-09-25 14:37:34] [100.123.56.89] 200 GET /api/sessions?provider=codex 21.6ms
+[2026-09-25 14:37:34] [codex-app-server] [2m2026-09-25T05:37:34.938872Z[0m [31mERROR[0m [2mcodex_models_manager::manager[0m[2m:[0m failed to refresh available models: unexpected status 401 Unauthorized: Your authentication token has been invalidated. Please try signing in again., url: https://chatgpt.com/backend-api/codex/models?client_version=0.146.0, cf-ray: a407ad7efa7949a8-NRT, request id: req_5fe05f0102a346f2be6a78dae33df4cf, auth error: 401, auth error code: token_invalidated
+[2026-09-25 14:37:42] [sse] Client connected request=/api/events?token=REDACTED&sessionId=aa735435-b439-4a48-9374-2423f1b793f1 session=aa735435-b439-4a48-9374-2423f1b793f1 (session clients: 1, total: 1)
+[2026-09-25 14:37:44] [100.123.56.89] 200 GET /api/sessions/aa735435-b439-4a48-9374-2423f1b793f1/history?limit=10&provider=claude 5.8ms
+[2026-09-25 14:37:44] [100.123.56.89] 200 GET /api/info 197.4ms
+[2026-09-25 14:38:25] [sse] Client disconnected (total: 0)
+[2026-09-25 14:40:35] [codex-app-server] [2m2026-09-25T05:40:35.379470Z[0m [31mERROR[0m [2mcodex_models_manager::manager[0m[2m:[0m failed to refresh available models: unexpected status 401 Unauthorized: Your authentication token has been invalidated. Please try signing in again., url: https://chatgpt.com/backend-api/codex/models?client_version=0.146.0, cf-ray: a407b1e7bbcbd764-NRT, request id: req_29319ef0557f460db10bcd226d836e8f, auth error: 401, auth error code: token_invalidated
+[2026-09-25 14:43:35] [codex-app-server] [2m2026-09-25T05:43:35.769040Z[0m [31mERROR[0m [2mcodex_models_manager::manager[0m[2m:[0m failed to refresh available models: unexpected status 401 Unauthorized: Your authentication token has been invalidated. Please try signing in again., url: https://chatgpt.com/backend-api/codex/models?client_version=0.146.0, cf-ray: a407b64faa7f166d-NRT, request id: req_383904caf53c4e3293a8af9ebd54afa4, auth error: 401, auth error code: token_invalidated
+[2026-09-25 14:46:40] [codex-app-server] [2m2026-09-25T05:46:40.776513Z[0m [31mERROR[0m [2mcodex_models_manager::manager[0m[2m:[0m failed to refresh available models: timeout waiting for child process to exit
