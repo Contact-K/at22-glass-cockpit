@@ -233,7 +233,10 @@ struct CockpitView: View {
         let gates = cockpit.gates
         let actions = Cockpit.actionRows(chips: snap.chips, gates: gates,
                                          cells: snap.cards.flatMap(\.files), now: now)
-        let tasks = cockpit.allTasks(session: cockpit.selectedSession)
+        // 計画は見ている会話のもの。会話を選んでいない時は、いまの worktree の会話のものだけ（ほかの worktree を混ぜない）
+        let tasks: [RoadmapTask] = cockpit.selectedSession.map { cockpit.allTasks(session: $0) }
+            ?? currentWorkspace.map { ws in cockpit.allTasks(session: nil).filter { cockpit.workspacePath(of: $0.session) == ws } }
+            ?? []
         let busy = cockpit.isWorking(cockpit.selectedSession)
         let trail = currentTrail()
         let crane = craneStatus(busy: busy, trail: trail)

@@ -113,43 +113,49 @@ struct SettingsScreen: View {
                 Text("AT22 は API キーも OAuth トークンも預からない。ログインは各 CLI の公式のログインを起こすだけで、トークンは CLI が持つ。")
                     .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
             }
-            row("03", "Launch", "AT22 から起こすか") {
+            row("03", "Launch", "AT22 からエージェントを動かすか") {
                 HStack(spacing: 12) {
-                    Button(launcherEnabled ? "■ セッションを起こす · 続きを送る" : "□ セッションを起こす · 続きを送る") {
-                        launcherEnabled.toggle()
-                    }
-                    .buttonStyle(SumiButtonStyle(primary: launcherEnabled, size: 11))
-                    Text("既定は切。入れただけで LLM を起こすアプリにしないため")
-                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
+                    Button(launcherEnabled ? "■ 動かす" : "□ 動かす") { launcherEnabled.toggle() }
+                        .buttonStyle(SumiButtonStyle(primary: launcherEnabled, size: 11))
+                    Text(launcherEnabled
+                         ? "入: 会話から新しく起こす・続きを送る・承認に答える、ができる"
+                         : "切: 見るだけ。端末で動いている claude の様子を眺めるだけで、AT22 からは何も起こさない")
+                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
                 }
+                Text("既定は切。入れただけで LLM を起こし、料金がかかるアプリにしないため")
+                    .font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3)
             }
-            row("04", "Display", "表示と片付け") {
-                HStack(spacing: 8) {
-                    Button(showThinking ? "■ 思考を見せる" : "□ 思考を見せる") { showThinking.toggle() }
+            row("04", "Display", "画面に出すもの・片付け") {
+                settingLine("思考", "会話に、エージェントが考えた途中（thinking）も出すか") {
+                    Button(showThinking ? "■ 見せる" : "□ 見せる") { showThinking.toggle() }
                         .buttonStyle(SumiButtonStyle(primary: showThinking, size: 11))
-                    Button("止まったエージェントを畳む") {
+                }
+                settingLine("片付け", "管制塔と ACTIONS から、終わったサブエージェントの行を消す（記録は残る）") {
+                    Button("止まったものを畳む") {
                         cockpit.clearIdleAgents(now: Date())
                         flash("止まったエージェントを畳みました")
                     }
                     .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Button("全部まっさらに") {
+                }
+                settingLine("数え直し", "触った回数・⚑・作業の量をゼロにして、ここから先だけを数える（会話は消えない）") {
+                    Button("まっさらに") {
                         cockpit.clear()
                         flash("ここから先だけを数えます")
                     }
                     .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
                 }
-                HStack(spacing: 8) {
-                    Button("−") { threshold = max(2, threshold - 1) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Text("\(threshold) 回").font(.mono(13)).frame(width: 44)
-                    Button("＋") { threshold = min(Cockpit.maxReadTicks, threshold + 1) }
-                        .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    // 実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）
-                    Text("同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑ を立てる")
-                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
+                if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                // 実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）
+                settingLine("⚑ 読みすぎ", "同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑（迷っている印）を立てる") {
+                    HStack(spacing: 6) {
+                        Button("−") { threshold = max(2, threshold - 1) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                        Text("\(threshold) 回").font(.mono(13)).frame(width: 44)
+                        Button("＋") { threshold = min(Cockpit.maxReadTicks, threshold + 1) }
+                            .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    }
                 }
             }
-            row("05", "Worktrees", "置き場 · 新しく作るワークスペースから効く") {
+            row("05", "Worktrees", "新しいワークスペース（worktree）を作る場所 · 次に作るものから効く") {
                 TextField("空ならリポジトリの中（<リポジトリ>/" + Worktree.directory + "）· 例 ~/worktrees", text: $worktreeRoot)
                     .textFieldStyle(.plain).font(.mono(13))
                     .padding(.horizontal, 10).frame(height: 38)
@@ -427,6 +433,17 @@ struct SettingsScreen: View {
     }
 
     private func label(_ b: Backend, _ m: String) -> String { b.title + " " + (m.isEmpty ? "既定" : m) }
+
+    /// 行の中の1項目: 左に名前、真ん中に何のためか、右に操作
+    private func settingLine<C: View>(_ name: String, _ purpose: String, @ViewBuilder control: () -> C) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(name).font(.bodyJP(13)).frame(width: 86, alignment: .leading)
+            Text(purpose).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            control()
+        }
+        .padding(.vertical, 4)
+    }
 
     private func row<C: View>(_ n: String, _ en: String, _ jp: String, @ViewBuilder content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 10) {
