@@ -36,6 +36,27 @@ enum Backend: String, CaseIterable, Codable, Sendable {
 
     /// 探す時のコマンド名。ログインシェルの `-c` に埋め込むので、ここに書いた名前だけを使う
     var command: String { rawValue }
+
+    /// 入れ方と使い方の案内（設定の Docs / Install）。Orca と同じく、AT22 はインストールを走らせない
+    var homepage: URL {
+        switch self {
+        case .claude: URL(string: "https://code.claude.com/docs/en/setup")!
+        case .codex: URL(string: "https://github.com/openai/codex")!
+        case .grok: URL(string: "https://docs.x.ai")!
+        case .hermes: URL(string: "https://github.com/nousresearch/hermes-agent")!
+        }
+    }
+
+    /// ログインが対話式（質問に答えながら進む）か。対話式は裏で起こせないので Terminal で開く
+    var loginIsInteractive: Bool { self == .hermes }
+
+    /// 無効にしたエージェント（設定の Agents で切る）。選ぶ口に出さない。値は rawValue をカンマで
+    static let disabledKey = "disabledAgents"
+
+    static func enabled(disabled raw: String) -> [Backend] {
+        let off = Set(raw.split(separator: ",").map(String.init))
+        return allCases.filter { !off.contains($0.rawValue) }
+    }
 }
 
 /// 起動時のモデル選択肢。backend と id（CLI への渡し値）、表示用 title を持つ

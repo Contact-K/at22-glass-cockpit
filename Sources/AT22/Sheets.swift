@@ -259,7 +259,7 @@ struct NewWorkspaceSheet: View {
             }
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    ForEach(Backend.allCases, id: \.self) { b in
+                    ForEach(Backend.enabled(disabled: UserDefaults.standard.string(forKey: Backend.disabledKey) ?? ""), id: \.self) { b in
                         let on = org == b
                         HStack(spacing: 10) {
                             Text(b.title).font(.display(24))

@@ -1526,6 +1526,82 @@ final class Cockpit {
         return runInTerminal(([cli.executable.path] + backend.loginArguments).map(Self.shellQuote).joined(separator: " "))
     }
 
+    /// 裏で走らせているログイン（Orca と同じく Terminal を開かない）。URL は CLI の出力から拾って画面に出す
+    struct LoginRun: Equatable {
+        var url: URL?
+        var running = true
+        var note = ""
+    }
+    private(set) var loginRuns: [Backend: LoginRun] = [:]
+    private var loginProcesses: [Backend: Process] = [:]
+
+    /// CLI の公式のログインを裏で起こす。トークンは CLI が持ち、AT22 は預からない。
+    /// 対話式のもの（hermes setup）だけは Terminal で開く
+    func startLogin(_ backend: Backend) {
+        guard let cli = found[backend] else { loginRuns[backend] = LoginRun(running: false, note: "見つからない"); return }
+        if backend.loginIsInteractive {
+            loginRuns[backend] = LoginRun(running: false, note: login(backend) ?? "Terminal で開きました")
+            return
+        }
+        loginProcesses[backend]?.terminate()
+        let task = Process()
+        task.executableURL = cli.executable
+        task.arguments = backend.loginArguments
+        var env = ProcessInfo.processInfo.environment
+        if let path = cli.path { env["PATH"] = path }
+        task.environment = env
+        task.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.standardInput = FileHandle.nullDevice
+        loginRuns[backend] = LoginRun()
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let url = Self.firstURL(in: String(decoding: handle.availableData, as: UTF8.self)) else { return }
+            Task { @MainActor in if self?.loginRuns[backend]?.url == nil { self?.loginRuns[backend]?.url = url } }
+        }
+        task.terminationHandler = { [weak self] done in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            let ok = done.terminationStatus == 0
+            Task { @MainActor in
+                guard let self, self.loginProcesses[backend] === done else { return }
+                self.loginProcesses[backend] = nil
+                self.loginRuns[backend]?.running = false
+                self.loginRuns[backend]?.note = ok ? "ログインが終わりました" : "止まりました。Terminal で続けられます"
+            }
+        }
+        do {
+            try task.run()
+            loginProcesses[backend] = task
+        } catch {
+            loginRuns[backend] = LoginRun(running: false, note: "起こせませんでした: \(error.localizedDescription)")
+        }
+    }
+
+    func cancelLogin(_ backend: Backend) {
+        loginProcesses[backend]?.terminate()
+        loginProcesses[backend] = nil
+        loginRuns[backend] = nil
+    }
+
+    /// 出力の中の最初の https の URL（ログインの案内）
+    nonisolated static func firstURL(in text: String) -> URL? {
+        guard let r = text.range(of: #"https://[^\s"'<>]+"#, options: .regularExpression) else { return nil }
+        return URL(string: String(text[r]).trimmingCharacters(in: CharacterSet(charactersIn: ".,)")))
+    }
+
+    /// CLI を探す（起動時と、設定の「探し直す」）。場所の上書きは設定の値
+    func findCLIs(force: Bool) {
+        let d = UserDefaults.standard
+        let paths: [Backend: String] = [.claude: d.string(forKey: Self.claudePathKey) ?? "",
+                                        .codex: d.string(forKey: Self.codexPathKey) ?? "",
+                                        .grok: d.string(forKey: Self.grokPathKey) ?? ""]
+        for backend in Backend.allCases {
+            let path = paths[backend] ?? ""
+            findIfNeeded(backend, override: path.isEmpty ? nil : path, force: force)
+        }
+    }
+
     /// ログインの状態を1行で。調べ方は CLI ごとに違う（どれも読むだけ）
     func loginStatus(_ backend: Backend) async -> String {
         guard let cli = found[backend] else { return "見つからない" }

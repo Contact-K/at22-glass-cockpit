@@ -881,13 +881,7 @@ struct CockpitView: View {
         return .handled
     }
 
-    private func findCLIs(force: Bool) {
-        let paths: [Backend: String] = [.claude: claudePath, .codex: codexPath, .grok: grokPath]
-        for backend in Backend.allCases {
-            let path = paths[backend] ?? ""
-            cockpit.findIfNeeded(backend, override: path.isEmpty ? nil : path, force: force)
-        }
-    }
+    private func findCLIs(force: Bool) { cockpit.findCLIs(force: force) }
 
     // MARK: メニュー
 

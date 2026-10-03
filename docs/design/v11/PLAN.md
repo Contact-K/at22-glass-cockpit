@@ -64,3 +64,8 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
   置き場の設定（10 SETTINGS 05 Worktrees。空ならリポジトリの中、書けば `<根>/<リポジトリ名>/<名前>`）／
   会話の題（起こした時点で最初の指示から付ける。grok・hermes も台帳から。`[壁打ち…]` の頭は落とす）／
   壁打ちの「HANDOFF に書く」も本体の記憶DBへ。設定の並びは Approval / Agents / Launch / Display / Worktrees / Skills
+- 10 SETTINGS 02 Agents を Orca（`AgentsPane` / `AgentCatalogRow`）にならって組み直した: 入っている／入っていない に分け「↻ 探し直す」、
+  行ごとに 既定にする・有効/無効（`disabledAgents`、選ぶ口に出さない）・Docs/Install ↗（インストールは走らせない）・▸ で場所の上書き。
+  ログインは Terminal を開かず CLI の公式ログインを裏で起こし、出力の URL を「ブラウザで続ける ↗」に出す（hermes setup は対話式なので Terminal）。
+  Orca の Args / Env の上書きは入れていない（起こす経路を全部触るため。要る時に Launcher.Config に足す）
+- 01 TALK の見出しに「会話 ▾」: いまの worktree の会話（動いているもの＋過去5本）をその場で切り替える
