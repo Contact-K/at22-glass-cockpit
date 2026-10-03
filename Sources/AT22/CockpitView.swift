@@ -49,6 +49,8 @@ struct CockpitView: View {
     @State private var ripple: TabRipple?
     /// メニューでタブを替えた直後、波紋が覆い切るまで右列を隠す（v11 の hideR）
     @State private var hideRight = false
+    /// 最後に入ったタイル（worktree のパス）
+    @State private var enteredWorkspace: String?
     @State private var bursts: [Burst] = []
     /// 部品の矩形（ドットの出発点と行き先、墨を落とす高さ）。**観測しない箱**に入れる——
     /// @State にすると、スクロールのたびに根ごと組み直す
@@ -645,6 +647,7 @@ struct CockpitView: View {
 
     /// タイルを押した。先頭のエージェントの会話を開いて、滑って会話へ
     private func enter(_ tile: WsTile) {
+        enteredWorkspace = tile.id
         if let lead = tile.lead { Task { await cockpit.open(lead) } } else { cockpit.selectedSession = nil }
         storedTab = .talk
         setTower(false)
@@ -873,7 +876,11 @@ struct CockpitView: View {
     private var launcherReady: Bool { launcherEnabled && !cockpit.found.isEmpty }
 
     /// いま開いているワークスペース（worktree のパス）と、それを持つプロジェクト
-    private var currentWorkspace: String? { cockpit.selectedSession.flatMap { cockpit.workspacePath(of: $0) } }
+    /// いま開いている worktree。セッションがあればその置き場、無ければ最後に入ったタイル
+    /// （エージェントのいない worktree でも REVIEW・GIT・FILES・端末が使える）
+    private var currentWorkspace: String? {
+        cockpit.selectedSession.flatMap { cockpit.workspacePath(of: $0) } ?? enteredWorkspace
+    }
 
     private func project(of workspace: String?, in projects: [TowerProject]) -> TowerProject? {
         guard let workspace else { return nil }
