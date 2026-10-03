@@ -3,16 +3,17 @@ import SwiftUI
 // MARK: - 03 SPARRING の状態
 
 /// worktree ごとの壁打ち。会話そのものは読むだけのセッション（plan モード）の transcript から読み、
-/// ここが持つのは「採った・決めた・答えた」の印だけ（アプリを閉じると消える）
+/// ここが持つのは「どの会話か・採った・決めた・答えた」の印だけ。**UserDefaults に残す**——
+/// 以前はメモリだけで、アプリを閉じるたびに壁打ちが消えていた。開き直したら会話は transcript から読み直す
 @MainActor @Observable
 final class SparModel {
-    struct Step: Equatable {
+    struct Step: Equatable, Codable {
         var text: String
         var ok: Bool
         /// 司令塔が計画（TaskCreate）に積んだのを確かめた
         var planned = false
     }
-    struct Decision: Equatable {
+    struct Decision: Equatable, Codable {
         let text: String
         let why: String
         let source: String
@@ -20,7 +21,7 @@ final class SparModel {
         /// 問いに答えて決めたもの。取り消すとその問いが未決に戻る
         let question: String?
     }
-    struct Board {
+    struct Board: Codable {
         var session: String?
         var mode = Sparring.Mode.propose
         /// 壁打ちのセッションを起こす前に選んだモデルとエフォート（起こした後はセッションの値を見る）
@@ -30,11 +31,29 @@ final class SparModel {
         var decisions: [Decision] = []
         var taken: Set<String> = []
         var answered: Set<String> = []
-        /// 05 PLAN に送って、司令塔が積むのを待っている手順と、送った時のタスク数
+        /// 05 PLAN に送って、司令塔が積むのを待っている手順と、送った時のタスク数（残さない）
         var sending: (steps: [String], base: Int)?
+
+        private enum CodingKeys: String, CodingKey {
+            case session, mode, model, effort, steps, decisions, taken, answered
+        }
     }
 
-    var boards: [String: Board] = [:]
+    private static let key = "sparBoards"
+
+    var boards: [String: Board] = SparModel.restore() {
+        didSet { Self.save(boards) }
+    }
+
+    private static func restore() -> [String: Board] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let boards = try? JSONDecoder().decode([String: Board].self, from: data) else { return [:] }
+        return boards
+    }
+
+    private static func save(_ boards: [String: Board]) {
+        if let data = try? JSONEncoder().encode(boards) { UserDefaults.standard.set(data, forKey: key) }
+    }
     var fresh: Int?
 
     func board(_ ws: String) -> Board { boards[ws] ?? Board() }
@@ -106,6 +125,11 @@ struct SparScreen: View {
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
+        // 開き直した後: 覚えておいた壁打ちの会話を transcript から読み直す（選択中の会話は動かさない）
+        .task(id: workspace) {
+            guard frozen == nil, let ws = workspace, let s = model.board(ws).session else { return }
+            await cockpit.adoptSparring(s, cwd: ws)
+        }
     }
 
     // MARK: 会話
@@ -139,7 +163,8 @@ struct SparScreen: View {
             }
             .padding(EdgeInsets(top: 12, leading: 16, bottom: 10, trailing: 16))
             ForEach(Array(reply.proposals.enumerated()), id: \.offset) { i, p in
-                let key = "\(id)#\(i)"
+                // 案の文で覚える（返事の通し番号はアプリを開くたびに変わる）
+                let key = (p.kind == .step ? "S:" : "D:") + p.text
                 let taken = board.taken.contains(key)
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {

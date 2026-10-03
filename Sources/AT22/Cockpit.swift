@@ -975,12 +975,29 @@ final class Cockpit {
 
     /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。
     /// 選択中のセッションも、そのプロジェクトの門の段（`memory/gate/LEVEL`）も動かさない
+    /// 壁打ちのセッション。繋ぎ直す時も plan モード（読むだけ）で繋ぐ
+    private(set) var sparSessions: Set<String> = []
+
+    /// アプリを開き直した後、覚えておいた壁打ちのセッションを transcript から読み直す。選択中のセッションは動かさない
+    func adoptSparring(_ id: String, cwd: String) async {
+        sparSessions.insert(id)
+        guard !loadedSessions.contains(id) else { return }
+        let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        let url = project.appendingPathComponent(id + ".jsonl")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let keep = selectedSession
+        await loadSession(RecentSession(id: id, project: project.lastPathComponent, projectURL: project,
+                                        transcriptURL: url, modifiedAt: Date()))
+        selectedSession = keep
+    }
+
     func launchSparring(prompt: String, cwd: String, model: String = "", effort: String = "") -> String? {
         let keep = selectedSession
         let id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: [], level: .plan,
                               writesLevel: false, effort: effort)
         selectedSession = keep
         guard let id = id?.uuidString.lowercased() else { return nil }
+        sparSessions.insert(id)
         if !model.isEmpty { sessionModel[id] = model }
         if !effort.isEmpty { sessionEffort[id] = effort }
         return id
@@ -1047,7 +1064,8 @@ final class Cockpit {
 
         // 言葉は空で繋ぐだけ。最初の1件も呼び出し側の `send` が流す（送る口を1本に保つ）。
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
-        let config = Launcher.Config(cwd: cwd, level: gateLevel, prompt: "",
+        // 壁打ちのセッションは繋ぎ直しても読むだけ
+        let config = Launcher.Config(cwd: cwd, level: sparSessions.contains(session) ? .plan : gateLevel, prompt: "",
                                      model: sessionModel[session] ?? "", effort: sessionEffort[session] ?? "")
         let token = UUID()
         do {
