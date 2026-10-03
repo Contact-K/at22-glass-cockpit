@@ -82,7 +82,16 @@ echo "==> AT22.app を組み立て"
 rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/AT22" "$APP/Contents/MacOS/AT22"
+# SwiftTerm は静的に入る。SwiftTerm_SwiftTerm.bundle（Metal の shader）は既定で使わず、
+# SwiftTerm 自身も Bundle.module を避けているので .app には入れない（入れると署名の外に出る）
 cp "$ROOT/Resources/AT22.icns" "$APP/Contents/Resources/AT22.icns"
+# 書体。SwiftPM の resources: は使わず、起動時に Contents/Resources/Fonts から登録する
+# （Palette.swift の SumiFonts.register）。青柳衡山T が置かれていればそれも一緒に入る
+# 門の手順（Claude Code のスキル）。設定の 06 Skill から ~/.claude/skills に入れる
+cp -R "$ROOT/Resources/Skills" "$APP/Contents/Resources/Skills"
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp "$ROOT"/Resources/Fonts/*.ttf "$ROOT"/Resources/Fonts/*.otf "$ROOT"/Resources/Fonts/*.txt \
+  "$APP/Contents/Resources/Fonts/" 2>/dev/null || true
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,6 +110,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>MIT License</string>
+  <!-- 内蔵ブラウザ: エージェントが立てた http の開発サーバーと、PR などの外のページを開くため -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+  </dict>
 </dict>
 </plist>
 PLIST

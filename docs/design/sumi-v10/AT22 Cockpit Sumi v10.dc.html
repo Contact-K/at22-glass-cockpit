@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/colors.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/typography.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/effects.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/tokens/base.css">
+<link rel="stylesheet" href="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/styles.css">
+<script src="_ds/sumi-design-system-05bb6eef-0360-4c34-8076-bf7d830c9ec9/_ds_bundle.js"></script>
+<style>
+body{margin:0;min-height:100vh;background:#08085C;display:flex;align-items:flex-start;justify-content:center;padding:24px 0;}
+a{color:#1212EE;text-decoration:underline;}a:hover{color:#3030FF;}
+@keyframes sm-band{0%{transform:translateX(-100%);}100%{transform:translateX(320%);}}
+@keyframes sm-blink{0%,49%{opacity:1;}50%,100%{opacity:0;}}
+@keyframes sm-open{0%{clip-path:polygon(286px 0,286px 0,578px 900px,578px 900px);}100%{clip-path:polygon(0 0,1440px 0,1440px 900px,0 900px);}}
+@keyframes sm-blade{0%{transform:scaleX(0);}100%{transform:scaleX(1);}}
+@keyframes sm-in{0%{opacity:0;transform:translate(-12px,-4px);}100%{opacity:1;transform:none;}}
+@keyframes sm-draw{0%{stroke-dashoffset:960;}100%{stroke-dashoffset:0;}}
+@keyframes sm-late{0%,99%{visibility:hidden;}100%{visibility:visible;}}
+@keyframes sm-out{0%{opacity:1;transform:none;}100%{opacity:0;transform:translate(-14px,4px);}}
+@keyframes sm-undraw{0%{stroke-dashoffset:0;}100%{stroke-dashoffset:-960;}}
+@keyframes sm-sweep{0%{transform:translateX(-300px) skewX(-18deg);}100%{transform:translateX(1700px) skewX(-18deg);}}
+@keyframes sm-sweepb{0%{transform:translateX(1700px) skewX(-18deg);}100%{transform:translateX(-400px) skewX(-18deg);}}
+@keyframes wl-up{0%{clip-path:polygon(-20% 120%,120% 120%,120% 120%,-20% 120%);}100%{clip-path:polygon(-20% -20%,120% -20%,120% 120%,-20% 120%);}}
+@keyframes wl-out{0%{clip-path:polygon(-20% -20%,120% -20%,120% 120%,-20% 120%);}100%{clip-path:polygon(-20% -20%,120% -20%,120% -20%,-20% -20%);}}
+@keyframes wl-fade{0%{opacity:0;}100%{opacity:1;}}
+@keyframes wl-fadeout{0%{opacity:1;}100%{opacity:0;}}
+@keyframes wl-blade{0%{transform:scaleX(0);}100%{transform:scaleX(1);}}
+@keyframes wl-bladeout{0%{transform:scaleX(1);transform-origin:100% 50%;}100%{transform:scaleX(0);transform-origin:100% 50%;}}
+@keyframes wl-arrow{0%{clip-path:polygon(-20% -20%,-20% -20%,-20% 120%,-20% 120%);}100%{clip-path:polygon(-20% -20%,120% -20%,120% 120%,-20% 120%);}}
+@keyframes wl-arrowout{0%{clip-path:polygon(-20% -20%,120% -20%,120% 120%,-20% 120%);}100%{clip-path:polygon(120% -20%,120% -20%,120% 120%,120% 120%);}}
+@keyframes sm-shake{0%{transform:translate(3px,2px);}50%{transform:translate(-2px,0);}100%{transform:translate(0,0);}}
+</style>
+</helmet>
+<div data-screen-label="Glass Cockpit v10 Σ" data-surface="light" style="width:1440px;height:900px;flex:none;position:relative;overflow:hidden;background:var(--bg);color:var(--fg);">
+  <div style="position:absolute;inset:0;background:#1212EE;clip-path:polygon(0 0,1440px 0,1440px 900px,0 900px,0 856px,900px 856px,1046px 450px,900px 56px,0 56px);"></div>
+  <div style="position:absolute;left:900px;top:56px;width:540px;height:800px;clip-path:polygon(0 0,540px 0,540px 800px,0 800px,146px 394px);">
+    <x-import component-from-global-scope="SumiDesignSystem_05bb6e.Suminagashi" width="{{ inkW }}" height="{{ inkH }}" res="{{ inkRes }}" auto="{{ true }}" hover="{{ true }}" drop-every="{{ inkDrop }}" spread="{{ inkSpread }}" ink="#1212EE" accent="#FF3DCC" bg="#FFFFFF" on-ready="{{ onInk }}" hint-size="540px,800px"></x-import>
+  </div>
+  <svg style="position:absolute;inset:0;width:1440px;height:900px;pointer-events:none;"><polyline points="0,56 900,56 1046,450 900,856 0,856" fill="none" stroke="#FFFFFF" stroke-width="3"></polyline><polyline points="900,56 1046,450 900,856" fill="none" stroke="#1212EE" stroke-width="3"></polyline></svg>
+  <div data-surface="blue" style="position:absolute;left:24px;right:24px;top:0;height:56px;display:flex;align-items:center;gap:16px;color:#FFFFFF;">
+    <span style="font-family:var(--font-mono);font-size:20px;line-height:1;">AT22_</span>
+    <span style="font-family:var(--font-mono);font-size:11px;letter-spacing:.24em;">GLASS COCKPIT</span>
+    <x-import component-from-global-scope="SumiDesignSystem_05bb6e.RegMark" kind="star" size="{{ n12 }}" color="#FFFFFF" hint-size="12px,12px"></x-import>
+    <span style="display:flex;align-items:center;gap:10px;"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Barcode" value="AT22-7E04693D" width="{{ n96 }}" height="{{ n20 }}" color="#FFFFFF" label="{{ false }}" hint-size="96px,20px"></x-import><span style="display:flex;flex-direction:column;gap:3px;font-family:var(--font-mono);font-size:9px;letter-spacing:.14em;line-height:1;"><span>SESSION 7E04693D</span><span style="color:#A3A3FF;">SPEND 1.2M · {{ modeNow }}</span></span></span>
+    <span style="flex:1;"></span>
+    <sc-if value="{{ gateLive }}" hint-placeholder-val="{{ true }}">
+      <span onClick="{{ jumpGate }}" style-hover="background:#E8E8FF;" style-active="transform:translate(1px,1px);" style="cursor:pointer;position:relative;display:flex;align-items:center;gap:12px;height:40px;padding:0 34px 0 16px;background:#FFFFFF;color:#1212EE;clip-path:polygon(0 0,calc(100% - 18px) 0,100% 50%,calc(100% - 18px) 100%,0 100%,10px 50%);">
+        <x-import component-from-global-scope="SumiDesignSystem_05bb6e.Starburst" size="{{ n20 }}" points="{{ n4 }}" color="#FF3DCC" fill="{{ true }}" spin="{{ true }}" hint-size="20px,20px"></x-import>
+        <span style="display:flex;flex-direction:column;gap:3px;line-height:1;"><span style="font-family:var(--font-mono);font-size:9px;letter-spacing:.16em;">GATE 門 · 1 件止まっています</span><span style="display:flex;align-items:baseline;gap:8px;"><span style="font-family:var(--font-display);font-size:20px;">Wake W6?</span><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;">#18 · {{ waitSec }}s</span></span></span>
+        <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;border-left:1px solid #C9C9FF;padding-left:12px;">応答する ↵</span>
+      </span>
+    </sc-if>
+    <sc-if value="{{ gateIdle }}" hint-placeholder-val="{{ false }}">
+      <span style="display:flex;align-items:center;gap:10px;height:30px;padding:0 14px;border:1px dashed #A3A3FF;font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:#D9D9FF;"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.RegMark" kind="target" size="{{ n12 }}" color="#D9D9FF" hint-size="12px,12px"></x-import>GATE 00 · 止まっている指示なし</span>
+    </sc-if>
+    <span style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-family:var(--font-mono);font-size:9px;letter-spacing:.14em;line-height:1;margin-left:8px;"><span>2026-10-01</span><span style="color:#A3A3FF;">10:24 JST</span></span>
+    <x-import component-from-global-scope="SumiDesignSystem_05bb6e.RegMark" kind="cross" size="{{ n12 }}" color="#FFFFFF" hint-size="12px,12px"></x-import>
+  </div>
+  <sc-if value="{{ isWork }}" hint-placeholder-val="{{ true }}">
+  <div data-at-log="1" style="position:absolute;left:220px;top:72px;width:660px;height:630px;overflow-y:auto;padding:12px 16px 20px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;">
+    <div style="flex:none;display:flex;flex-direction:column;gap:12px;padding:8px 0 12px;">
+      <span style="display:flex;gap:10px;align-items:center;font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--fg-2);"><span style="color:var(--accent-pop);">01</span>// TALK<span style="font-family:var(--font-display-jp);font-size:14px;letter-spacing:0;color:var(--fg);">会話</span></span>
+      <div style="font-family:var(--font-display);font-size:52px;line-height:1.02;text-wrap:balance;">{{ headEn }}</div>
+      <div style="font-family:var(--font-body-jp);font-size:15px;color:var(--fg-2);">▸17 凡例の作り直し — 司令塔とのやり取りと、止まった指示はここに流れます。</div>
+    </div>
+    <sc-for list="{{ msgs }}" as="m" hint-placeholder-count="4">
+      <sc-if value="{{ m.me }}" hint-placeholder-val="{{ false }}"><div data-me-last="{{ m.lastAttr }}" style="align-self:flex-end;max-width:560px;position:relative;flex:none;visibility:{{ m.vis }};"><span style="position:absolute;inset:0;background:var(--fg);clip-path:polygon(18px 0,100% 0,100% 100%,18px 100%,0 50%);"></span><span style="position:relative;display:block;padding:11px 18px 12px 32px;font-family:var(--font-body-jp);font-size:15px;line-height:1.6;color:var(--bg);">{{ m.q }}</span></div></sc-if>
+      <sc-if value="{{ m.c0 }}" hint-placeholder-val="{{ true }}"><div data-c0-last="{{ m.c0Last }}" style="flex:none;max-width:680px;border:2px solid var(--fg);padding:14px 18px;display:flex;flex-direction:column;gap:10px;"><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--fg-2);">{{ m.label }}</span><span style="font-family:var(--font-body-jp);font-size:15px;line-height:1.8;">{{ m.a }}</span><sc-if value="{{ m.refs }}" hint-placeholder-val="{{ false }}"><span style="display:flex;gap:6px;flex-wrap:wrap;"><sc-for list="{{ m.refs }}" as="rf" hint-placeholder-count="2"><span style="font-family:var(--font-body-jp);font-size:12px;border:1px solid var(--line);padding:5px 8px;">参照 · {{ rf }}</span></sc-for></span></sc-if></div></sc-if>
+      <sc-if value="{{ m.gr }}" hint-placeholder-val="{{ false }}"><div style="flex:none;display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;color:var(--fg-2);"><span style="width:40px;height:1px;background:var(--fg);"></span>GATE // W6 → {{ m.verdict }}<span style="flex:1;height:1px;background:var(--line);"></span></div></sc-if>
+    </sc-for>
+    <sc-if value="{{ gateCard }}" hint-placeholder-val="{{ true }}">
+      <div data-gate-card="1" key="{{ cardKey }}" style="flex:none;width:100%;max-width:640px;box-sizing:border-box;border:2px solid var(--fg);background:var(--bg);display:flex;flex-direction:column;animation:sm-shake 120ms steps(2);">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--fg);color:var(--bg);font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;"><span style="width:8px;height:8px;background:var(--accent-pop);animation:sm-blink 1.2s steps(1) infinite;"></span>C0 // GATE<span style="font-family:var(--font-display-jp);font-size:14px;letter-spacing:0;">門</span><span>· W6 凡例の検査</span><span style="flex:1;"></span><span>WAIT {{ waitSec }}s</span></div>
+        <div style="padding:14px 16px 4px;display:flex;flex-direction:column;gap:6px;">
+          <span style="font-family:var(--font-display);font-size:40px;line-height:1;">Wake W6?</span>
+          <span style="font-family:var(--font-body-jp);font-size:14px;line-height:1.6;">{{ rewriteText }}</span>
+          <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;color:var(--fg-2);">haiku-4.5 · acceptEdits · → p0-selfcheck.swift</span>
+        </div>
+        <sc-if value="{{ rewriteClosed }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:12px 22px 8px 20px;">
+            <sc-for list="{{ choices }}" as="c" hint-placeholder-count="3">
+              <div data-gate-btn="{{ c.idx }}" onClick="{{ c.pick }}" onMouseEnter="{{ c.enter }}" style="{{ c.cell }}"><span style="{{ c.plate }}"></span><span style="{{ c.row }}"><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;">{{ c.n }}</span><span style="{{ c.word }}">{{ c.en }}</span><span style="font-family:var(--font-body-jp);font-size:11px;">{{ c.jp }}</span></span></div>
+            </sc-for>
+          </div>
+          <div style="padding:0 16px 10px;font-family:var(--font-mono);font-size:9px;letter-spacing:.12em;color:var(--fg-3);">←→ 選ぶ · ENTER 決定 · 1–3</div>
+        </sc-if>
+        <sc-if value="{{ rewriteOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:8px;padding:10px 16px 14px;">
+            <input value="{{ rewriteText }}" onChange="{{ onRewrite }}" style="height:38px;border:1px solid var(--fg);border-radius:0;background:var(--bg-2);padding:0 10px;font-family:var(--font-body-jp);font-size:14px;color:var(--fg);outline:none;">
+            <div style="display:flex;gap:8px;"><div data-gate-btn="rw" style="display:flex;"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Button" variant="primary" size="sm" onClick="{{ issueRewrite }}" hint-size="auto,34px">書き換えて発行 ↵</x-import></div><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Button" variant="secondary" size="sm" onClick="{{ cancelRewrite }}" hint-size="auto,34px">戻る</x-import></div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+    <sc-if value="{{ busy }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:none;max-width:680px;border:2px dashed var(--fg);padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+        <span style="display:flex;align-items:center;"><sc-for list="{{ steps }}" as="st" hint-placeholder-count="3"><sc-if value="{{ st.link }}" hint-placeholder-val="{{ false }}"><span style="width:18px;height:1px;background:{{ st.lineC }};"></span></sc-if><span style="{{ st.style }}"><sc-if value="{{ st.now }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;background:currentColor;animation:sm-blink 600ms steps(1) infinite;"></span></sc-if>{{ st.name }}</span></sc-for></span>
+        <span style="font-family:var(--font-body-jp);font-size:15px;">{{ busyLabel }}<span style="font-family:var(--font-mono);font-size:10px;color:var(--fg-3);margin-left:12px;">STEP {{ busyStep }}</span></span>
+        <span style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;"><sc-for list="{{ segs }}" as="g" hint-placeholder-count="12"><span style="height:4px;background:{{ g }};"></span></sc-for></span>
+      </div>
+    </sc-if>
+  </div>
+  <div style="position:absolute;left:220px;top:712px;width:660px;display:flex;flex-direction:column;gap:10px;">
+    <div style="display:flex;flex-wrap:wrap;gap:5px;"><sc-for list="{{ asks }}" as="x" hint-placeholder-count="3"><span onClick="{{ x.pick }}" style-hover="background:var(--bg-3);" style="{{ x.style }}">{{ x.q }}</span></sc-for></div>
+    <div style="display:flex;height:48px;box-sizing:border-box;border:{{ inputBorder }};background:var(--bg);">
+      <span style="display:flex;align-items:center;padding:0 14px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--fg-2);">// ASK C0</span>
+      <input value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onDraftKey }}" placeholder="{{ placeholder }}" style="flex:1;min-width:0;border:none;background:transparent;font-family:var(--font-body-jp);font-size:16px;color:var(--fg);outline:none;padding:0;">
+      <span onClick="{{ send }}" style-hover="background:var(--accent-hover);" style-active="transform:translate(1px,1px);" style="cursor:pointer;display:flex;align-items:center;padding:0 22px;background:var(--fg);color:var(--bg);font-family:var(--font-mono);font-size:11px;letter-spacing:.08em;">送る ↵</span>
+    </div>
+  </div>
+  </sc-if>
+  <sc-if value="{{ isStruct }}" hint-placeholder-val="{{ false }}">
+  <div style="position:absolute;left:220px;top:84px;width:660px;">
+    <span style="display:flex;gap:10px;align-items:center;font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--fg-2);"><span style="color:var(--accent-pop);">02</span>// STRUCTURE<span style="font-family:var(--font-display-jp);font-size:14px;letter-spacing:0;color:var(--fg);">構造</span></span>
+    <div style="font-family:var(--font-display);font-size:52px;line-height:1.02;margin-top:12px;">Thirteen files, three ties.</div>
+    <div style="font-family:var(--font-body-jp);font-size:15px;color:var(--fg-2);margin-top:8px;">ホバーで関係だけが浮かび、無関係は沈みます。大きさは書込量です。</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-top:36px;"><sc-for list="{{ structFiles }}" as="f" hint-placeholder-count="13"><span onClick="{{ f.open }}" onMouseEnter="{{ f.enter }}" onMouseLeave="{{ f.leave }}" style-hover="background:var(--bg-3);" style="{{ f.wrap }}"><span style="font-family:var(--font-mono);font-size:9px;color:var(--fg-2);align-self:flex-start;">{{ f.cat }}</span><span style="{{ f.nameStyle }}">{{ f.name }}</span></span></sc-for></div>
+  </div>
+  </sc-if>
+  <sc-if value="{{ isMemory }}" hint-placeholder-val="{{ false }}">
+  <div style="position:absolute;left:220px;top:84px;width:660px;display:flex;flex-direction:column;gap:12px;">
+    <span style="display:flex;gap:10px;align-items:center;font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--fg-2);"><span style="color:var(--accent-pop);">03</span>// SPARRING<span style="font-family:var(--font-display-jp);font-size:14px;letter-spacing:0;color:var(--fg);">壁打ち</span></span>
+    <div style="font-family:var(--font-display);font-size:52px;line-height:1.02;">What the next one should know.</div>
+    <textarea value="{{ memoText }}" onChange="{{ onMemo }}" style-focus="outline:1px solid var(--fg);outline-offset:2px;" style="height:420px;resize:none;border:2px solid var(--fg);border-radius:0;background:var(--bg);padding:16px 18px;font-family:var(--font-mono);font-size:14px;line-height:1.8;color:var(--fg);outline:none;"></textarea>
+    <div style="display:flex;align-items:center;gap:12px;"><span style="flex:1;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--fg-3);">sessions/HANDOFF.md — md のまま編集</span><sc-if value="{{ memoSaved }}" hint-placeholder-val="{{ false }}"><span style="font-family:var(--font-body-jp);font-size:12px;color:var(--status-success);">保存しました</span></sc-if><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Button" variant="primary" size="sm" onClick="{{ saveMemo }}" hint-size="auto,30px">SAVE</x-import></div>
+  </div>
+  </sc-if>
+  <div onClick="{{ openMenu }}" title="メニュー (M)" style="position:absolute;left:40px;bottom:64px;width:150px;display:flex;flex-direction:column-reverse;align-items:flex-start;gap:14px;cursor:pointer;">
+    <div data-crane-dot="1"><x-import component-from-global-scope="Mascot" form="crane" pitch="9" look="r" pose="{{ cranePose }}" busy="{{ craneBusy }}" color="#1212EE" hint-size="72px,72px"></x-import></div>
+    <div style="display:flex;flex-direction:column;gap:6px;"><span style="font-family:var(--font-body-jp);font-size:13px;line-height:1.5;">{{ craneSub }}</span><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:{{ craneStateColor }};">{{ craneState }}</span><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;border:1px solid var(--fg);padding:3px 6px;align-self:flex-start;">{{ modeNow }} · M</span></div>
+  </div>
+  <div data-files-panel="1" style="position:absolute;left:1064px;top:76px;width:352px;background:#FFFFFF;color:#1212EE;border:1px solid #1212EE;display:flex;flex-direction:column;">
+    <div style="padding:10px 14px 8px;display:flex;flex-direction:column;gap:6px;border-bottom:1px solid #1212EE;">
+      <span style="display:flex;align-items:baseline;gap:8px;font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;"><span style="color:#FF3DCC;">04</span>// ACTIONS<span style="font-family:var(--font-display-jp);font-size:14px;letter-spacing:0;">誰が・何を・どこに</span></span>
+      <span style="display:flex;align-items:center;gap:10px;"><span style="font-family:var(--font-mono);font-size:22px;line-height:1;">C0</span><span style="font-family:var(--font-body-jp);font-size:13px;">司令塔</span><span style="font-family:var(--font-mono);font-size:10px;color:#4A4AE0;">opus-5</span><span style="flex:1;"></span><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;">{{ lvNo }}</span><span style="font-family:var(--font-body-jp);font-size:11px;">{{ lvName }}</span></span>
+      <span data-ctx="1" style="display:flex;align-items:center;gap:8px;"><sc-if value="{{ ctxAlarm }}" hint-placeholder-val="{{ false }}"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.InkLoader" status="overload" pitch="1.6" hint-size="16px,16px"></x-import></sc-if><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:#4A4AE0;">CTX</span><span style="flex:1;display:grid;grid-template-columns:repeat(20,1fr);gap:2px;"><sc-for list="{{ ctxCells20 }}" as="c" hint-placeholder-count="20"><span style="height:8px;background:{{ c }};"></span></sc-for></span><span style="font-family:var(--font-display);font-size:20px;line-height:1;color:{{ ctxColor }};">{{ ctxPct }}%</span></span>
+    </div>
+    <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+      <div data-file-row="1" data-act="{{ a.key }}" data-acc="{{ a.acc }}" onClick="{{ a.open }}" style-hover="background:#E8E8FF;" style="visibility:{{ a.vis }};cursor:pointer;display:grid;grid-template-columns:16px 34px 22px minmax(0,1fr);column-gap:8px;row-gap:2px;align-items:center;padding:6px 14px 7px 10px;border-bottom:1px solid #C9C9FF;">
+        <span style="grid-row:span 2;font-family:var(--font-mono);font-size:12px;color:#8E8EEA;align-self:start;">{{ a.branch }}</span>
+        <span style="grid-row:span 2;font-family:var(--font-mono);font-size:18px;align-self:start;">{{ a.id }}</span>
+        <span style="grid-row:span 2;align-self:start;"><sc-if value="{{ a.wait }}" hint-placeholder-val="{{ false }}"><span style="display:block;width:16px;height:16px;margin:3px;background:#FF3DCC;animation:sm-blink 1.2s steps(1) infinite;"></span></sc-if><sc-if value="{{ a.loader }}" hint-placeholder-val="{{ true }}"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.InkLoader" status="{{ a.loader }}" pitch="2" hint-size="22px,22px"></x-import></sc-if></span>
+        <span style="display:flex;align-items:baseline;gap:8px;white-space:nowrap;"><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;">{{ a.verb }}</span><span style="font-family:var(--font-body-jp);font-size:12px;">{{ a.jp }}</span><span style="flex:1;"></span><span style="font-family:var(--font-mono);font-size:10px;color:#4A4AE0;">{{ a.note }}</span></span>
+        <span style="display:flex;align-items:baseline;gap:6px;min-width:0;"><span style="font-family:var(--font-mono);font-size:12px;color:#8E8EEA;">→</span><span style="{{ a.fileStyle }}">{{ a.file }}</span><sc-if value="{{ a.flag }}" hint-placeholder-val="{{ false }}"><span style="color:#FF3DCC;font-size:12px;">⚑</span></sc-if></span>
+      </div>
+    </sc-for>
+    <div style="padding:7px 14px 9px;display:flex;gap:12px;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;color:#4A4AE0;"><span>+2 DONE · W4 R1</span><span style="flex:1;"></span><span>QUIET {{ quietCount }} FILES</span></div>
+  </div>
+  <div style="position:absolute;left:1064px;top:494px;width:352px;background:#FFFFFF;color:#1212EE;border:1px solid #1212EE;display:flex;flex-direction:column;">
+    <div style="padding:10px 14px 8px;display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #1212EE;"><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;"><span style="color:#FF3DCC;">05</span>// PLAN</span><span style="font-family:var(--font-display-jp);font-size:14px;">計画</span><span style="flex:1;"></span><span style="font-family:var(--font-display);font-size:28px;line-height:1;">{{ planNow }}</span><span style="font-family:var(--font-mono);font-size:11px;">/ 21</span></div>
+    <sc-for list="{{ planRows }}" as="p" hint-placeholder-count="5">
+      <div data-plan="{{ p.n }}" style="display:grid;grid-template-columns:30px minmax(0,1fr) auto;column-gap:10px;align-items:center;height:34px;padding:0 14px;border-bottom:1px solid #C9C9FF;background:{{ p.bg }};color:{{ p.fg }};"><span style="font-family:var(--font-mono);font-size:12px;">#{{ p.n }}</span><span style="font-family:var(--font-body-jp);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ p.name }}</span><span style="display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;"><sc-if value="{{ p.gate }}" hint-placeholder-val="{{ false }}"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.InkLoader" status="{{ p.st }}" pitch="1.4" hint-size="14px,14px"></x-import></sc-if><sc-if value="{{ p.done }}" hint-placeholder-val="{{ false }}"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.InkLoader" status="done" pitch="1.4" hint-size="14px,14px"></x-import></sc-if>{{ p.tag }}</span></div>
+    </sc-for>
+    <div style="padding:7px 14px 9px;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;color:#4A4AE0;">#1–16 DONE · 読み取り専用（TaskUpdate が更新）</div>
+  </div>
+  <div data-surface="blue" style="position:absolute;left:24px;right:24px;top:856px;height:44px;display:flex;align-items:center;gap:16px;color:#FFFFFF;">
+    <span style="display:flex;flex-direction:column;gap:3px;line-height:1;width:118px;flex:none;"><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;"><span style="color:#FF3DCC;">05</span> // PLAN</span><span style="font-family:var(--font-mono);font-size:9px;letter-spacing:.1em;color:#A3A3FF;">{{ planNow }} / 21 · ⇧⌘T</span></span>
+    <div onClick="{{ toggleTasks }}" style="position:relative;flex:none;width:882px;height:44px;cursor:pointer;">
+      <div style="position:absolute;left:0;right:0;bottom:4px;"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Ruler" length="882px" step="{{ n6 }}" major="{{ n7 }}" thickness="{{ n5 }}" color="rgba(255,255,255,.45)" hint-size="882px,5px"></x-import></div>
+      <div style="position:absolute;left:0;top:6px;display:flex;gap:4px;">
+        <sc-for list="{{ ticks }}" as="t" hint-placeholder-count="21"><span title="{{ t.title }}" style="{{ t.cell }}"><span style="{{ t.num }}">{{ t.n }}</span><sc-if value="{{ t.gate }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:-6px;top:-6px;width:12px;height:12px;"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Starburst" size="{{ n12 }}" points="{{ n4 }}" color="#FF3DCC" fill="{{ true }}" hint-size="12px,12px"></x-import></span></sc-if></span></sc-for>
+      </div>
+      <div style="position:absolute;left:0;top:-1px;width:{{ doneW }}px;height:1px;background:#FFFFFF;"></div>
+    </div>
+    <span style="flex:1;display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
+      <x-import component-from-global-scope="SumiDesignSystem_05bb6e.WaveLines" width="{{ n120 }}" height="{{ n24 }}" lines="{{ n4 }}" amp="{{ n4 }}" freq="{{ n2 }}" color="#FFFFFF" animate="{{ waveLive }}" hint-size="120px,24px"></x-import>
+      <span style="display:flex;flex-direction:column;gap:3px;font-family:var(--font-mono);font-size:9px;letter-spacing:.12em;line-height:1;white-space:nowrap;"><span>{{ waveLabel }}</span><span style="color:#A3A3FF;">V0.10 · Σ</span></span>
+    </span>
+  </div>
+  <sc-if value="{{ menu }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closeMenu }}" style="position:absolute;inset:0;z-index:30;overflow:hidden;">
+    <canvas data-menu-cv="1" ref="{{ menuCv }}" width="1440" height="900" style="position:absolute;inset:0;width:1440px;height:900px;"></canvas>
+    <div style="position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2;"><div key="{{ bandKey }}" style="{{ bandAnim }}"></div></div>
+    <div style="position:absolute;inset:0;background:{{ depthBg }};opacity:{{ depthOp }};"></div>
+    <div style="{{ menuWrap }}">
+    <div data-crane-src="1" style="position:absolute;left:-2000px;top:0;pointer-events:none;"><x-import component-from-global-scope="Mascot" form="crane" pitch="64" look="l" pose="idle" color="#000000" hint-size="512px,512px"></x-import></div>
+    <sc-if value="{{ craneMask }}" hint-placeholder-val="{{ false }}"><div style="{{ craneInkStyle }}" data-late="1"><x-import component-from-global-scope="SumiDesignSystem_05bb6e.Suminagashi" width="{{ craneInkSize }}" height="{{ craneInkSize }}" res="{{ craneInkRes }}" auto="{{ true }}" drop-every="{{ inkDrop }}" ink="#08085C" bg="#FFFFFF" hint-size="512px,512px"></x-import></div></sc-if>
+    <svg style="position:absolute;inset:0;width:1440px;height:900px;pointer-events:none;"><line x1="286" y1="0" x2="578" y2="900" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="960" style="{{ menuLine }}"></line></svg>
+    <div onClick="{{ stop }}" style="position:absolute;left:310px;top:24px;display:flex;align-items:center;animation:sm-late 300ms both;"><span onClick="{{ menuRoot }}" style="cursor:pointer;font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;border:1px solid #FFFFFF;background:#FFFFFF;color:#1212EE;padding:6px 10px;">00 MENU</span><sc-for list="{{ menuCrumbs }}" as="c" hint-placeholder-count="1"><span style="width:28px;height:1px;background:#FFFFFF;"></span><span onClick="{{ c.go }}" style-hover="background:#FFFFFF;color:#1212EE;" style="cursor:pointer;font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;border:1px solid #FFFFFF;color:#FFFFFF;padding:6px 10px;">{{ c.t }}</span></sc-for><sc-if value="{{ menuDepth }}" hint-placeholder-val="{{ false }}"><span onClick="{{ menuBack }}" style-hover="background:#FFFFFF;color:#1212EE;" style="cursor:pointer;margin-left:20px;font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:#FFFFFF;padding:6px 8px;">◂ BACK · ←</span></sc-if></div>
+    <div key="{{ menuShake }}" style="position:absolute;inset:0;animation:sm-shake 110ms steps(2);">
+    <sc-for list="{{ menuItems }}" as="m" hint-placeholder-count="3">
+      <div onClick="{{ m.pick }}" onMouseEnter="{{ m.enter }}" style="{{ m.box }}">
+        <span style="{{ m.plate }}"></span>
+        <span style="{{ m.row }}"><span style="{{ m.numStyle }}">{{ m.num }}</span><span style="{{ m.word }}">{{ m.en }}</span><span style="{{ m.jpStyle }}">{{ m.jp }}</span></span>
+        <sc-if value="{{ m.on }}" hint-placeholder-val="{{ false }}"><span style="position:relative;display:flex;gap:14px;align-items:center;padding:2px 44px 10px 20px;"><span style="font-family:var(--font-body-jp);font-size:13px;line-height:1.4;color:#4A4AE0;">{{ m.desc }}</span><span style="font-family:var(--font-mono);font-size:9px;letter-spacing:.14em;color:#8E8EEA;">→ 開く · ← 戻る · M 閉じる</span></span><span key="{{ m.bladeKey }}" style="position:absolute;left:calc(100% + 6px);top:50%;margin-top:-2px;height:4px;width:150px;background:#FFFFFF;transform-origin:0 50%;animation:sm-blade 170ms steps(4) forwards;"></span></sc-if>
+      </div>
+    </sc-for>
+    </div>
+    <div style="position:absolute;left:40px;bottom:64px;width:150px;display:flex;flex-direction:column-reverse;align-items:flex-start;gap:14px;animation:sm-late 300ms both;"><x-import component-from-global-scope="Mascot" form="crane" pitch="9" look="r" pose="one" color="#FFFFFF" hint-size="72px,72px"></x-import><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:#FFFFFF;">[×] CLOSE · ESC</span></div>
+    </div>
+  </div>
+  </sc-if>
+  <canvas ref="{{ decCv }}" width="1440" height="900" style="position:absolute;left:0;top:0;width:1440px;height:900px;z-index:60;pointer-events:none;"></canvas>
+  <x-import component-from-global-scope="SumiDesignSystem_05bb6e.DotWipe" phase="{{ wipePhase }}" origin="{{ wipeOrigin }}" label="" cover-ms="{{ wipeCoverMs }}" reveal-ms="{{ wipeRevealMs }}" hint-size="0px,0px"></x-import>
+  <sc-if value="{{ wlOn }}" hint-placeholder-val="{{ false }}">
+  <div key="{{ wlKey }}" style="position:absolute;inset:0;z-index:10000;pointer-events:none;display:flex;align-items:center;justify-content:center;">
+    <div style="display:flex;flex-direction:column;align-items:flex-start;gap:14px;color:#FFFFFF;">
+      <div style="display:flex;align-items:center;gap:14px;font-family:var(--font-mono);font-size:12px;letter-spacing:.16em;">
+        <span style="{{ wlNum }}">{{ wlNo }} //</span>
+        <span style="position:relative;width:180px;height:4px;"><span style="{{ wlBlade }}"></span></span>
+        <span style="{{ wlFrom }}">FROM {{ wlPrev }}</span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:22px;">
+        <span style="{{ wlArrow }}"><span style="position:absolute;left:0;right:30px;top:50%;height:6px;margin-top:-3px;background:#FFFFFF;"></span><span style="position:absolute;right:0;top:50%;width:44px;height:52px;margin-top:-26px;background:#FFFFFF;clip-path:polygon(0 0,14px 0,44px 26px,14px 52px,0 52px,30px 26px);"></span></span>
+        {{ wlTitle }}
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding-left:66px;"><span style="{{ wlJp }}">{{ wlJpText }}</span><span style="{{ wlDesc }}">{{ wlDescText }}</span></div>
+    </div>
+  </div>
+  </sc-if>
+  <sc-if value="{{ tasksOpen }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closeTasks }}" style="position:absolute;inset:0;background:rgba(8,8,92,.8);display:grid;place-items:center;z-index:40;">
+    <div onClick="{{ stop }}" style="width:520px;background:var(--bg);border:1px solid var(--fg);padding:20px 24px;">
+      <div style="display:flex;align-items:baseline;gap:10px;"><span style="font-family:var(--font-mono);font-size:11px;color:var(--accent-pop);">06 //</span><span style="font-family:var(--font-display);font-size:36px;line-height:1;">Tasks</span><span style="font-family:var(--font-body-jp);font-size:13px;color:var(--fg-2);">読み取り専用</span><span style="flex:1;"></span><span onClick="{{ closeTasks }}" style-hover="background:var(--fg);color:var(--bg);" style="cursor:pointer;font-family:var(--font-mono);font-size:11px;">[×]</span></div>
+      <div style="margin-top:14px;border-top:1px solid var(--fg);"><sc-for list="{{ tasks }}" as="t" hint-placeholder-count="7"><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);"><span style="font-family:var(--font-mono);font-size:12px;width:24px;color:var(--fg-2);">{{ t.n }}</span><span style="{{ t.style }}">{{ t.name }}</span><span style="flex:1;"></span><span style="font-family:var(--font-mono);font-size:12px;">{{ t.mark }}</span></div></sc-for></div>
+    </div>
+  </div>
+  </sc-if>
+  <sc-if value="{{ popover }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closePopover }}" style="position:absolute;inset:0;background:rgba(8,8,92,.8);display:grid;place-items:center;z-index:50;">
+    <div onClick="{{ stop }}" style="width:460px;background:var(--bg);border:1px solid var(--fg);padding:20px 24px;">
+      <div style="display:flex;align-items:baseline;"><span style="font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--fg-2);">// FILE</span><span style="flex:1;"></span><span onClick="{{ closePopover }}" style-hover="background:var(--fg);color:var(--bg);" style="cursor:pointer;font-family:var(--font-mono);font-size:11px;">[×]</span></div>
+      <div style="font-family:var(--font-mono);font-size:24px;margin-top:8px;">{{ popName }}</div>
+      <div style="font-family:var(--font-body-jp);font-size:14px;line-height:1.75;margin-top:10px;">{{ popDesc }}</div>
+    </div>
+  </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1490,&quot;height&quot;:950},&quot;approvalLevel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;LV.3 気にかけてる&quot;,&quot;options&quot;:[&quot;LV.2 隣で見てる&quot;,&quot;LV.3 気にかけてる&quot;,&quot;LV.4 任せてる&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;動作&quot;},&quot;contextPct&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:68,&quot;min&quot;:10,&quot;max&quot;:97,&quot;step&quot;:1,&quot;unit&quot;:&quot;%&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;動作&quot;}}">
+const ASKS = [
+  { q: 'W5 に引き継いで', seq: ['think', 'handoff', 'reply'], a: 'CockpitLayout.swift の座標計算を W5 に渡しました。', refs: ['CockpitLayout.swift'], fx: [{ sel: '[data-act="HANDOFF2"]', add: 'HANDOFF2' }, { sel: '[data-act="W5"]', set: { w5Note: '+42 −7 · +1 件' } }] },
+  { q: 'ビルドを回して', seq: ['transfer', 'build', 'reply'], a: 'ビルドとテストを回しています。いまのところエラーは 0 件です。', refs: ['AT22.xcodeproj'], fx: [{ sel: '[data-act="BUILD"]', add: 'BUILD' }, { sel: '[data-plan="19"]', plan: { 19: 'now' } }] },
+  { q: 'Transcript を読み直して', seq: ['reread', 'reply'], a: 'Transcript.swift を頭から読み直しました。4 回目です。', refs: ['Transcript.swift'], fx: [{ sel: '[data-act="REREAD"]', set: { reread: 4 } }] },
+  { q: '成果を送って', seq: ['think', 'upload', 'reply'], a: '凡例の差分を PR #42 として送りました。', refs: ['PR #42'], fx: [{ sel: '[data-act="UPLOAD"]', add: 'UPLOAD' }] },
+  { q: '設定を複製して', seq: ['duplicate', 'reply'], a: 'settings.local.json を W6 用に複製しました。', refs: ['settings.local.json'], fx: [{ sel: '[data-act="DUP"]', add: 'DUP' }] },
+  { q: '引き継ぎを書いて', seq: ['think', 'write', 'done'], a: 'HANDOFF に残タスク3件を書き出しました。', refs: ['HANDOFF-08-01b.md'], fx: [{ sel: '[data-act="HANDOFF"]', add: 'HANDOFF' }, { sel: '[data-plan="21"]', plan: { 21: 'done' } }] },
+  { q: '文脈を詰め込んで', seq: ['think', 'overload', 'reply'], a: '文脈が 92% を超えました。引き継ぎを書いて新しい窓へ移るのを勧めます。', refs: null, fx: [{ sel: '[data-ctx]', set: { ctxBoost: true } }] },
+  { q: '失敗したら？', seq: ['think', 'error'], a: 'ビルドに失敗しました（2 件）。Structure.swift の型が合っていません。', refs: ['Structure.swift'], fx: [{ sel: '[data-act="ERR"]', add: 'ERR' }, { sel: '[data-plan="19"]', plan: { 19: 'err' } }] },
+  { q: 'ひと休み', seq: ['idle', 'reply'], a: '少し待機します。呼ばれたら起きます。', refs: null, fx: [] },
+  { q: 'リセット', seq: ['reply'], a: 'デモを最初の状態に戻しました。', refs: null, reset: true },
+];
+const MENU = [
+  { en: 'Work', jp: '作業', desc: '会話と門 · いま動いているもの', tab: 'work', kids: [
+    { en: 'Conversation', jp: '会話', desc: '司令塔とのやり取り', tab: 'work' },
+    { en: 'Agents', jp: 'エージェント', desc: 'C0 と配下 · 4 体', kids: [
+      { en: 'C0', jp: '司令塔', desc: 'opus-5 · 文脈 68%', tab: 'work' },
+      { en: 'W5', jp: '凡例の作り直し', desc: 'haiku-4.5 · 書込中', tab: 'work' },
+      { en: 'W6', jp: '凡例の検査', desc: 'haiku-4.5 · 門で待機', tab: 'work' } ] },
+    { en: 'Gates', jp: '門の履歴', desc: '止めた指示と応答 · 3 件', tab: 'work' } ] },
+  { en: 'Structure', jp: '構造', desc: 'ファイルの関係 · ホバーで浮かぶ', tab: 'struct', kids: [
+    { en: 'Files', jp: 'ファイル', desc: '13 件 · 種類で分ける', kids: [
+      { en: 'Sources', jp: '実装', desc: '9 件 · …/Sources/AT22/', tab: 'struct' },
+      { en: 'Docs', jp: 'ノート', desc: '2 件 · HANDOFF ほか', tab: 'struct' },
+      { en: 'Config', jp: '設定', desc: '1 件 · settings.local.json', tab: 'struct' } ] },
+    { en: 'Ties', jp: '依存', desc: '3 本の太い関係', tab: 'struct' },
+    { en: 'Hot spots', jp: '熱い所', desc: '書込量の上位 2%', tab: 'struct' } ] },
+  { en: 'Sparring', jp: '壁打ち', desc: '引き継ぎと記憶', tab: 'memory', kids: [
+    { en: 'Handoff', jp: '引き継ぎ', desc: 'sessions/HANDOFF.md', tab: 'memory' },
+    { en: 'Memory', jp: '記憶', desc: '前提 · 進行 · 5 件', tab: 'memory' },
+    { en: 'Sessions', jp: '過去の回', desc: '7E04693D ほか 12 回', tab: 'memory' } ] },
+  { en: 'Settings', jp: '設定', desc: '承認レベル · モデル · 鍵', kids: [
+    { en: 'Approval', jp: '承認レベル', desc: 'LV.2 — LV.4', tab: 'work' },
+    { en: 'Models', jp: 'モデル', desc: 'opus-5 / haiku-4.5 / sonnet-4.5', tab: 'work' },
+    { en: 'Keys', jp: '鍵', desc: 'ショートカット一覧', tab: 'work' } ] },
+];
+const DEPTH = ['#1212EE', '#0C0CA0', '#08085C'];
+const STL = { think: '考えています', search: '探しています', write: '書いています', reply: '返します', transfer: '渡しています', connect: 'つないでいます', download: '取り寄せています', delete: '消しています', error: 'つまずきました', upload: '送っています', wait: '承認を待っています', handoff: '引き継いでいます', reread: '読み返しています', duplicate: '複製しています', idle: 'うたた寝しています', done: '終わりました', build: '組み立てています', overload: '文脈があふれそうです' };
+const T18 = Math.tan(18 * Math.PI / 180), RAIL = y => 1010 + y * T18;
+class Component extends DCLogic {
+  state = {
+    tab: 'work', wl: null, menuClosing: false, menuPath: [], band: 0, bandDir: 1, decFire: 0, decFrom: null, decTo: null, hideLast: false, planHold: false, extra: [], planX: {}, w5Note: '+42 −7', reread: 3, hold: {}, ctxBoost: false, crumble: -1, craneMask: null, wipe: 'idle', wipeOrigin: null, wipeLabel: '', gate: 'pending', rewriteOpen: false, hc: 0, shake: 0, menu: false, mh: 0,
+    rewriteText: 'W6 を起こす：p0-selfcheck に凡例の検査',
+    waitSec: 12, tasksOpen: false, draft: '', popover: null, hover: null, memoSaved: false, w5Calls: 41, busy: null,
+    memoText: '# 残タスク\n- 凡例の作り直し（W5 実行中）\n- 凡例の検査（W6 門で停止中）\n- 全体ビルド確認',
+    messages: [
+      { from: 'me', q: '凡例を作り直したい。いまは6色ぜんぶ並んでいて、使っていない色まで出ている。' },
+      { from: 'c0', seq: ['search', 'think', 'reply'], a: 'Category.swift の allCases を全件並べているためです。今セッションで出現したカテゴリだけに絞れます。', refs: ['Category.swift', 'CockpitCanvas.swift'] },
+      { from: 'me', q: '凡例は今セッションに出ているカテゴリだけでいい。6色全部並べないで。' },
+      { from: 'c0', seq: ['transfer', 'reply'], a: '了解。W5 に作り直しを渡しました。出現済みカテゴリだけを allCases の順で出します。', refs: ['CockpitCanvas.swift'] },
+      { from: 'c0', seq: ['think', 'reply'], a: '仕上がりの検査に W6 を起こしたいのですが、検査ファイルへの書き込みになるので門で止めています。', refs: ['p0-selfcheck.swift'] },
+    ],
+  };
+  componentDidMount() {
+    this.T = [];
+    this.timer = setInterval(() => { if (this.state.wipe !== 'idle') return;
+      if (this.gateActive()) this.setState(s => ({ waitSec: s.waitSec + 1 }));
+      if (Math.random() < 0.25) this.setState(s => ({ w5Calls: s.w5Calls + 1 }));
+    }, 1000);
+    window.addEventListener('keydown', this.onKey);
+    this.T.push(setTimeout(() => this.setState({ craneReady: true }), 1200));
+    this.inkT = setInterval(() => {
+      const k = this.ink; if (!k) return;
+      const root = document.querySelector('[data-screen-label]'); if (!root) return;
+      const R = root.getBoundingClientRect(), sc = R.height / 900;
+      const rows = [...document.querySelectorAll('[data-file-row]')];
+      let delay = 0; const at = (el, acc, amt) => { delay += 420; const b = el.getBoundingClientRect(), y = (b.top + b.height / 2 - R.top) / sc; const edge = 900 + (y < 450 ? (y - 56) : (856 - y)) * T18; this.drip(((edge + 1064) / 2 - 900) / 540, (y - 56) / 800, acc, amt, delay); };
+      rows.forEach(el => at(el, el.dataset.acc === '1', el.dataset.acc === '1' ? 0.7 : 0.8));
+    }, 2600);
+    [300, 900, 1800].forEach(t => this.T.push(setTimeout(() => this.scrollLog(), t)));
+    this.stick = setInterval(() => { const el = document.querySelector('[data-at-log]'); if (!el) return; if (el.scrollHeight !== this.lastH) { this.lastH = el.scrollHeight; el.scrollTop = el.scrollHeight; } }, 120);
+  }
+  componentWillUnmount() { this.dead = true; cancelAnimationFrame(this.menuRaf); clearInterval(this.inkT); clearInterval(this.timer); clearInterval(this.stick); clearInterval(this.busyT); this.T.forEach(clearTimeout); window.removeEventListener('keydown', this.onKey); }
+  componentDidUpdate(pp, ps) {
+    if (this.state.menu && !this.state.craneMask && !this.maskT) this.maskT = setTimeout(() => { this.maskT = null; const c = document.querySelector('[data-crane-src] canvas'); if (c && c.width) { try { this.setState({ craneMask: c.toDataURL() }); } catch (e) {} } else this.forceUpdate(); }, 250); const p = this._prev || {}, st = this.state;
+    if (p.n !== st.messages.length || p.busy !== st.busy || p.gate !== st.gate || p.ro !== st.rewriteOpen) setTimeout(() => this.scrollLog(), 30);
+    this._prev = { n: st.messages.length, busy: st.busy, gate: st.gate, ro: st.rewriteOpen }; }
+  scrollLog() { const el = document.querySelector('[data-at-log]'); if (el) el.scrollTop = el.scrollHeight; }
+  level() { return this.props.approvalLevel ?? 'LV.3 気にかけてる'; }
+  gateActive() { return this.state.gate === 'pending' && !this.level().startsWith('LV.4'); }
+  run(seq, done) {
+    let t = 120; const dur = 2000;
+    seq.forEach((st, i) => { this.T.push(setTimeout(() => this.setState({ busy: { seq, i, t0: Date.now(), dur } }), t)); t += dur; });
+    this.T.push(setTimeout(() => { this.setState({ busy: null }); done(); }, t));
+    clearInterval(this.busyT); this.busyT = setInterval(() => { if (this.state.busy) this.forceUpdate(); }, 100);
+    this.T.push(setTimeout(() => clearInterval(this.busyT), t + 300));
+  }
+  ask(it) {
+    if (this.state.busy) return;
+    this.setState(s => ({ tab: 'work', messages: [...s.messages, { from: 'me', q: it.q }], draft: '' }));
+    this.run(it.seq, () => {
+      this.setState(s => ({ messages: [...s.messages, { from: 'c0', seq: it.seq, a: it.a, refs: it.refs, err: it.seq.includes('error') }] }));
+      this.T.push(setTimeout(() => {
+        this.scrollLog();
+        const crane = this.rectOf('[data-crane-dot]'), box = this.rectOf('[data-c0-last="1"]');
+        this.runDots(crane, box, { ink: it.seq.includes('error') ? '#1212EE' : '#1212EE' });
+        if (it.reset) { this.T.push(setTimeout(() => this.setState({ gate: 'pending', hc: 0, extra: [], planX: {}, w5Note: '+42 −7', reread: 3, hold: {}, ctxBoost: false, ctxBoost: false }), 900)); return; }
+        (it.fx || []).forEach((f, k) => this.T.push(setTimeout(() => {
+          const src = this.rectOf('[data-c0-last="1"]');
+          if (f.add) this.setState(s => ({ extra: [f.add, ...s.extra.filter(x => x !== f.add)], hold: { ...s.hold, [f.add]: true } }));
+          this.T.push(setTimeout(() => {
+            const dst = this.rectOf(f.sel); this.runDots(src, dst);
+            this.T.push(setTimeout(() => this.setState(s => ({ ...(f.set || {}), planX: f.plan ? { ...s.planX, ...f.plan } : s.planX, hold: f.add ? { ...s.hold, [f.add]: false } : s.hold })), 950));
+          }, 60));
+        }, 1100 + k * 900)));
+      }, 60));
+    });
+  }
+  reply(seq, a, refs) { this.run(seq, () => this.setState(s => ({ messages: [...s.messages, { from: 'c0', seq, a, refs }] }))); }
+  onKey = (e) => {
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') { if (e.key === 'Escape') e.target.blur(); return; }
+    const s = this.state;
+    if (s.menu) {
+      const n = this.menuLevel(s.menuPath).length;
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.setState({ mh: (s.mh + 1) % n }); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); this.setState({ mh: (s.mh + n - 1) % n }); }
+      else if (e.key === 'Enter' || e.key === 'ArrowRight') { e.preventDefault(); this.menuDive(s.mh); }
+      else if (e.key === 'ArrowLeft' || e.key === 'Backspace' || e.key === 'Escape') { e.preventDefault(); this.menuUp(); }
+      else if (e.key === 'm') this.hideMenu();
+      return;
+    }
+    const g = this.gateActive() && !s.rewriteOpen && !s.busy && s.tab === 'work';
+    if ((e.key === 'T' || e.key === 't') && e.shiftKey && e.metaKey) { e.preventDefault(); this.setState({ tasksOpen: !s.tasksOpen }); }
+    else if (e.key === 'Escape') this.setState({ tasksOpen: false, popover: null, rewriteOpen: false });
+    else if (e.key === 'm') this.openMenu();
+    else if (e.key === 'a') this.go('work');
+    else if (e.key === 'b') this.go('struct');
+    else if (e.key === 'c') this.go('memory');
+    else if (g && e.key === 'ArrowRight') { e.preventDefault(); this.setState({ hc: (s.hc + 1) % 3 }); }
+    else if (g && e.key === 'ArrowLeft') { e.preventDefault(); this.setState({ hc: (s.hc + 2) % 3 }); }
+    else if (g && e.key === 'Enter') this.choose(s.hc);
+    else if (g && ['1', '2', '3'].includes(e.key)) this.choose(+e.key - 1);
+  };
+  drawMenu = () => {
+    const c = (this.menuEl && this.menuEl.isConnected) ? this.menuEl : document.querySelector('[data-menu-cv]'); if (!c) { if (performance.now() - this.menuT0 < 2000) this.menuRaf = requestAnimationFrame(this.drawMenu); return; }
+    const ctx = c.getContext('2d'), t = performance.now() - this.menuT0, G = 24, cos = Math.cos(18 * Math.PI / 180);
+    ctx.clearRect(0, 0, 1440, 900); ctx.fillStyle = '#1212EE';
+    let done = true;
+    for (let y = 0; y < 900; y += G) for (let x = 0; x < 1440; x += G) {
+      const cx = x + G / 2, cy = y + G / 2, d = Math.abs(cx - (286 + cy * T18)) * cos;
+      const p = this.menuClosing ? 1 - Math.max(0, Math.min(1, (t - 80 - (1150 - d) * 0.14) / 90)) : Math.max(0, Math.min(1, (t - 120 - d * 0.22) / 120)); if (this.menuClosing ? p > 0 : p < 1) done = false;
+      const q = Math.round(p * 4) / 4, sz = q * (G + 1); if (sz > 0) ctx.fillRect(cx - sz / 2, cy - sz / 2, sz, sz);
+    }
+    if (!done) this.menuRaf = requestAnimationFrame(this.drawMenu); else if (!this.menuClosing) this.menuFresh = false;
+  };
+  hideMenu = () => {
+    if (!this.state.menu || this.menuClosing) return;
+    this.menuClosing = true; this.menuT0 = performance.now(); cancelAnimationFrame(this.menuRaf);
+    this.setState({ menuClosing: true }); this.menuRaf = requestAnimationFrame(this.drawMenu);
+    clearTimeout(this.menuCloseT);
+    this.menuCloseT = setTimeout(() => { cancelAnimationFrame(this.menuRaf); this.menuClosing = false; this.setState({ menu: false, menuClosing: false }); }, 560);
+  };
+  openMenu = () => { clearTimeout(this.menuCloseT); this.menuClosing = false; this.menuT0 = performance.now(); this.menuFresh = true; cancelAnimationFrame(this.menuRaf); this.menuRaf = requestAnimationFrame(this.drawMenu); this.setState(s => ({ menu: true, menuClosing: false, menuPath: [], mh: ['work', 'struct', 'memory'].indexOf(s.tab), shake: s.shake + 1 })); };
+  menuLevel(path) { let L = MENU; for (const i of path) L = L[i].kids; return L; }
+  menuDive(i) {
+    const L = this.menuLevel(this.state.menuPath), it = L[i];
+    if (!it) return;
+    if (it.kids) this.menuShift([...this.state.menuPath, i], 0);
+    else { this.setState(s => ({ shake: s.shake + 1 })); setTimeout(() => this.go(it.tab || this.state.tab, { x: 500, y: 450 }, true), 110); }
+  }
+  menuUp() { const p = this.state.menuPath; if (!p.length) { this.hideMenu(); return; } this.menuShift(p.slice(0, -1), p[p.length - 1]); }
+  menuShift(path, mh) {
+    this.menuFresh = false;
+    this.setState(s => ({ band: s.band + 1, bandDir: path.length > s.menuPath.length ? 1 : -1 }));
+    this.T.push(setTimeout(() => this.setState(s => ({ menuPath: path, mh, shake: s.shake + 1 })), 130));
+  }
+  pickMode(i, o) { this.setState(s => ({ shake: s.shake + 1 })); setTimeout(() => this.go(['work', 'struct', 'memory'][i], o, true), 110); }
+  go(tab, o, fromMenu) {
+    if (this.state.wipe !== 'idle' || (tab === this.state.tab && !fromMenu)) { if (fromMenu) this.setState({ menu: false }); return; }
+    const C = 380, H = 1100, R = 380;
+    this.setState(s => ({ wipe: 'cover', wipeOrigin: o || { x: window.innerWidth / 2, y: window.innerHeight / 2 }, wl: { to: tab, from: s.tab, n: (s.wl ? s.wl.n : 0) + 1, out: false } }));
+    this.T.push(setTimeout(() => this.setState({ wipe: 'hold', tab, menu: false }), C));
+    this.T.push(setTimeout(() => this.setState(s => ({ wl: { ...s.wl, out: true } })), C + H - 240));
+    this.T.push(setTimeout(() => this.setState({ wipe: 'reveal' }), C + H));
+    this.T.push(setTimeout(() => this.setState({ wipe: 'idle', wl: null }), C + H + R));
+  }
+  wlVals(s) {
+    const k = s.wl ? s.wl.n + ':' + s.wl.out : 'none';
+    if (this._wlK === k) return this._wlV;
+    this._wlK = k; this._wlV = this.wlBuild(s); return this._wlV;
+  }
+  wlBuild(s) {
+    const W = s.wl, D = { work: ['01', 'WORK', '作業', '会話と門'], struct: ['02', 'STRUCTURE', '構造', 'ファイルの関係'], memory: ['03', 'SPARRING', '壁打ち', '引き継ぎと記憶'] };
+    if (!W) return { wlOn: false, wlKey: 'wl0', wlTitle: null };
+    const d = D[W.to], out = W.out, st = (inA, outA, delay, extra) => ({ display: 'inline-block', animation: out ? outA + ' 150ms steps(3, jump-start) ' + Math.round(delay / 4) + 'ms both' : inA + ' 150ms steps(3, jump-start) ' + (240 + delay) + 'ms both', ...extra });
+    return {
+      wlOn: true, wlKey: 'wl' + W.n, wlNo: d[0], wlPrev: D[W.from][1], wlJpText: d[2], wlDescText: d[3],
+      wlNum: st('wl-fade', 'wl-fadeout', 0, { color: '#FF3DCC' }),
+      wlBlade: { position: 'absolute', inset: 0, background: '#FFFFFF', transformOrigin: '0 50%', animation: out ? 'wl-bladeout 120ms steps(4, jump-start) both' : 'wl-blade 120ms steps(4, jump-start) 240ms both' },
+      wlFrom: st('wl-fade', 'wl-fadeout', 420, { color: '#A3A3FF' }),
+      wlArrow: st('wl-arrow', 'wl-arrowout', 120, { position: 'relative', width: 96, height: 96, alignSelf: 'center' }),
+      wlTitle: React.createElement('span', { key: 'wt' + W.n, style: { display: 'flex' } }, d[1].split('').map((c, i) => React.createElement('span', { key: i, style: st('wl-up', 'wl-out', 160 + i * 45, { fontFamily: 'var(--font-display)', fontSize: 132, lineHeight: 1, letterSpacing: '-.01em' }) }, c))),
+      wlJp: st('wl-up', 'wl-out', 160 + d[1].length * 45 + 60, { fontFamily: 'var(--font-body-jp)', fontSize: 22 }),
+      wlDesc: st('wl-fade', 'wl-fadeout', 160 + d[1].length * 45 + 160, { fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '.14em', color: '#D9D9FF' }),
+    };
+  }
+  drip(x, y, acc, amt, delay) {
+    for (let i = 0; i < 10; i++) setTimeout(() => { const k = this.ink; if (k && !this.dead) k.drop(x + (Math.random() - 0.5) * 0.01, y + i * 0.0025, 0.03 + i * 0.002, acc, amt * 0.09); }, (delay || 0) + i * 90);
+  }
+  rectOf(sel) { const el = document.querySelector(sel), root = document.querySelector('[data-screen-label]'); if (!el || !root) return null; const R = root.getBoundingClientRect(), sc = R.width / 1440, b = el.getBoundingClientRect(); return { left: (b.left - R.left) / sc, top: (b.top - R.top) / sc, width: b.width / sc, height: b.height / sc }; }
+  runDots(A, B, o) {
+    if (!this.decEl || !A || !B) return;
+    const pt = 8, cols = Math.max(4, Math.round(B.width / pt)), rows = Math.max(2, Math.round(B.height / pt)), cw = B.width / cols, ch = B.height / rows;
+    let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+    const D = [];
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) { const u = (i + .5) / cols, v = (j + .5) / rows; D.push({ sx: A.left + u * A.width, sy: A.top + v * A.height, tx: B.left + (i + .5) * cw, ty: B.top + (j + .5) * ch, d: Math.hypot(u - .5, v - .5) * 1.4, u, j: rnd() * 60 }); }
+    (this.sets = this.sets || []).push({ D, cw, ch, t0: performance.now(), dur: (o && o.dur) || 1700, ink: (o && o.ink) || this.decInk || '#1212EE' });
+    this.decInk = null;
+    if (!this.decRaf) this.decRaf = requestAnimationFrame(this.drawDots);
+  }
+  drawDots = now => {
+    const g = this.decEl && this.decEl.getContext('2d'); if (!g) { this.decRaf = 0; return; }
+    g.clearRect(0, 0, 1440, 900);
+    this.sets = this.sets.filter(S => {
+      const t = Math.floor((now - S.t0) / (1000 / 24)) * (1000 / 24), dur = S.dur, k1 = dur * .19, k2 = dur * .45, fadeAt = dur * .83;
+      if (t > dur + 200) return false;
+      g.globalAlpha = t > fadeAt ? Math.max(0, 1 - (t - fadeAt) / 260) : 1;
+      for (const o of S.D) {
+        const lt = t - o.d * 160 - o.j; if (lt < 0) continue;
+        let x, y, rr, col = '#FF3DCC';
+        if (lt < k1) { x = o.sx; y = o.sy; rr = 4 * Math.min(1, lt / (k1 * .8)); }
+        else if (lt < k2) { const k = Math.ceil((lt - k1) / (k2 - k1) * 5) / 5; x = o.sx + (o.tx - o.sx) * k; y = o.sy + (o.ty - o.sy) * k; rr = 4; }
+        else { x = o.tx; y = o.ty; rr = 8 * (.5 + .5 * Math.min(1, (lt - k2) / 260)); if (lt > k2 + 60 + o.u * 220) col = S.ink; }
+        g.fillStyle = col; const sz = Math.max(1, Math.min(rr * 2, Math.max(S.cw, S.ch) + 1)); g.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      }
+      return true;
+    });
+    g.globalAlpha = 1;
+    this.decRaf = this.sets.length ? requestAnimationFrame(this.drawDots) : 0;
+  };
+  decide(fromSel, apply) {
+    const from = this.rectOf(fromSel);
+    apply();
+    this.decInk = fromSel.includes('"2"') ? '#8E8EEA' : '#1212EE';
+    this.T.push(setTimeout(() => {
+      this.scrollLog();
+      const to = this.rectOf('[data-plan="18"]');
+      this.runDots(from, to);
+      this.T.push(setTimeout(() => { this.setState({ planHold: false, crumble: -1 }); const w6 = this.rectOf('[data-plan="18"]'); this.T.push(setTimeout(() => this.runDots(w6, this.rectOf('[data-act="W6"]')), 200)); }, 950));
+    }, 60));
+  }
+  choose(i) {
+    if (i === 1) { this.setState(s => ({ hc: 1, shake: s.shake + 1 })); setTimeout(() => this.setState({ rewriteOpen: true }), 110); return; }
+    this.setState(s => ({ hc: i, crumble: i, shake: s.shake + 1 }));
+    this.decide('[data-gate-btn="' + i + '"]', () => {
+      this.setState(s => ({ gate: i === 0 ? 'resolved' : 'rejected', planHold: true, messages: [...s.messages, { from: 'gate', verdict: i === 0 ? 'ALLOWED' : 'REJECTED' }, { from: 'me', q: i === 0 ? '#1 許可して起動' : '#3 却下' }] }));
+      this.T.push(setTimeout(() => this.reply(i === 0 ? ['transfer', 'reply'] : ['think', 'reply'], i === 0 ? '門を開けました。W6 を起動し、p0-selfcheck に検査を追加しています。' : '却下を受けました。W6 は起こさず、代替案を検討します。', i === 0 ? ['p0-selfcheck.swift'] : null), 700));
+    });
+  }
+
+  files() {
+    const res = this.state.gate === 'resolved', pend = this.gateActive();
+    return [
+      { name: 'CockpitCanvas.swift', w: 5, writing: true, who: 'W5', hot: true },
+      { name: 'Cockpit.swift', w: 4, hot: true },
+      { name: 'p0-selfcheck.swift', cat: '検', w: res ? 3 : 1, writing: res, who: 'W6' },
+      { name: 'Gate.swift', w: 2, reading: pend },
+      { name: 'CockpitLayout.swift', w: 2 },
+      { name: 'Category.swift', w: 2 },
+      { name: 'Transcript.swift', w: 1, flag: true },
+      { name: 'TaskList.swift', w: 1 },
+      { name: 'HANDOFF-08-01b.md', cat: 'ノ', w: 1 },
+      { name: 'Snowman.swift', w: 0 },
+      { name: 'Structure.swift', w: 0 },
+      { name: 'orchestrator-gate.md', cat: 'ノ', w: 0 },
+      { name: 'settings.local.json', cat: '設', w: 0 },
+    ];
+  }
+  renderVals() {
+    const s = this.state, gateActive = this.gateActive(), b = s.busy, now = b ? b.seq[b.i] : null;
+    const lv = this.level(), sp = lv.indexOf(' ');
+    const ctx = s.ctxBoost ? 92 : Math.min(97, Math.max(5, this.props.contextPct ?? 68)), alarm = ctx >= 85, filled = Math.round(ctx / 10);
+    const modeDefs = [['work', 'a', 'WORK', 'Work', '作業', '会話と門 · 4 AGENTS'], ['struct', 'b', 'STRUCTURE', 'Structure', '構造', 'ホバーで関係が浮かぶ'], ['memory', 'c', 'SPARRING', 'Sparring', '壁打ち', '引き継ぎを書く']];
+    const modes = modeDefs.map(([id, k, en]) => { const on = s.tab === id; return { k, en, pick: e => this.go(id, { x: e.clientX, y: e.clientY }), style: { cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', padding: '6px 10px', border: '1px solid ' + (on ? 'var(--fg)' : 'var(--line)'), background: on ? 'var(--fg)' : 'transparent', color: on ? 'var(--bg)' : 'var(--fg-2)' } }; });
+    const tone = d => ['#1212EE', '#D9D9FF', '#A3A3FF', '#7C7CE0'][Math.min(d, 3)];
+    const fsOf = d => d === 0 ? (s.menuPath.length ? 96 : 112) : d === 1 ? 44 : 34;
+    const LV = this.menuLevel(s.menuPath), mh = Math.min(s.mh, LV.length - 1);
+    const rows = LV.map((_, i) => { const d = Math.abs(i - s.mh), f = fsOf(d); return { d, f, hh: d === 0 ? f * 1.12 + 40 : f * 1.32 }; });
+    const tot = rows.reduce((a, r) => a + r.hh, 0) + 12; let yy = 450 - tot / 2;
+    const menuItems = LV.map(({ en, jp, desc, kids }, i) => {
+      const { d, f, hh } = rows[i], on = d === 0, y = yy; yy += hh + 6;
+      return { en, jp, desc: desc + (kids ? '  ▸ ' + kids.length : ''), on, num: (s.menuPath.map(p => p + 1).join('-') + (s.menuPath.length ? '-' : '')) + String(i + 1).padStart(2, '0'), bladeKey: 'bl' + s.mh + '-' + s.menuPath.join(''),
+        pick: e => { e.stopPropagation(); if (s.mh !== i) this.setState({ mh: i }); this.menuDive(i); }, enter: () => this.setState({ mh: i }),
+        box: { position: 'absolute', left: 310 + y * T18, top: y, cursor: 'pointer', textAlign: 'left', animation: 'sm-in 150ms steps(3) both', animationDelay: (this.menuFresh ? 380 + i * 45 : 0) + 'ms', transition: 'left 120ms steps(3), top 120ms steps(3)' },
+        plate: { position: 'absolute', inset: 0, background: on ? '#FFFFFF' : 'transparent', transform: 'skewX(18deg)', transformOrigin: '0 100%', clipPath: on ? 'polygon(0 0,calc(100% - 22px) 0,100% 50%,calc(100% - 22px) 100%,0 100%)' : 'none' },
+        row: { position: 'relative', display: 'flex', alignItems: 'baseline', gap: 14, padding: on ? '4px 44px 2px 20px' : '0 8px', whiteSpace: 'nowrap' },
+        numStyle: { fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '.14em', color: on ? '#4A4AE0' : tone(d) },
+        word: { fontFamily: 'var(--font-display)', fontSize: f, lineHeight: 1, color: on ? '#1212EE' : tone(d), transition: 'font-size 120ms steps(3)' },
+        jpStyle: { fontFamily: 'var(--font-display-jp)', fontSize: 14, color: on ? '#1212EE' : tone(d + 1) } };
+    });
+    const choices = [['Allow', '許可して起動'], ['Rewrite', '書き換えて発行'], ['Reject', '却下']].map(([en, jp], i) => {
+      const on = s.hc === i, gone = s.crumble === i;
+      return { en, jp, n: '#' + (i + 1), idx: String(i), pick: () => this.choose(i), enter: () => this.move ? this.move(i) : this.setState({ hc: i }),
+        cell: { position: 'relative', cursor: 'pointer', visibility: gone ? 'hidden' : 'visible', transform: on ? 'translate(0,-2px)' : 'none', transition: 'transform 100ms steps(2)' },
+        plate: { position: 'absolute', inset: 0, background: on ? 'var(--fg)' : 'var(--bg)', border: '1px solid ' + (on ? 'var(--fg)' : 'var(--line)'), transform: 'skewX(-18deg)', clipPath: on ? 'polygon(0 0,calc(100% - 14px) 0,100% 50%,calc(100% - 14px) 100%,0 100%)' : 'none' },
+        row: { position: 'relative', display: 'flex', flexDirection: 'column', gap: 3, padding: '9px 18px 10px 14px', color: on ? 'var(--bg)' : 'var(--fg-2)' },
+        word: { fontFamily: 'var(--font-display)', fontSize: on ? 30 : 24, lineHeight: 1, color: on ? 'var(--bg)' : 'var(--fg)' } };
+    });
+    const files = this.files();
+    const rel = { 'CockpitCanvas.swift': ['CockpitLayout.swift', 'Category.swift', 'Cockpit.swift'], 'Cockpit.swift': ['Transcript.swift', 'Snowman.swift', 'CockpitCanvas.swift'], 'Gate.swift': ['Cockpit.swift'] };
+    const fileItem = (f, big) => {
+      const related = !big || s.hover === null || s.hover === f.name || (rel[s.hover] || []).includes(f.name) || (rel[f.name] || []).includes(s.hover);
+      return { name: f.name, cat: f.cat || '実', writing: !!f.writing, reading: !!f.reading, flag: !!f.flag,
+        wrap: { position: 'relative', cursor: 'pointer', display: 'inline-flex', alignItems: 'baseline', gap: 6, padding: '1px 4px', overflow: 'hidden', whiteSpace: 'nowrap', opacity: related ? 1 : 0.22, transition: 'opacity 150ms steps(3)' },
+        nameStyle: { position: 'relative', display: 'inline-block', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: big ? 'none' : 220, fontFamily: 'var(--font-mono)', fontSize: big ? 16 + f.w * 4 : (f.w >= 4 ? 14 : 12), lineHeight: 1.2, color: big ? (f.w === 0 ? 'var(--fg-3)' : 'var(--fg)') : (f.w === 0 ? '#7C7CE0' : '#FFFFFF'), borderBottom: f.hot ? '4px double ' + (big ? 'var(--fg)' : '#FFFFFF') : (f.w >= 2 ? '1px solid ' + (big ? 'var(--fg-3)' : '#A3A3FF') : 'none') },
+        open: () => this.setState({ popover: f.name }), enter: () => this.setState({ hover: f.name }), leave: () => this.setState({ hover: null }) };
+    };
+    const act = files.filter(f => f.writing || f.reading || f.flag);
+    const fsty = (hot, dim) => ({ fontFamily: 'var(--font-mono)', fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: dim ? '#8E8EEA' : '#1212EE', borderBottom: 'none' });
+    const resolved = s.gate === 'resolved';
+    const EX = { HANDOFF: { key: 'HANDOFF', id: 'C0', branch: '│', verb: 'WRITE', jp: '引き継ぎを書込', loader: 'write', file: 'HANDOFF-08-01b.md', note: '+18 −0' }, BUILD: { key: 'BUILD', id: 'C0', branch: '│', verb: 'BUILD', jp: 'ビルド・テスト中', loader: 'build', file: 'AT22.xcodeproj', note: '0 err' }, HANDOFF2: { key: 'HANDOFF2', id: 'C0', branch: '│', verb: 'HANDOFF', jp: 'W5 へ引き継ぎ', loader: 'handoff', file: 'CockpitLayout.swift', note: '→ W5' }, UPLOAD: { key: 'UPLOAD', id: 'C0', branch: '│', verb: 'UPLOAD', jp: '送信中', loader: 'upload', file: 'PR #42', note: '+42 −7' }, DUP: { key: 'DUP', id: 'C0', branch: '│', verb: 'DUPLICATE', jp: '複製中', loader: 'duplicate', file: 'settings.local.json', note: '+1 file' }, ERR: { key: 'ERR', id: 'C0', branch: '│', verb: 'ERROR', jp: 'ビルド失敗', loader: 'error', file: 'Structure.swift', note: '2 err', acc: true } };
+    const core = [
+      { key: 'W5', id: 'W5', branch: '├', verb: 'WRITE', jp: '書込中', loader: 'write', file: 'CockpitCanvas.swift', note: s.w5Note },
+      gateActive ? { key: 'GATE', id: 'C0', branch: '│', verb: 'READ', jp: '門を確認中', loader: 'search', file: 'Gate.swift', note: '±0' } : null,
+      { key: 'REREAD', id: 'C0', branch: '│', verb: 'REREAD', jp: '読み返し ×' + s.reread, loader: 'reread', file: 'Transcript.swift', note: '±0' },
+      gateActive || s.planHold ? { key: 'W6', id: 'W6', branch: '└', verb: 'WAIT', jp: '門で待機 → 書込予定', loader: 'wait', file: 'p0-selfcheck.swift', note: s.waitSec + 's', acc: true }
+        : resolved ? { key: 'W6', id: 'W6', branch: '└', verb: 'WRITE', jp: '検査を追加中', loader: 'write', file: 'p0-selfcheck.swift', note: '+12 −0' } : null,
+    ].filter(Boolean);
+    const keep = core.filter(a => a.key === 'W5' || a.key === 'W6'), soft = core.filter(a => a.key !== 'W5' && a.key !== 'W6');
+    const room = Math.max(0, 4 - keep.length);
+    const pick = [...s.extra.map(k => EX[k]), ...soft].slice(0, room);
+    const actions = [...pick.filter(a => s.extra.includes(a.key)), ...core.filter(a => keep.includes(a) || pick.includes(a))].map(a => ({ ...a, vis: s.hold[a.key] ? 'hidden' : 'visible', acc: a.acc || a.verb !== 'WRITE' ? '1' : '0', wait: !!a.wait, loader: a.loader || false, flag: !!a.flag, fileStyle: fsty(a.hot, false), open: () => this.setState({ popover: a.file }) }));
+    const planRows = [
+      { n: '17', name: '凡例の作り直し', tag: 'W5 · NOW', on: true },
+      { n: '18', name: '凡例の検査', tag: gateActive || s.planHold ? 'W6 · 門' : resolved ? 'W6 · NOW' : '保留', gate: gateActive || s.planHold, on: resolved && !s.planHold, off: s.gate === 'rejected' && !s.planHold },
+      { n: '19', name: '全体ビルド確認', tag: s.planX[19] === 'now' ? 'C0 · NOW' : s.planX[19] === 'err' ? 'C0 · ERROR' : 'NEXT', on: s.planX[19] === 'now', gate: s.planX[19] === 'err' },
+      { n: '20', name: 'p0-selfcheck 更新', tag: s.planX[20] === 'del' ? '削除' : '—', off: s.planX[20] === 'del' },
+      { n: '21', name: 'HANDOFF 書き出し', tag: s.planX[21] === 'done' ? '✓ C0' : '—', off: s.planX[21] === 'done' },
+    ].map(p => ({ ...p, st: p.n === '19' ? 'error' : 'wait', done: s.planX[p.n] === 'done', gate: !!p.gate, bg: p.on ? '#1212EE' : '#FFFFFF', fg: p.on ? '#FFFFFF' : p.off ? '#8E8EEA' : '#1212EE' }));
+    const activeFiles = act.map(f => ({ cells: [0, 1, 2, 3, 4].map(i => i < f.w ? '#1212EE' : '#C9C9FF'), name: f.name, open: () => this.setState({ popover: f.name }), loader: f.writing ? 'write' : f.reading ? 'search' : 'think', pitch: 2,
+      who: f.writing ? f.who : f.reading ? 'C0' : 'C0', state: f.writing ? '書込中' + (f.who === 'W5' ? ' +42 −7' : '') : f.reading ? '読取中 · 門の確認' : '読み返し ×3 ⚑',
+      nameStyle: { fontFamily: 'var(--font-mono)', fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderBottom: f.hot ? '4px double #1212EE' : 'none', justifySelf: 'start', maxWidth: '100%' } }));
+    const quietFiles = files.filter(f => !(f.writing || f.reading || f.flag)).map(f => ({ name: f.name, open: () => this.setState({ popover: f.name }), qStyle: { cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', justifySelf: 'start', maxWidth: '100%', color: f.w === 0 ? '#8E8EEA' : '#1212EE', borderBottom: f.hot ? '3px double #1212EE' : (f.w >= 2 ? '1px solid #8E8EEA' : 'none') } }));
+    const w6 = gateActive ? { st: '門 · ' + s.waitSec + 's', c: '#FFFFFF' } : s.gate === 'rejected' ? { st: '却下', c: '#A3A3FF' } : { st: '検査を追加中', c: '#FFFFFF' };
+    const agents = [
+      { id: 'C0', name: '司令塔', st: 'opus-5 · 62%', c: '#FFFFFF' },
+      { id: 'W4', name: '統合・ビルド修正', st: 'DONE', c: '#7C7CE0' },
+      { id: 'R1', name: 'Phase 5 レビュー', st: 'DONE', c: '#7C7CE0' },
+      { id: 'W5', name: '凡例の作り直し', st: s.w5Calls + ' calls', c: '#FFFFFF', ink: true },
+      { id: 'W6', name: '凡例の検査', st: w6.st, c: w6.c, gate: gateActive },
+    ].map(a => ({ ...a, ink: !!a.ink, gate: !!a.gate }));
+    const ticks = Array.from({ length: 21 }, (_, i) => {
+      const n = i + 1, done = n <= 16 || s.planX[n] === 'done', act = n === 17 || (n === 18 && s.gate === 'resolved' && !s.planHold) || s.planX[n] === 'now', gate = (n === 18 && (gateActive || s.planHold)) || s.planX[n] === 'err', off = n === 18 && s.gate === 'rejected';
+      return { n: String(n).padStart(2, '0'), gate, title: '#' + n,
+        cell: { position: 'relative', width: 38, height: 26, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', background: act ? '#FFFFFF' : done ? 'rgba(255,255,255,.18)' : 'transparent', border: gate ? '1px solid #FF3DCC' : act || done ? 'none' : '1px dashed #7C7CE0', transform: act ? 'skewX(-18deg)' : 'none' },
+        num: { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.04em', color: act ? '#1212EE' : off ? '#7C7CE0' : done ? '#D9D9FF' : '#FFFFFF', transform: act ? 'skewX(18deg)' : 'none', textDecoration: off ? 'line-through' : 'none' } };
+    });
+    const tasks = [['17', 'W5: 凡例の作り直し', 'active'], ['18', 'W6: 凡例の検査（門）', s.gate === 'resolved' ? 'active' : 'todo'], ['19', '全体ビルド確認', 'todo'], ['20', 'p0-selfcheck 更新', 'todo'], ['21', 'HANDOFF 書き出し', 'todo'], ['16', 'タスク一覧', 'done'], ['15', 'Phase J: カテゴリ色分け', 'done']].map(([n, name, st]) => ({ n, name, mark: st === 'done' ? '✓' : st === 'active' ? '▸' : '', style: { fontFamily: 'var(--font-body-jp)', fontSize: 14, color: st === 'done' ? 'var(--fg-3)' : 'var(--fg)', textDecoration: st === 'done' ? 'line-through' : 'none' } }));
+    const popDesc = { 'Cockpit.swift': '状態の総元締め。transcript を読んでスナップショットを作ります。', 'CockpitCanvas.swift': '画面。静止層と動く層の2枚で描きます。いま W5 が凡例まわりを編集中です。', 'Gate.swift': '門。memory/gate/ の verdict ファイルを読み書きします。', 'Transcript.swift': 'transcript の読取と消費の集計。3回読み返されています。' }[s.popover] || 'このファイルが宣言している型に落として表示します。';
+    return {
+      lvNo: lv.slice(0, sp), lvName: lv.slice(sp + 1), modes,
+      ctxPct: ctx, ctxColor: alarm ? 'var(--status-danger)' : 'var(--fg-2)',
+      ctxCells: Array.from({ length: 10 }, (_, i) => ({ bgW: i < filled ? '#FFFFFF' : 'transparent', bg: i < filled ? (alarm ? 'var(--status-danger)' : 'var(--fg)') : 'transparent', bd: i < filled ? 'transparent' : 'var(--line)' })),
+      gateChipText: gateActive ? 'GATE 01 · W6 ' + s.waitSec + 's' : 'GATE 00',
+      gateChip: { cursor: gateActive ? 'pointer' : 'default', marginLeft: 14, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', padding: '5px 9px', border: '1px solid #FFFFFF', color: '#FFFFFF', background: gateActive ? 'linear-gradient(#FF3DCC,#FF3DCC) left center/4px 100% no-repeat' : 'none', paddingLeft: 12 },
+      jumpGate: () => { this.setState({ tab: 'work' }); setTimeout(() => this.scrollLog(), 50); },
+      headEn: gateActive ? 'W5 rewrites the legend. W6 waits for you.' : s.gate === 'rejected' ? 'W5 rewrites the legend alone.' : 'W5 and W6 are both at work.',
+      craneKey: 'cr' + s.shake, cranePose: gateActive && !b ? 'one' : 'idle', craneBusy: now || (s.craneReady ? (gateActive || s.planHold ? 'wait' : alarm ? 'overload' : null) : null),
+      craneState: now ? now.toUpperCase() : gateActive ? 'ASKING · MENU' : 'MENU', craneSub: now ? STL[now] : gateActive ? '門の応答を待っています' : 'C0 司令塔',
+      craneStateColor: 'var(--fg)',
+      openMenu: this.openMenu,
+      isWork: s.tab === 'work', isStruct: s.tab === 'struct', isMemory: s.tab === 'memory',
+      msgs: s.messages.map((m, mi, arr) => ({ c0Last: m.from === 'c0' && mi === arr.map(x => x.from).lastIndexOf('c0') ? '1' : '0', lastAttr: m.from === 'me' && mi === arr.map(x => x.from).lastIndexOf('me') ? '1' : '0', vis: s.hideLast && m.from === 'me' && mi === arr.map(x => x.from).lastIndexOf('me') ? 'hidden' : 'visible', me: m.from === 'me', c0: m.from === 'c0', gr: m.from === 'gate', q: m.q, a: m.a, refs: m.refs || false, verdict: m.verdict, label: 'C0 // ' + (m.seq || ['reply']).join(' → ').toUpperCase() })),
+      busy: !!b, busyLabel: now ? STL[now] : '', busyStep: b ? (b.i + 1) + ' / ' + b.seq.length : '',
+      steps: b ? b.seq.map((st, k) => ({ name: st.toUpperCase(), link: k > 0, now: k === b.i, lineC: k <= b.i ? 'var(--fg)' : 'var(--line)', style: { display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, padding: '4px 8px', border: '1px solid ' + (k <= b.i ? 'var(--fg)' : 'var(--line)'), background: k < b.i ? 'var(--fg)' : 'transparent', color: k < b.i ? 'var(--bg)' : (k === b.i ? 'var(--fg)' : 'var(--fg-3)') } })) : [],
+      segs: Array.from({ length: 12 }, (_, k) => b && (Date.now() - b.t0) / b.dur > k / 12 ? 'var(--fg)' : 'var(--bg-3)'),
+      gateCard: gateActive && !b, waitSec: s.waitSec, choices, rewriteOpen: s.rewriteOpen, rewriteClosed: !s.rewriteOpen, rewriteText: s.rewriteText, cardKey: 'cd' + s.shake,
+      onRewrite: e => this.setState({ rewriteText: e.target.value }),
+      issueRewrite: () => this.decide('[data-gate-btn="rw"]', () => { this.setState(st => ({ gate: 'resolved', rewriteOpen: false, planHold: true, messages: [...st.messages, { from: 'gate', verdict: 'REWRITTEN' }, { from: 'me', q: '#2 書き換えて発行：' + st.rewriteText }] })); this.T.push(setTimeout(() => this.reply(['transfer', 'reply'], '書き換えた指示で W6 を起動しました。', ['p0-selfcheck.swift']), 700)); }),
+      cancelRewrite: () => this.setState({ rewriteOpen: false }),
+      resetGate: () => this.setState({ gate: 'pending', hc: 0 }), gateDone: !gateActive,
+      asks: ASKS.map(x => ({ q: x.q, tag: x.seq.filter(z => z !== 'reply').join('+').toUpperCase(), pick: () => this.ask(x), style: { cursor: b ? 'default' : 'pointer', display: 'flex', gap: 8, alignItems: 'baseline', whiteSpace: 'nowrap', flex: 'none', fontFamily: 'var(--font-body-jp)', fontSize: 12, border: '1px solid var(--fg)', padding: '4px 8px', opacity: b ? 0.45 : 1, background: 'var(--bg)' } })),
+      placeholder: now ? STL[now] + '…' : '司令塔に聞く', inputBorder: alarm ? '2px solid var(--status-danger)' : '2px solid var(--fg)',
+      draft: s.draft, onDraft: e => this.setState({ draft: e.target.value }), onDraftKey: e => { if (e.key === 'Enter') this.doSend(); }, send: () => this.doSend(),
+      ctxAlarm: alarm, actions, planRows, gateLive: gateActive, gateIdle: !gateActive, doneW: 16 * 42 - 4, waveLive: !!b || true, waveLabel: b ? 'C0 · ' + STL[now] : 'W5 · 書込中 +42 −7',
+      n2: 2, n4: 4, n5: 5, n6: 6, n7: 7, n12: 12, n20: 20, n24: 24, n96: 96, n120: 120, ctxCells20: Array.from({ length: 20 }, (_, i) => i < Math.round(ctx / 5) ? (alarm ? 'var(--status-danger)' : '#1212EE') : '#E0E0FF'), modeNow: { work: '01 WORK 作業', struct: '02 STRUCTURE 構造', memory: '03 SPARRING 壁打ち' }[s.tab],
+      activeFiles, quietFiles, flowEn: act.length + ' moving', flowJp: '13 のうち ' + act.length + ' 件。墨が落ちた所が、いま触られている場所です。', toStruct: e => this.go('struct', { x: e.clientX, y: e.clientY }),
+      lineage: [{ id: 'C0', name: '司令塔', branch: '', indent: '0px', meta: 'opus-5 · 62%' }, { id: 'W5', name: '凡例の作り直し', branch: '├', indent: '14px', meta: s.w5Calls + ' calls' }, { id: 'W6', name: gateActive ? '門で待機中' : s.gate === 'rejected' ? '却下' : '凡例の検査', branch: '└', indent: '14px', gate: gateActive, meta: gateActive ? s.waitSec + 's' : s.gate === 'rejected' ? '—' : '3 calls' }].map(l => ({ ...l, gate: !!l.gate })),
+      planNow: s.gate === 'resolved' ? '18' : '17', menuCv: el => { this.menuEl = el; },
+      onInk: api => { this.ink = api; },
+      inkSpread: 0.08, activeCount: String(act.length).padStart(2, '0'), quietCount: files.length - act.length, agents, ticks,
+      inkW: 540, inkH: 800, inkRes: 96, inkDrop: 7, craneInkSize: 512, craneInkRes: 112,
+      craneMask: s.craneMask || false, craneInkStyle: { animation: 'sm-late 420ms both', position: 'absolute', right: -40, bottom: -60, width: 512, height: 512, pointerEvents: 'none', WebkitMaskImage: 'url(' + s.craneMask + ')', maskImage: 'url(' + s.craneMask + ')', WebkitMaskSize: '100% 100%', maskSize: '100% 100%' }, structFiles: files.map(f => fileItem(f, true)),
+      decCv: el => { this.decEl = el; },
+      menu: s.menu, menuItems, menuShake: 'ms' + s.shake, menuCrumbs: s.menuPath.map((p, k) => { const L = this.menuLevel(s.menuPath.slice(0, k)); return { t: String(p + 1).padStart(2, '0') + ' ' + L[p].en.toUpperCase(), go: e => { e.stopPropagation(); this.menuShift(s.menuPath.slice(0, k + 1), 0); } }; }),
+      menuDepth: s.menuPath.length > 0, depthBg: DEPTH[Math.min(2, s.menuPath.length)], bandKey: 'band' + s.band, depthOp: s.menuPath.length ? 1 : 0, bandAnim: { position: 'absolute', top: -40, bottom: -40, left: 0, width: 220, background: '#FFFFFF', transform: 'translateX(-400px) skewX(-18deg)', animation: s.band > 0 ? (s.bandDir > 0 ? 'sm-sweep' : 'sm-sweepb') + ' 260ms steps(8) forwards' : 'none', pointerEvents: 'none' },
+      menuBack: e => { e.stopPropagation(); this.menuUp(); }, menuRoot: e => { e.stopPropagation(); this.menuShift([], 0); }, wipePhase: s.wipe, wipeOrigin: s.wipeOrigin || this._o0 || (this._o0 = { x: 720, y: 450 }), wipeCoverMs: 380, wipeRevealMs: 380, ...this.wlVals(s), closeMenu: this.hideMenu,
+      menuWrap: s.menuClosing ? { position: 'absolute', inset: 0, animation: 'sm-out 140ms steps(3) forwards' } : { position: 'absolute', inset: 0 },
+      menuLine: s.menuClosing ? { animation: 'sm-undraw 130ms steps(4) 300ms both' } : { animation: 'sm-draw 120ms steps(4) both' }, stop: e => e.stopPropagation(),
+      tasksOpen: s.tasksOpen, toggleTasks: () => this.setState({ tasksOpen: !s.tasksOpen }), closeTasks: () => this.setState({ tasksOpen: false }), tasks,
+      popover: !!s.popover, popName: s.popover || '', popDesc, closePopover: () => this.setState({ popover: null }),
+      memoText: s.memoText, onMemo: e => this.setState({ memoText: e.target.value, memoSaved: false }), memoSaved: s.memoSaved, saveMemo: () => this.setState({ memoSaved: true }),
+    };
+  }
+  doSend() {
+    const t = this.state.draft.trim(); if (!t) return;
+    this.ask(ASKS.find(x => x.q === t) || { q: t, seq: ['think', 'write', 'reply'], a: '受け取りました。W5 の作業計画に反映します。', refs: null });
+  }
+}
+</script>
+</body>
+</html>
+

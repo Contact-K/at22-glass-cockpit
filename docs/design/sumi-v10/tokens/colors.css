@@ -1,0 +1,65 @@
+:root{
+/* base — electric blue duotone */
+--blue:#1212EE; --blue-deep:#08085C; --blue-mid:#3030FF; --blue-tint:#BDBDFF; --blue-pale:#ECECFF; --white:#FFFFFF;
+/* default scope: blue ground, white ink */
+--bg:#1212EE; --bg-2:#1E1EF4; --bg-3:#2C2CFF;
+--fg:#FFFFFF; --fg-2:#D9D9FF; --fg-3:#A3A3FF;
+--line:rgba(255,255,255,.38); --line-strong:#FFFFFF;
+--accent:#FFFFFF; --accent-ink:#1212EE; --accent-hover:#ECECFF;
+--status-success:#8CFFBE; --status-warning:#FFD46B; --status-danger:#FF7B7B; --status-info:#BDBDFF;
+--status-success-dim:rgba(140,255,190,.14); --status-warning-dim:rgba(255,212,107,.14); --status-danger-dim:rgba(255,123,123,.16); --status-info-dim:rgba(189,189,255,.16);
+/* semantic */
+--surface-page:var(--bg); --surface-card:var(--bg-2); --surface-raised:var(--bg-3); --surface-inverse:var(--white);
+--text-body:var(--fg); --text-muted:var(--fg-2); --text-faint:var(--fg-3); --text-inverse:var(--blue);
+--border-default:var(--line); --border-strong:var(--line-strong);
+--focus-ring:var(--fg);
+/* accent — 確定(2026-10-01): ピンク #FF3DCC が唯一の差し色。他の acid 色は不採用(互換のため残置・新規使用不可) */
+--acid-pink:#FF3DCC; --acid-green:#B8FF3D; --acid-lilac:#B7A8FF; --acid-orange:#FF6A1A; --acid-yellow:#F0FF3D;
+--accent-pop:var(--acid-pink); --accent-pop-ink:#FFFFFF; --accent-pop-dim:rgba(255,61,204,.16);
+/* paper: 参考(版画・点描)の生成り。light面の任意代替 */
+--paper:#F7F2E6; --paper-2:#EFE8D8;
+}
+/* light scope: white ground, blue ink — アプリのメイン領域 */
+[data-surface="light"]{
+--grid-line:rgba(18,18,238,.14);
+--bg:#FFFFFF; --bg-2:#F5F5FF; --bg-3:#ECECFF;
+--fg:#1212EE; --fg-2:#4A4AE0; --fg-3:#8E8EEA;
+--line:#C9C9FF; --line-strong:#1212EE;
+--accent:#1212EE; --accent-ink:#FFFFFF; --accent-hover:#3030FF;
+--status-success:#0C8F55; --status-warning:#A8720F; --status-danger:#D12E2E; --status-info:#1212EE;
+--status-success-dim:#DFFCEC; --status-warning-dim:#FFF1D2; --status-danger-dim:#FFE2E2; --status-info-dim:#ECECFF;
+--surface-page:var(--bg); --surface-card:var(--bg-2); --surface-raised:var(--bg-3); --surface-inverse:#1212EE;
+--text-body:var(--fg); --text-muted:var(--fg-2); --text-faint:var(--fg-3); --text-inverse:#FFFFFF;
+--border-default:var(--line); --border-strong:var(--line-strong); --focus-ring:#1212EE;
+}
+/* navy scope: 深紺地 — サイドバー等 */
+[data-surface="navy"]{
+--bg:#08085C; --bg-2:#0E0E70; --bg-3:#161684;
+--fg:#FFFFFF; --fg-2:#C4C4FF; --fg-3:#7C7CE0;
+--line:rgba(255,255,255,.22); --line-strong:#FFFFFF;
+--accent:#FFFFFF; --accent-ink:#08085C; --accent-hover:#ECECFF;
+--surface-page:var(--bg); --surface-card:var(--bg-2); --surface-raised:var(--bg-3);
+--text-body:var(--fg); --text-muted:var(--fg-2); --text-faint:var(--fg-3);
+--border-default:var(--line); --border-strong:var(--line-strong);
+}
+/* blue scope: 明示的に青地へ戻す(light/ink の内側で帯・パネルに使う) */
+[data-surface="blue"]{
+--grid-line:rgba(255,255,255,.14);
+--bg:#1212EE; --bg-2:#1E1EF4; --bg-3:#2C2CFF;
+--fg:#FFFFFF; --fg-2:#D9D9FF; --fg-3:#A3A3FF;
+--line:rgba(255,255,255,.38); --line-strong:#FFFFFF;
+--accent:#FFFFFF; --accent-ink:#1212EE; --accent-hover:#ECECFF;
+--status-success:#8CFFBE; --status-warning:#FFD46B; --status-danger:#FF7B7B; --status-info:#BDBDFF;
+--status-success-dim:rgba(140,255,190,.14); --status-warning-dim:rgba(255,212,107,.14); --status-danger-dim:rgba(255,123,123,.16); --status-info-dim:rgba(189,189,255,.16);
+--surface-page:var(--bg); --surface-card:var(--bg-2); --surface-raised:var(--bg-3); --surface-inverse:#FFFFFF;
+--text-body:var(--fg); --text-muted:var(--fg-2); --text-faint:var(--fg-3); --text-inverse:#1212EE;
+--border-default:var(--line); --border-strong:var(--line-strong); --focus-ring:var(--fg);
+}
+/* ink scope: 墨地(ほぼ黒) — 夜/クラブ面。v10 では使わない */
+[data-surface="ink"]{
+--grid-line:rgba(255,255,255,.10);
+--bg:#0A0A0F; --bg-2:#131318; --bg-3:#1C1C24;
+--fg:#F2F2F7; --fg-2:#B9B9C8; --fg-3:#7A7A8C;
+--line:rgba(255,255,255,.22); --line-strong:#F2F2F7;
+--accent:#1212EE; --accent-ink:#FFFFFF; --accent-hover:#3030FF;
+}
