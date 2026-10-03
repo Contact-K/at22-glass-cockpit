@@ -59,8 +59,9 @@ struct DotWipeLayer: View {
     }
 
     /// 波紋の順（`distance` が 0…1、小さいほど先）にドットが育って覆い、離れた順に縮む。先頭からピンク → 白 → 青
+    /// - Parameter mid: 先頭から2色目。全面の DotWipe は白、管制塔の波紋と引き出しは淡い青（v11 の l3 `#A3A3FF`）
     nonisolated static func dots(_ ctx: inout GraphicsContext, size: CGSize, p: Double, covering: Bool, pc: CGFloat,
-                                 distance: (CGFloat, CGFloat) -> Double) {
+                                 mid: Color = Palette.white, distance: (CGFloat, CGFloat) -> Double) {
         let cols = Int(ceil(size.width / pc)), rows = Int(ceil(size.height / pc))
         let p2 = p * 1.35
         for j in 0..<rows {
@@ -70,7 +71,7 @@ struct DotWipeLayer: View {
                 let s = max(0, min(1, f / 0.35))
                 guard s > 0 else { continue }
                 let sz = ceil(CGFloat(s) * pc), inset = floor((pc - sz) / 2)
-                let color = f < 0.1 ? Palette.pink : f < 0.2 ? Palette.white : Palette.blue
+                let color = f < 0.1 ? Palette.pink : f < 0.2 ? mid : Palette.blue
                 ctx.fill(Path(CGRect(x: CGFloat(i) * pc + inset, y: CGFloat(j) * pc + inset, width: sz, height: sz)),
                          with: .color(color))
             }
@@ -604,12 +605,16 @@ struct Suminagashi: View {
 
 // MARK: - 管制塔 ⇄ 会話の右側の波紋（V11TabRipple）
 
-/// 会話へ: 「<」の先端から「<」形のドットが右へ覆い、抜ける（範囲は会話の時の墨流しの窓）。
-/// 管制塔へ: 右端から「<」形のドットが左へ、画面の左端まで。毎コマ、退いていく白い面の辺の右側で切り抜く
-/// （白い面の下に描く。退いた所は退いた時点で覆い済み）。24fps
+/// 3通り。どれも「<」形のドットで、毎コマいまの白い面の辺の右側で切り抜く（白い面の下に描く）。24fps
+/// - 会話へ: 左（管制塔の白い三角の先）から右へ、まだ白い面が来ていない青い所を全部覆い、右端から抜ける。
+///   v11 の V11TabRipple は「<」の窓だけだが、本人の指示（2026-10-03）で滑っていく途中の青い所まで広げた
+/// - 管制塔へ: 右端から左へ、画面の左端まで（退いた所は退いた時点で覆い済み）
+/// - 横: メニューでタブを替えた時。白い面は動かず、右の「<」の窓だけを覆って右列を差し替える
 struct TabRipple: Equatable {
-    let back: Bool
+    enum Kind { case toChat, toTower, side }
+    let kind: Kind
     let started: Date
+    var back: Bool { kind == .toTower }
 }
 
 struct TabRippleLayer: View {
@@ -636,17 +641,18 @@ struct TabRippleLayer: View {
         else if n < c + h { p = 1; covering = true }
         else { p = max(0, 1 - Double(n - c - h + 1) / Double(r)); covering = false }
         let w = size.width, ht = size.height, apex = w - 540, cy = ht / 2, xc = w - 394, half = (ht - 100) / 2
-        // 切り抜き: 会話へは「<」の窓に固定、戻りはいまの白い面の辺（BlueSheet と同じ XC・XT）
-        let k = CGFloat(ripple.back ? q : 1)
+        // 切り抜き: いまの白い面の辺（BlueSheet と同じ XC・XT）。横は面が動かないので「<」の窓
+        let k = CGFloat(ripple.kind == .side ? 1 : q)
         let edgeC = xc * k, edgeT = 146 + (apex - 146) * k
         var window = Path()
         window.addLines([CGPoint(x: edgeC, y: 56), CGPoint(x: w, y: 56), CGPoint(x: w, y: ht - 44),
                          CGPoint(x: edgeC, y: ht - 44), CGPoint(x: edgeT, y: cy)])
         window.closeSubpath()
         ctx.clip(to: window)
-        DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16) { x, y in
+        DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16, mid: Palette.Blue.fg3) { x, y in
             let kl = x - 0.37 * abs(y - cy)
-            guard ripple.back else { return Double(max(0, min(1, (kl - apex) / 540))) }
+            if ripple.kind == .side { return Double(max(0, min(1, (kl - apex) / 540))) }
+            if ripple.kind == .toChat { return Double(max(0, min(1, (kl - 146) / (w - 146)))) }
             // 白い面が退く速さに合わせ、左ほど遅く覆う（V11TabRipple の戻り）
             let wt = max(0, 1 - abs(y - cy) / half)
             let qs = max(0, min(1, (x - 146 * wt) / (xc - 292 * wt)))

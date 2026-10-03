@@ -84,6 +84,7 @@ struct P0SelfCheck {
         shortStatReadsBothHalves()
         hunkPatchAndGitReaders()
         sparringReadsProposals()
+        sentMessageIsNotDoubled()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3773,6 +3774,18 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// claude に送った発言は送った時に1件出し、transcript から同じ発言が届いても重ねない。
+    /// 2回目に同じ文を送った分は（送っていないので）そのまま出す
+    @MainActor static func sentMessageIsNotDoubled() {
+        let cockpit = Cockpit()
+        cockpit.appendHuman("hi", session: "s")
+        let echo = TranscriptEvent.said(agent: "s", session: "s", text: "hi\n", speaker: .human, thinking: false, at: Date())
+        cockpit.apply([echo])
+        assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
+        cockpit.apply([echo])
+        assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
     /// 壁打ちの返事の末尾の決まった形の行を、手順・決定（理由つき）・問い（選択肢つき）に分ける。
     /// 形の崩れた行は本文に残す
     static func sparringReadsProposals() {

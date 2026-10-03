@@ -352,6 +352,8 @@ final class Cockpit {
 
     /// モデルが書いた言葉。tool_use しか見ていなかったので、これまで画面に出ていなかった分
     private(set) var messages: [Message] = []
+    /// 送った時に会話へ出した、transcript からまだ届いていない人の発言（セッション → 文）
+    private var echoes: [String: [String]] = [:]
     /// 実測1セッションで text 256件 / thinking 297件。数セッションぶん抱えても軽いが、
     /// 上限は置く（1件が数千字になることがある）
     static let maxMessages = 4000
@@ -618,6 +620,10 @@ final class Cockpit {
                 mergeMCP(call: call, thread: thread)
 
             case let .said(agent, session, text, speaker, thinking, at):
+                if speaker == .human, let i = echoes[session]?.firstIndex(of: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    echoes[session]?.remove(at: i)
+                    break
+                }
                 messages.append(Message(id: messages.count, session: session, agent: agent,
                                         text: text, thinking: thinking, speaker: speaker, at: at))
                 if messages.count > Self.maxMessages { messages.removeFirst(messages.count - Self.maxMessages) }
@@ -1345,7 +1351,10 @@ final class Cockpit {
 
     /// 人の発言は transcript から返ってくるまで画面に出ない。
     /// 押してから数秒何も起きないと「効いていない」に見えるので、送った側で先に置く
-    private func appendHuman(_ text: String, session: String) {
+    /// 送った発言をすぐ会話に出す。claude は同じ発言を transcript にも書くので、それが届いた時に
+    /// 二重に並ばないよう覚えておく（`apply` の `.said` が1回だけ読み飛ばす）
+    func appendHuman(_ text: String, session: String) {
+        if backend(of: session) == .claude { echoes[session, default: []].append(text) }
         messages.append(Message(id: messages.count, session: session, agent: session,
                                 text: text, thinking: false, speaker: .human, at: Date()))
         if messages.count > Self.maxMessages {

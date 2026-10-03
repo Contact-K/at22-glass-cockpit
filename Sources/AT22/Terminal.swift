@@ -65,7 +65,9 @@ final class Terminals {
         for (path, list) in byPath {
             guard let i = list.firstIndex(where: { $0 === session }) else { continue }
             byPath[path]!.remove(at: i)
-            current[path] = max(0, min((current[path] ?? 0), byPath[path]!.count - 1))
+            // 左のタブを閉じたら、選んでいるタブはそのまま（番号だけ詰める）
+            let cur = current[path] ?? 0
+            current[path] = max(0, min(i < cur ? cur - 1 : cur, byPath[path]!.count - 1))
         }
     }
 
@@ -90,8 +92,8 @@ private struct TermHost: NSViewRepresentable {
     }
 }
 
-/// 下から引き出す端末（青い面・白い線）。見出しに `09 // TERMINAL 端末`・タブ・＋・置き場・`[×] ⌃\``。
-/// 2本以上あれば左右に並べる
+/// 下から引き出す端末（青い面・白い線）。見出しに `09 // TERMINAL 端末`・タブ（× で閉じる）・＋・置き場・`[×] ⌃\``。
+/// 出すのは選んでいるタブの1本だけ（ほかのシェルは裏で生きている）
 struct TerminalDrawer: View {
     let terminals: Terminals
     let path: String
@@ -103,8 +105,7 @@ struct TerminalDrawer: View {
         let list = terminals.sessions(path)
         let cur = min(terminals.current[path] ?? 0, max(0, list.count - 1))
         // 撮影では殻を起こさないので、空の1枚を置く
-        let panes = frozen != nil && list.isEmpty ? [0]
-            : list.count < 2 ? Array(list.indices) : [min(cur, list.count - 2), min(cur, list.count - 2) + 1]
+        let panes = frozen != nil && list.isEmpty ? [0] : list.isEmpty ? [] : [cur]
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 HStack(spacing: 8) {
@@ -114,14 +115,20 @@ struct TerminalDrawer: View {
                 }
                 .padding(.horizontal, 14)
                 ForEach(Array(list.enumerated()), id: \.element.id) { i, s in
-                    Button { terminals.current[path] = i } label: {
+                    HStack(spacing: 8) {
                         Text("\(s.name) · \(i + 1)").font(.mono(11)).tracking(0.4)
-                            .foregroundStyle(i == cur ? Palette.blue : Palette.white)
-                            .padding(.horizontal, 14).frame(maxHeight: .infinity)
-                            .background(i == cur ? Palette.white : .clear)
-                            .overlay(alignment: .leading) { Rectangle().fill(Palette.white).frame(width: 1) }
+                        Button { terminals.close(path, at: i) } label: {
+                            Text("×").font(.mono(11)).padding(.horizontal, 3).contentShape(Rectangle())
+                        }
+                        .buttonStyle(PressStyle())
+                        .help("この端末を閉じる（シェルも終わる）")
                     }
-                    .buttonStyle(PressStyle())
+                    .foregroundStyle(i == cur ? Palette.blue : Palette.white)
+                    .padding(.leading, 14).padding(.trailing, 8).frame(maxHeight: .infinity)
+                    .background(i == cur ? Palette.white : .clear)
+                    .overlay(alignment: .leading) { Rectangle().fill(Palette.white).frame(width: 1) }
+                    .contentShape(Rectangle())
+                    .onTapGesture { terminals.current[path] = i }
                 }
                 Button { terminals.add(path) } label: {
                     Text("＋").font(.mono(13)).padding(.horizontal, 12).frame(maxHeight: .infinity)
@@ -143,6 +150,10 @@ struct TerminalDrawer: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.white).frame(height: 2) }
 
             HStack(spacing: 0) {
+                if panes.isEmpty {
+                    Text("端末はありません。＋ で足せます。").font(.bodyJP(13)).foregroundStyle(Palette.Blue.fg2)
+                        .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
                 ForEach(panes, id: \.self) { i in
                     Group {
                         if frozen != nil {
@@ -152,11 +163,7 @@ struct TerminalDrawer: View {
                             TermHost(view: list[i].view, focus: i == cur).padding(.horizontal, 8).padding(.vertical, 6)
                         }
                     }
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture().onEnded { terminals.current[path] = i })
-                    .overlay(alignment: .leading) {
-                        if i != panes.first { Rectangle().fill(Palette.white).frame(width: 1) }
-                    }
+
                 }
             }
             .frame(maxHeight: .infinity)
@@ -224,7 +231,7 @@ struct PullDrawer<Content: View>: View {
         else { p = max(0, 1 - Double(n - c - h + 1) / Double(r)); covering = false }
         let w = size.width, hh = size.height, maxK = hh + 0.37 * w / 2
         let up = opening
-        DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16) { x, y in
+        DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16, mid: Palette.Blue.fg3) { x, y in
             Double(((up ? hh - y : y) + 0.37 * abs(x - w / 2)) / maxK)
         }
     }

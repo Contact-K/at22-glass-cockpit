@@ -52,7 +52,9 @@ enum Snapshot {
         let renderer = ImageRenderer(content:
             CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel, shotFiles: filesModel, shotTerm: term, shotRipple: ripple)
                 .frame(width: size.width, height: size.height)
-                .environment(\.colorScheme, .light))
+                .environment(\.colorScheme, .light)
+                // 鶴は実ピクセルで升を丸めるので、焼く倍率と合わせる
+                .environment(\.displayScale, 2))
         // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない
         renderer.scale = 2
         emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) \(tower ? "tower" : tab.rawValue)")

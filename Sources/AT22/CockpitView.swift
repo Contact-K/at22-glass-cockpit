@@ -47,6 +47,8 @@ struct CockpitView: View {
     @State private var wipe: Wipe?
     @State private var flights: [DotFlight] = []
     @State private var ripple: TabRipple?
+    /// メニューでタブを替えた直後、波紋が覆い切るまで右列を隠す（v11 の hideR）
+    @State private var hideRight = false
     @State private var bursts: [Burst] = []
     /// 部品の矩形（ドットの出発点と行き先、墨を落とす高さ）。**観測しない箱**に入れる——
     /// @State にすると、スクロールのたびに根ごと組み直す
@@ -113,9 +115,10 @@ struct CockpitView: View {
     /// 撮影用: 波紋の始まりと、そのコマの白い面の開き（滑りは 0.5s・会話へは ease-out、管制塔へは ease-in）
     private var shotRippleFrame: (ripple: TabRipple, p: Double)? {
         guard let shot, let spec = shotRipple?.split(separator: ":"), spec.count == 2, let n = Int(spec[1]) else { return nil }
-        let back = spec[0] == "back", k = min(1, Double(n) / 12)
-        return (TabRipple(back: back, started: shot.addingTimeInterval(-Double(n) / 24 - 0.01)),
-                back ? 1 - k * k * k : 1 - pow(1 - k, 3))
+        let kind: TabRipple.Kind = spec[0] == "back" ? .toTower : spec[0] == "side" ? .side : .toChat
+        let k = min(1, Double(n) / 12)
+        return (TabRipple(kind: kind, started: shot.addingTimeInterval(-Double(n) / 24 - 0.01)),
+                kind == .toTower ? 1 - k * k * k : kind == .side ? 1 : 1 - pow(1 - k, 3))
     }
 
     var body: some View { reactive }
@@ -295,16 +298,13 @@ struct CockpitView: View {
                     }
                 }
                 .frame(width: 352)
+                .opacity(hideRight ? 0 : 1)
                 .offset(x: w - 376, y: 76)
 
                 if settled || shot != nil { notch(w: w, h: h) }
 
-                CraneButton(tower: isTower, label: (isTower ? "00 TOWER" : tab.no + " " + tab.en) + " · M",
-                            status: crane, onTap: { menu == nil ? openMenu() : hideMenu() })
-                    .frame(width: 150, alignment: .leading)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .padding(.leading, 40)
-                    .padding(.bottom, 46)
+                // メニューを開いている間は、同じ鶴をメニューの前に出す（下のこれは隠す）
+                craneButton(crane).opacity(menuShown ? 0 : 1)
 
                 HeaderBand(tasks: tasks, now: now, width: w,
                            onTasks: { overlay = overlay == .tasks ? nil : .tasks },
@@ -344,6 +344,7 @@ struct CockpitView: View {
                     }
                 }
                 .zIndex(30)
+                craneButton(crane).zIndex(31)
             }
 
             if let overlay = self.overlay ?? shotOverlay(projects) {
@@ -357,6 +358,18 @@ struct CockpitView: View {
         }
         .frame(width: w, height: h, alignment: .topLeading)
         .clipped()
+    }
+
+    private var menuShown: Bool { menu != nil || shotMenu != nil }
+
+    /// 左下の鶴。押すとメニュー。メニューの上では白い面に乗るので青で描く（v11: zIndex menu ? 61 : 25）
+    private func craneButton(_ status: CraneStatus) -> some View {
+        CraneButton(tower: isTower, onWhite: menuShown, label: (isTower ? "00 TOWER" : tab.no + " " + tab.en) + " · M",
+                    status: status, onTap: { menu == nil ? openMenu() : hideMenu() })
+            .frame(width: 150, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.leading, 40)
+            .padding(.bottom, 46)
     }
 
     /// 手前に開いた板。新規は全面、削除・採るは幕の上の白い板、それ以外は v10 のモーダル
@@ -587,17 +600,35 @@ struct CockpitView: View {
         after(Wipe.total) { if wipe == started { wipe = nil } }
     }
 
+    /// メニューからタブを選んだ時（v11 の pickMenu）。大見出しの全面ドットは使わない:
+    /// 白い面の中身はその場で替え、右の「<」の窓だけをドットの波紋で覆って新しい右列に差し替える。
+    /// 管制塔からは滑らずにそのまま会話へ入る
+    private func sideTab(_ to: V11Tab) {
+        overlay = nil
+        if isTower { storedTab = to; setTower(false, slide: false); return }
+        guard to != tab else { return }
+        storedTab = to
+        guard ripple == nil else { return }
+        hideRight = true
+        let wave = TabRipple(kind: .side, started: Date())
+        ripple = wave
+        after(8.0 / 24) { hideRight = false }
+        after(1.0) { if ripple == wave { ripple = nil } }
+    }
+
     /// 管制塔 ⇄ 会話。白い面が 0.5s・24fps で滑る（会話へは ease-out、管制塔へは ease-in）。
     /// 右列の中身は 8 コマ目（1/3 の所）で差し替える
-    private func setTower(_ value: Bool) {
+    /// - Parameter slide: false なら滑らずにその場で替える（メニューから入る時。白い面がもう覆っている）
+    private func setTower(_ value: Bool, slide: Bool = true) {
         guard value != tower, shot == nil else { return }
         tower = value
         settled = false
-        let wave = TabRipple(back: value, started: Date())
+        let wave = TabRipple(kind: value ? .toTower : .toChat, started: Date())
         ripple = wave
         after(1.0) { if ripple == wave { ripple = nil } }
         let from = towerP, to: Double = value ? 0 : 1, started = Date()
         after(8.0 / 24) { if tower == value { colTower = value } }
+        guard slide else { towerP = to; settled = true; return }
         Task { @MainActor in
             let frame = 1.0 / 24, duration = 0.5
             while tower == value {
@@ -1008,7 +1039,7 @@ struct CockpitView: View {
                 enter(tile)
                 storedTab = to
             } else {
-                go(to, origin: CGPoint(x: 500, y: 450), fromMenu: true)
+                sideTab(to)
             }
         case "a:":
             hideMenu()
@@ -1464,12 +1495,14 @@ struct PressStyle: ButtonStyle {
 /// 左下の1羽。鶴 = メニューボタン = 読み込み表示。押すとメニュー（M）。管制塔では白く、言葉は畳む
 private struct CraneButton: View {
     let tower: Bool
+    /// メニューの白い面の上（青で描く）
+    var onWhite = false
     let label: String
     let status: CraneStatus
     let onTap: () -> Void
 
     var body: some View {
-        let ink = tower ? Palette.white : Palette.Light.fg
+        let ink = tower && !onWhite ? Palette.white : Palette.Light.fg
         VStack(alignment: .leading, spacing: 10) {
             if !tower {
                 VStack(alignment: .leading, spacing: 6) {

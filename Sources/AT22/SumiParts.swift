@@ -597,6 +597,7 @@ struct Mascot: View {
     @State private var changedAt = Date.distantPast
     @State private var start = Date()
     @Environment(\.frozenTime) private var frozen
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Ticker(fps: 12) { now in
@@ -608,7 +609,7 @@ struct Mascot: View {
             } else {
                 Canvas { ctx, _ in
                     let t = frozen != nil ? 0.5 : now.timeIntervalSince(start)
-                    Self.drawCrane(&ctx, t: t, pitch: pitch, legs: fold, lookRight: lookRight,
+                    Self.drawCrane(&ctx, t: t, pitch: pitch, scale: displayScale, legs: fold, lookRight: lookRight,
                                    pose: pose, ink: color, accent: accent)
                 }
                 .frame(width: 8 * pitch, height: 8 * pitch)
@@ -625,9 +626,13 @@ struct Mascot: View {
     }
 
     // swiftlint:disable:next function_body_length
-    nonisolated static func drawCrane(_ ctx: inout GraphicsContext, t: Double, pitch: CGFloat, legs a: Double,
-                          lookRight: Bool, pose: Pose?, ink: Color, accent: Color) {
-        let p = max(2, pitch.rounded()), s = 8 * p, h = p / 2, q = p / 4
+    /// 升は**画面の実ピクセル**で丸める（元の Mascot も devicePixelRatio 倍の canvas に描いて縮める）。
+    /// ポイントで丸めると pitch 9 の 1/4 升（2.25pt）が 2pt に潰れて、尾と脚の形が崩れる
+    nonisolated static func drawCrane(_ ctx: inout GraphicsContext, t: Double, pitch: CGFloat, scale: CGFloat = 2,
+                                      legs a: Double, lookRight: Bool, pose: Pose?, ink: Color, accent: Color) {
+        let k = max(1, min(3, scale))
+        ctx.scaleBy(x: 1 / k, y: 1 / k)
+        let p = max(2, (pitch * k).rounded()), s = 8 * p, h = p / 2, q = p / 4
         let lx: CGFloat = lookRight ? 1 : -1, ly: CGFloat = 0
         let dir = lx, A = CGFloat(a)
 

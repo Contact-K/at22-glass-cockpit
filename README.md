@@ -158,7 +158,7 @@ swift run AT22 --shot /tmp/x.png --transcript <path.jsonl> --gate     # 実デ�
 swift run AT22 --shot /tmp/x.png --mode review --review <worktree>    # 07 REVIEW（files / git / spar も）
 swift run AT22 --shot /tmp/x.png --mode talk --term                   # 端末の引き出し
 swift run AT22 --shot /tmp/x.png --menu root|jump  /  --sheet new|delete|pick
-swift run AT22 --shot /tmp/x.png --ripple back:9                   # 管制塔⇄会話の波紋の途中のコマ（fwd:n も）
+swift run AT22 --shot /tmp/x.png --ripple back:9                   # 管制塔⇄会話の波紋の途中のコマ（fwd:n・side:n も）
 
 `--shot` は窓を開かずに PNG を1枚吐いて終わる。`ImageRenderer` は `TimelineView` / `ScrollView` /
 `TextField` の中身を組まないので、焼く時だけ**時刻を固定**し、会話のログは素の VStack に、
