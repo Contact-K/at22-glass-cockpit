@@ -8,6 +8,8 @@ import SwiftUI
 /// 答えを書けなかった時は必ずカードに出す（`gateFailed`）——黙って消すと司令塔が待ち続ける
 struct TalkScreen: View {
     let cockpit: Cockpit
+    @AppStorage(SettingsScreen.agentKey) private var defaultAgent = "claude|opus"
+    @AppStorage(SettingsScreen.effortKey) private var defaultEffort = ""
     let headline: String
     let subtitle: String
     let showThinking: Bool
@@ -276,7 +278,11 @@ struct TalkScreen: View {
                                 effort: cockpit.effort(of: s) ?? "",
                                 onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
                 } else {
-                    Text("// ASK C0").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
+                    // 会話を選ぶ前は、新しく起こす時の既定を選ぶ（壁打ちの入力欄と同じ）
+                    let parts = defaultAgent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                    let backend = Backend(rawValue: parts.first ?? "") ?? .claude
+                    ModelPicker(backend: backend, model: parts.count > 1 ? parts[1] : "", effort: defaultEffort,
+                                onModel: { defaultAgent = backend.rawValue + "|" + $0 }, onEffort: { defaultEffort = $0 })
                 }
             }
             .padding(.horizontal, 14)

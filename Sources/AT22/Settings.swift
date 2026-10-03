@@ -6,6 +6,8 @@ import SwiftUI
 struct SettingsScreen: View {
     static let levelKey = "defaultLevel"
     static let agentKey = "defaultAgent"
+    /// 新しく起こす claude の既定のエフォート（空なら claude の既定）。会話画面の入力欄の左からも選べる
+    static let effortKey = "defaultEffort"
 
     let cockpit: Cockpit
     let width: CGFloat
@@ -18,6 +20,9 @@ struct SettingsScreen: View {
     @AppStorage("showThinking") private var showThinking = false
     @State private var note: String?
     @State private var skill = SkillInstall.state()
+    /// Lv.4 / Lv.5 は一度だけ確かめる（もう一度押すと決まる）
+    @State private var armed: Gate.Level?
+    @State private var levelNote: String?
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
@@ -30,13 +35,19 @@ struct SettingsScreen: View {
             // 行が増えて低い窓では下帯に潜るので、行の部分だけ送れるようにする
             LiveScroll {
             VStack(alignment: .leading, spacing: 0) {
-            row("01", "Approval", "承認の段 · 新しいワークスペースの既定") {
+            row("01", "Approval", "承認の段 · 新しいワークスペースの既定と、いまの会話") {
                 HStack(spacing: 0) {
                     ForEach(Array([Gate.Level.each, .normal, .auto, .unattended].enumerated()), id: \.offset) { i, l in
                         let on = level == l.rawValue
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(String(l.title.prefix { $0 != " " }).uppercased()).font(.mono(11)).tracking(0.9)
-                            Text(String(l.title.drop { $0 != " " }.dropFirst())).font(.bodyJP(13))
+                            HStack(spacing: 6) {
+                                Text(String(l.title.prefix { $0 != " " }).uppercased()).font(.mono(11)).tracking(0.9)
+                                if cockpit.selectedSession != nil && cockpit.gateLevel == l {
+                                    Text("いま").font(.mono(9)).padding(.horizontal, 4).padding(.vertical, 1)
+                                        .overlay(Rectangle().stroke(lineWidth: 1))
+                                }
+                            }
+                            Text(armed == l ? "もう一度押す" : String(l.title.drop { $0 != " " }.dropFirst())).font(.bodyJP(13))
                         }
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,28 +55,20 @@ struct SettingsScreen: View {
                         .background(on ? Palette.Light.fg : .clear)
                         .overlay(alignment: .leading) { if i > 0 { Rectangle().fill(Palette.Light.fg).frame(width: 1) } }
                         .contentShape(Rectangle())
-                        .onTapGesture { level = l.rawValue }
+                        .onTapGesture { pickLevel(l) }
                         .help(NewWorkspaceSheet.levelNote[l] ?? "")
                     }
                 }
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                if let levelNote { Text(levelNote).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
             }
             row("02", "Agent", "既定のエージェント") {
-                Group {
-                    if frozen != nil {
-                        Text(agentLabel).frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Menu {
-                            ForEach(Backend.allCases, id: \.self) { b in
-                                ForEach(NewWorkspaceSheet.models(b), id: \.self) { m in
-                                    Button(label(b, m)) { agent = b.rawValue + "|" + m }
-                                }
-                            }
-                        } label: {
-                            Text(agentLabel).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .menuStyle(.borderlessButton)
-                    }
+                SumiPicker(sections: Backend.allCases.map { backend in
+                    .init(title: backend.title.uppercased(), items: NewWorkspaceSheet.models(backend).map { m in
+                        .init(id: backend.rawValue + "|" + m, text: label(backend, m), on: agent == backend.rawValue + "|" + m)
+                    })
+                }, onPick: { _, id in agent = id }) {
+                    Text(agentLabel + " ▾").frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .font(.mono(13))
                 .padding(.horizontal, 10).frame(height: 38)
@@ -140,6 +143,24 @@ struct SettingsScreen: View {
         .padding(.vertical, height < 900 ? 9 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
+    }
+
+    /// 段を選ぶ。新しいワークスペースの既定にし、会話を開いていればその会話の段にも書く（次に送った時から）
+    private func pickLevel(_ l: Gate.Level) {
+        if (l == .auto || l == .unattended), armed != l, l.rawValue != level || cockpit.gateLevel != l {
+            armed = l
+            levelNote = "人の承認なしに書き換える段です。もう一度押すと決まります"
+            return
+        }
+        armed = nil
+        level = l.rawValue
+        if cockpit.selectedSession != nil {
+            levelNote = cockpit.applyLevel(l, to: cockpit.selectedSession) == .saved
+                ? "\(l.title) にしました。いまの会話にも、次に送った時から効きます"
+                : "既定にしました（いまの会話には書けませんでした）"
+        } else {
+            levelNote = "\(l.title) を新しいワークスペースの既定にしました"
+        }
     }
 
     private func installSkill() {

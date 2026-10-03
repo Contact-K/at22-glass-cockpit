@@ -87,6 +87,7 @@ struct P0SelfCheck {
         sentMessageIsNotDoubled()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
+        handoffIsCreatedWhenMissing()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3776,6 +3777,21 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// 壁打ちの「HANDOFF に書く」: ノートが無ければ sessions/HANDOFF.md を作り、あれば末尾に足す
+    @MainActor static func handoffIsCreatedWhenMissing() {
+        let projects = FileManager.default.temporaryDirectory.appendingPathComponent("p0-handoff-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: projects) }
+        let cockpit = Cockpit(projectsRoot: projects)
+        let cwd = "/tmp/repo/.claude/worktrees/new-task"
+        let (first, file) = cockpit.appendHandoff("\n## 決めたこと\n- A\n", cwd: cwd)
+        assert(first == .saved && file.hasPrefix("sessions/HANDOFF.md"), "作れなかった: \(first) \(file)")
+        let (second, _) = cockpit.appendHandoff("- B\n", cwd: cwd)
+        let url = projects.appendingPathComponent(Cockpit.projectSlug(cwd)).appendingPathComponent("memory/sessions/HANDOFF.md")
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        assert(second == .saved && text.hasSuffix("- A\n- B\n") && text.hasPrefix("---\nname: HANDOFF"), text)
+    }
+
     /// TaskCreate の無い司令塔は `PLAN:` 行で計画を受け取る。AT22 が 05 PLAN に積み、`NOW:` / `DONE:` で進める。
     /// 同じ手順は二重に積まない
     @MainActor static func planArrivesWithoutTaskCreate() {

@@ -30,6 +30,7 @@ struct NewWorkspaceSheet: View {
     /// 10 SETTINGS で決めた既定（承認の段・エージェント）
     @AppStorage(SettingsScreen.levelKey) private var defaultLevel = Gate.defaultLevel.rawValue
     @AppStorage(SettingsScreen.agentKey) private var defaultAgent = "claude|opus"
+    @AppStorage(SettingsScreen.effortKey) private var defaultEffort = ""
     @State private var step = 0
     @State private var org: Backend = .claude
     @State private var opened = Date()
@@ -224,7 +225,8 @@ struct NewWorkspaceSheet: View {
                     bigPlate(on: level == l) {
                         HStack(alignment: .firstTextBaseline, spacing: 14) {
                             Text(String(l.title.prefix { $0 != " " }).uppercased()).font(.mono(14)).tracking(1.1)
-                            Text(String(l.title.drop { $0 != " " }.dropFirst())).font(.display(34))
+                            // 和文の見出しは筆（青柳衡山T）。英字の見出し書体だと和文がシステムのゴシックに落ちる
+                            Text(String(l.title.drop { $0 != " " }.dropFirst())).font(.brush(30))
                             Text(Self.levelNote[l] ?? "").font(.bodyJP(13))
                         }
                     }
@@ -424,7 +426,8 @@ struct NewWorkspaceSheet: View {
         guard canLaunch, let project else { return }
         let base = fromTile?.branch ?? "HEAD"
         let racers = zip(names, picks).map { Cockpit.Racer(name: $0, backend: $1.backend, model: $1.model) }
-        cockpit.createWorkspaces(repo: project.id, base: base, racers: racers, prompt: prompt, level: level)
+        cockpit.createWorkspaces(repo: project.id, base: base, racers: racers, prompt: prompt, level: level,
+                                 effort: defaultEffort)
         onCreated()
     }
 }

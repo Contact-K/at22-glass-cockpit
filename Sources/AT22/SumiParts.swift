@@ -716,6 +716,61 @@ struct Mascot: View {
     }
 }
 
+// MARK: - 選択のポップオーバー
+
+/// アプリの書体で描く選択肢の板。macOS 標準の Menu は中の文字に独自の書体を当てられず、
+/// システムのゴシックで出てしまうので、選ぶ口はこれで揃える
+struct SumiPicker<Label: View>: View {
+    struct Item: Identifiable {
+        let id: String
+        let text: String
+        let on: Bool
+    }
+    struct Section: Identifiable {
+        let title: String
+        let items: [Item]
+        var id: String { title }
+    }
+
+    let sections: [Section]
+    /// (セクション名, 選んだ id)
+    let onPick: (String, String) -> Void
+    @ViewBuilder let label: () -> Label
+
+    @State private var open = false
+    @State private var hover: String?
+
+    var body: some View {
+        Button { open.toggle() } label: { label().contentShape(Rectangle()) }
+            .buttonStyle(.plain)
+            .popover(isPresented: $open, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(sections) { section in
+                        Text(section.title).font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
+                            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
+                        ForEach(section.items) { item in
+                            let key = section.title + "/" + item.id
+                            HStack(spacing: 10) {
+                                Text(item.on ? "■" : "□").font(.mono(11))
+                                Text(item.text).font(.mono(12)).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .foregroundStyle(hover == key ? Palette.Light.bg : Palette.Light.fg)
+                            .background(hover == key ? Palette.Light.fg : .clear)
+                            .contentShape(Rectangle())
+                            .onHover { hover = $0 ? key : (hover == key ? nil : hover) }
+                            .onTapGesture { onPick(section.title, item.id); open = false }
+                        }
+                    }
+                }
+                .padding(.bottom, 8)
+                .frame(minWidth: 240, alignment: .leading)
+                .background(Palette.Light.bg)
+            }
+    }
+}
+
 // MARK: - モデルとエフォート
 
 /// 入力欄の左の「モデル · エフォート ▾」。押すとモデルと考える深さを選べる（会話・壁打ちの入力欄で共通）。
@@ -735,30 +790,29 @@ struct ModelPicker: View {
             if frozen != nil {
                 Text(label)
             } else {
-                Menu {
-                    Section("モデル") {
-                        ForEach(NewWorkspaceSheet.models(backend), id: \.self) { m in
-                            Button((Self.short(m) == Self.short(model) ? "✓ " : "") + (m.isEmpty ? "既定" : m)) { onModel(m) }
-                        }
-                    }
-                    if !efforts.isEmpty {
-                        Section("エフォート") {
-                            ForEach(efforts, id: \.self) { e in
-                                Button((e == effort ? "✓ " : "") + e) { onEffort(e) }
-                            }
-                        }
-                    }
-                } label: {
+                SumiPicker(sections: sections, onPick: { section, id in
+                    if section == "MODEL モデル" { onModel(id) } else { onEffort(id) }
+                }) {
                     Text(label)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
                 .help("モデルとエフォート（次に送った時から）")
             }
         }
         .font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
         .lineLimit(1)
+        .fixedSize()
+    }
+
+    private var sections: [SumiPicker<Text>.Section] {
+        var out = [SumiPicker<Text>.Section(title: "MODEL モデル", items: NewWorkspaceSheet.models(backend).map { m in
+            .init(id: m, text: m.isEmpty ? "既定" : m, on: Self.short(m) == Self.short(model))
+        })]
+        if !efforts.isEmpty {
+            out.append(.init(title: "EFFORT エフォート", items: ([""] + efforts).map { e in
+                .init(id: e, text: e.isEmpty ? "既定" : e, on: e == effort)
+            }))
+        }
+        return out
     }
 
     private var efforts: [String] {

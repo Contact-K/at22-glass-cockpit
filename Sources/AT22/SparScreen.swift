@@ -570,14 +570,10 @@ struct SparPanels: View {
     }
 
     private func writeHandoff(_ decided: [SparModel.Decision]) {
-        guard let node = cockpit.memory.first(where: { $0.file.uppercased().contains("HANDOFF") }),
-              let old = try? String(contentsOfFile: node.id, encoding: .utf8) else {
-            flash("HANDOFF のノートが記憶DBにありません")
-            return
-        }
-        let text = old + Sparring.handoff(decided.map { ($0.text, $0.why) }, at: Date())
-        flash(cockpit.saveNote(path: node.id, text: text, expectedText: old) == .saved
-              ? "\(node.file) に書きました" : "書けませんでした（外で書き換えられたかも）")
+        guard let workspace else { return }
+        let (result, file) = cockpit.appendHandoff(Sparring.handoff(decided.map { ($0.text, $0.why) }, at: Date()),
+                                                   cwd: workspace)
+        flash(result == .saved ? "\(file) に書きました" : "書けませんでした（外で書き換えられたかも）")
     }
 
     private func flash(_ text: String) {

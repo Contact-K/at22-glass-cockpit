@@ -914,6 +914,39 @@ final class Cockpit {
         return result
     }
 
+    /// 段をいまの会話にも効かせる。そのプロジェクトの `memory/gate/LEVEL` に書き、ターンの合間なら接続を畳む
+    /// （次に送った時に新しい `--permission-mode` で繋ぎ直す）。設定の段は以前は新規の既定にしか効かず、
+    /// 留守番にしても今の会話は元の段のまま毎回訊いていた
+    @discardableResult
+    func applyLevel(_ level: Gate.Level, to session: String?) -> NoteSaveResult {
+        guard let session, let cwd = cwd(of: session) else { return .failed }
+        let result = setGateLevel(level, cwd: cwd)
+        if result == .saved, let run = runs[session], run.connection.acceptsInput {
+            run.connection.close()
+            forget(session)
+        }
+        return result
+    }
+
+    /// 壁打ちで決めたことを、その作業場所の記憶DB の HANDOFF に足す。ノートが無ければ `sessions/HANDOFF.md` を作る
+    /// （以前は既にある時しか書けず、worktree の会話ではたいてい「ありません」で終わっていた）
+    func appendHandoff(_ section: String, cwd: String) -> (NoteSaveResult, String) {
+        let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        let memory = project.appendingPathComponent("memory")
+        let manager = FileManager.default
+        let candidates = [memory.appendingPathComponent("sessions/HANDOFF.md"), memory.appendingPathComponent("HANDOFF.md")]
+            + ((try? manager.contentsOfDirectory(atPath: memory.path)) ?? [])
+                .filter { $0.uppercased().contains("HANDOFF") && $0.hasSuffix(".md") }
+                .map { memory.appendingPathComponent($0) }
+        if let found = candidates.first(where: { manager.fileExists(atPath: $0.path) }),
+           let old = try? String(contentsOf: found, encoding: .utf8) {
+            return (saveNote(path: found.path, text: old + section, expectedText: old, project: project), found.lastPathComponent)
+        }
+        let fresh = memory.appendingPathComponent("sessions/HANDOFF.md")
+        let text = "---\nname: HANDOFF\ndescription: 引き継ぎ（AT22 の壁打ちで決めたことなど）\nmetadata:\n  type: progress\n---\n\n# HANDOFF\n" + section
+        return (saveNote(path: fresh.path, text: text, creating: true, project: project), "sessions/HANDOFF.md（新規）")
+    }
+
     /// 検査から門を直接流し込む口
     func loadGatesForProbe(_ requests: [Gate.Request]) {
         gates = requests
@@ -960,12 +993,14 @@ final class Cockpit {
     ///   - level: 承認の段。省略すると選択中のセッションの段を使う
     @discardableResult
     func launch(prompt: String, cwd: String, backend: Backend = .claude, model: String = "",
-                allowedTools: [String] = [], level: Gate.Level? = nil) -> UUID? {
+                allowedTools: [String] = [], level: Gate.Level? = nil, effort: String = "") -> UUID? {
         let level = level ?? gateLevel
         switch backend {
         case .claude:
-            return launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
-                                level: level)
+            let id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
+                                  level: level, effort: effort)
+            if let id, !effort.isEmpty { sessionEffort[id.uuidString.lowercased()] = effort }
+            return id
         case .codex:
             return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
         case .grok, .hermes:
@@ -1955,7 +1990,7 @@ final class Cockpit {
     /// 2つ以上渡すと**競走**：最初の1本で基点を SHA に固定し、残りも同じ SHA から作って同じ指示を送る。
     /// 作るのは1本ずつ順に——同じリポジトリで `git worktree add` を同時に走らせない（ref や exclude の取り合い）
     func createWorkspaces(repo: String, base: String, racers: [Racer], prompt: String, level: Gate.Level,
-                          then: ((String, String?, String?) -> Void)? = nil) {
+                          effort thinking: String = "", then: ((String, String?, String?) -> Void)? = nil) {
         let parent = racers.count > 1 ? "競走 " + base + " " + UUID().uuidString.prefix(8) : nil
         for racer in racers {
             pendingWorkspaces[Worktree.location(repo: repo, name: racer.name)] = PendingWorkspace(repo: repo, name: racer.name, error: nil)
@@ -1970,14 +2005,15 @@ final class Cockpit {
                 }.value
                 if case let .success(made) = result { pinned = pinned ?? made.baseSHA }
                 finishWorkspace(repo: repo, racer: racer, base: base, parent: parent, result: result,
-                                prompt: prompt, level: level, then: then)
+                                prompt: prompt, level: level, thinking: thinking, then: then)
             }
         }
     }
 
     private func finishWorkspace(repo: String, racer: Racer, base: String, parent: String?,
                                  result: Result<(path: String, branch: String, baseSHA: String), Error>,
-                                 prompt: String, level: Gate.Level, then: ((String, String?, String?) -> Void)?) {
+                                 prompt: String, level: Gate.Level, thinking: String = "",
+                                 then: ((String, String?, String?) -> Void)?) {
         let path = Worktree.location(repo: repo, name: racer.name)
         switch result {
         case let .success(made):
@@ -1987,7 +2023,8 @@ final class Cockpit {
             refreshWorktreesIfNeeded(force: true)
             let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !prompt.isEmpty else { then?(made.path, nil, nil); return }
-            let session = launch(prompt: prompt, cwd: made.path, backend: racer.backend, model: racer.model, level: level)
+            let session = launch(prompt: prompt, cwd: made.path, backend: racer.backend, model: racer.model, level: level,
+                                 effort: racer.backend == .claude ? thinking : "")
             then?(made.path, session?.uuidString.lowercased(), session == nil ? (launchError ?? "起こせなかった") : nil)
         case let .failure(error):
             pendingWorkspaces[path]?.error = "\(error)"
