@@ -2300,16 +2300,29 @@ final class Cockpit {
     private func adoptPlan(_ text: String, session: String, at: Date) {
         guard text.contains("PLAN") || text.contains("NOW") || text.contains("DONE") else { return }
         let steps = Sparring.planLines(text)
-        var next = (tasks.values.filter { $0.session == session }.map(\.number).max() ?? 0) + 1
-        for step in steps where !tasks.values.contains(where: { $0.session == session && $0.subject == step }) {
-            let key = "\(session)#plan\(next)"
-            tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
-                                     detail: "壁打ちの計画（PLAN: 行で受け取り）", status: .pending, at: at)
-            adoptedPlans[session, default: []].append(key)
-            next += 1
+        if !steps.isEmpty {
+            // 番号はいちばん新しい PLAN: の並びで振り直す。続けて数えると、2回目の計画の後の NOW: 1 が
+            // 1回目の手順を指していた（済んだ手順が進行中に戻った・2026-10-03 壁打ちで再現）
+            var next = (tasks.values.filter { $0.session == session }.map(\.number).max() ?? 0) + 1
+            var keys: [String] = []
+            for step in steps {
+                if let known = tasks.first(where: { $0.value.session == session && $0.value.subject == step })?.key {
+                    keys.append(known)
+                    continue
+                }
+                let key = "\(session)#plan\(next)"
+                tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
+                                         detail: "計画（PLAN: 行で受け取り）", status: .pending, at: at)
+                keys.append(key)
+                next += 1
+            }
+            adoptedPlans[session] = keys
         }
         for (n, done) in Sparring.progressLines(text) {
-            guard let keys = adoptedPlans[session], keys.indices.contains(n - 1) else { continue }
+            guard let keys = adoptedPlans[session], keys.indices.contains(n - 1),
+                  let task = tasks[keys[n - 1]] else { continue }
+            // 済んだ手順は NOW: で戻さない
+            if !done && task.status == .completed { continue }
             tasks[keys[n - 1]]?.status = done ? .completed : .inProgress
             tasks[keys[n - 1]]?.at = at
         }

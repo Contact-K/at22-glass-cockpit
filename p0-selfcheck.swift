@@ -3785,12 +3785,21 @@ struct P0SelfCheck {
         let at = Date()
         func say(_ t: String) { cockpit.apply([.said(agent: "s", session: "s", text: t, speaker: .model, thinking: false, at: at)]) }
         say("PLAN: 1. 凡例を作り直す\nPLAN: 2. 検査を足す")
-        say("PLAN: 凡例を作り直す")
+        say("PLAN: 凡例を作り直す\nPLAN: 検査を足す")
         var list = cockpit.allTasks(session: "s")
         assert(list.map(\.subject) == ["凡例を作り直す", "検査を足す"], "\(list.map(\.subject))")
         say("DONE: 1\nNOW: 2")
         list = cockpit.allTasks(session: "s")
         assert(list[0].status == .completed && list[1].status == .inProgress)
+        // 2回目の計画の後の番号は、その計画の並びで数える。済んだ手順は NOW: で戻さない
+        say("DONE: 2")
+        say("PLAN: 凡例の色を2段に\nPLAN: README を直す")
+        say("NOW: 1\nNOW: 9")
+        list = cockpit.allTasks(session: "s")
+        assert(list.map(\.status) == [.completed, .completed, .inProgress, .pending], "\(list.map { "\($0.subject) \($0.status)" })")
+        say("PLAN: 凡例を作り直す\nPLAN: README を直す")
+        say("NOW: 1")
+        assert(cockpit.allTasks(session: "s")[0].status == .completed, "済んだ手順が進行中に戻った")
     }
 
     /// 動作の印は最後の道具から。Bash の swift build の最中は build（以前は think だった）、
