@@ -118,6 +118,24 @@ final class ReviewModel {
         await load(cockpit, path: path)
     }
 
+    /// 一括ステージ。`only` を渡すとそのファイルだけ、無ければ変わったファイル全部
+    func stageAll(_ cockpit: Cockpit, on: Bool, only: Worktree.DiffFile? = nil) async {
+        guard let path else { return }
+        let names = (only.map { [$0] } ?? files).map(\.path)
+        let error = await Task.detached { () -> String? in
+            do { try Worktree.stageAll(path, files: names, on: on); return nil } catch { return "\(error)" }
+        }.value
+        failure = error
+        await load(cockpit, path: path)
+    }
+
+    /// ステージできる（まだ記帳していない）ハンクの数と、そのうちステージ済みの数
+    func stageCounts(_ only: Worktree.DiffFile? = nil) -> (open: Int, staged: Int) {
+        let list = only.map { [$0] } ?? files
+        let states = list.flatMap { f in f.hunks.map { state(f, $0) } }.filter { $0 != .committed }
+        return (states.count, states.filter { $0 == .staged }.count)
+    }
+
     func commit(_ cockpit: Cockpit, message: String) async -> String? {
         guard let path else { return nil }
         let result = await Task.detached { () -> String in
@@ -210,6 +228,13 @@ struct ReviewScreen: View {
             if file.untracked { Text("?? NEW").font(.mono(9)).padding(.horizontal, 5).padding(.vertical, 2).overlay(Rectangle().stroke(lineWidth: 1)) }
             Text("+\(file.added) −\(file.removed)").font(.mono(11)).foregroundStyle(Palette.Light.fg2)
             Spacer(minLength: 0)
+            let counts = model.stageCounts(file)
+            if counts.open > 0 {
+                let all = counts.staged == counts.open
+                pill(all ? "■ ファイルを外す" : "□ ファイルを STAGE", filled: all) {
+                    Task { await model.stageAll(cockpit, on: !all, only: file) }
+                }
+            }
             pill(seen ? "✓ 見た" : "□ 見た", filled: seen) {
                 if seen { model.seen.remove(file.path) } else { model.seen.insert(file.path) }
             }
@@ -309,6 +334,14 @@ struct ReviewScreen: View {
             Text(n > 0 ? "ハンクを選びました。記帳と送出は GIT で。" : "差分のハンクを STAGE すると、GIT で記帳できます。")
                 .font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2)
             Spacer(minLength: 0)
+            let counts = model.stageCounts()
+            if counts.open > 0 {
+                let all = counts.staged == counts.open
+                pill(all ? "すべて外す" : "すべて STAGE", filled: false) {
+                    Task { await model.stageAll(cockpit, on: !all) }
+                }
+                .help(all ? "ステージを全部外す" : "変わったファイルを全部ステージする")
+            }
             Button(action: onGit) {
                 Text("08 GIT ▸").font(.mono(11)).tracking(0.9)
                     .foregroundStyle(n > 0 ? Palette.Light.bg : Palette.Light.fg)
@@ -713,12 +746,13 @@ struct GitScreen: View {
     private func commit() {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canCommit(stagedHunks) else { return }
-        let before = model.commits.count
+        // 数では比べない。基点が HEAD の時の log は 12 件で切るので、記帳しても数が変わらない
+        let before = model.commits.first?.hash
         Task {
             let result = await model.commit(cockpit, message: text)
             message = ""
             // 記帳できたら、ボタンから新しいコミットの行へドットを渡す
-            if model.commits.count > before {
+            if model.commits.first?.hash != before {
                 try? await Task.sleep(for: .milliseconds(40))
                 onFly("commitBtn", "commit:0", Palette.blue)
             }

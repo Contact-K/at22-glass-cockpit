@@ -49,6 +49,9 @@ enum Snapshot {
                 at: Date(timeIntervalSinceNow: -8))])
         }
 
+        // 墨流しの温めは裏で回るので、焼く前に済ませておく
+        Ink.tank.settle()
+        Ink.tower.settle()
         let renderer = ImageRenderer(content:
             CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower, shotMenu: menu, shotSheet: sheet, shotReview: reviewModel, shotFiles: filesModel, shotTerm: term, shotRipple: ripple)
                 .frame(width: size.width, height: size.height)

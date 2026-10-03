@@ -315,6 +315,12 @@ extension Worktree {
         _ = try git(["apply", "--cached"] + (on ? [] : ["-R"]) + ["--recount", patchFile.path], in: path)
     }
 
+    /// 一括でステージする／外す（変わったファイルを丸ごと。追跡外の新規も入る）
+    nonisolated static func stageAll(_ path: String, files: [String], on: Bool) throws {
+        guard !files.isEmpty else { return }
+        _ = try git((on ? ["add", "-A", "--"] : ["reset", "-q", "--"]) + files, in: path)
+    }
+
     /// ステージした分だけをコミットする
     nonisolated static func commitStaged(_ path: String, message: String) throws -> String {
         try git(["commit", "-m", message], in: path).trimmingCharacters(in: .whitespacesAndNewlines)

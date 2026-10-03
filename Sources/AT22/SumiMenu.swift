@@ -85,6 +85,9 @@ struct WedgeMenu: View {
                 p.addLine(to: CGPoint(x: 166 + (size.height - 100) * 0.325, y: size.height - 44))
             }
             .stroke(Palette.blue, lineWidth: 3)
+            // 畳んだら斜線も消える（ドットが縮むのに合わせてフェードアウト）
+            .opacity(state.closing == nil ? 1 : 0)
+            .animation(.linear(duration: WedgeMenu.closeTime * 0.8), value: state.closing == nil)
             .allowsHitTesting(false)
             BlueSheet.edge(p: 1, size: size).stroke(Palette.blue, lineWidth: 3).allowsHitTesting(false)
             if full || state.closing != nil { content.modifier(ExitFade(closing: state.closing != nil)) }

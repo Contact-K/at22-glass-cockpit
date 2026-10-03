@@ -280,9 +280,18 @@ struct DecideLayer: View {
 ///
 /// ponytail: CPU の配列で 96 格子。重ければ Metal へ
 ///
-/// 隔離は付けない（画面の body からしか触らないので、1つの隔離の中に留まる）。
-/// 付けると deinit から升を解放できなくなる
-final class InkTank {
+/// **計算は裏の直列キューで回す**（2026-10-03）。メインで回していた頃は、何もしていない時でも
+/// debug で CPU 70%・release で 25% をメインスレッドが食い、画面の短い動き（決定のドット）が間引かれていた。
+/// 升に触るのは全部 `queue` の上だけ。画面には出来上がった最新の1枚（`shown`）を渡す。
+/// 計算の繰り返しは `for i in 1...n` ではなく while で書く。debug ビルドでは範囲の繰り返しが標準ライブラリの
+/// 汎用処理（ClosedRange の添字送り）を毎回呼び、Xcode の Debug で流体1コマが release の約10倍遅かった
+final class InkTank: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "at22.ink", qos: .userInitiated)
+    private let lock = NSLock()
+    /// 画面に渡す最新の1枚と、いま1コマ計算中か（どちらも lock で守る）
+    private var shown: CGImage?
+    private var stepping = false
+
     let n: Int          // 横の升
     let m: Int          // 縦の升
     private let s: Int, size: Int
@@ -306,7 +315,10 @@ final class InkTank {
     private var ax: Float = 0.5, ay: Float = 0.5
     private var hover: (Float, Float)?
     private var pending: [(due: Date, x: Float, y: Float, r: Float, accent: Bool, amount: Float)] = []
-    private(set) var image: CGImage?
+    private var image: CGImage?
+
+    /// 裏の計算（温めを含む）が済むまで待つ。`--shot` が焼く前に呼ぶ
+    func settle() { queue.sync {} }
 
     /// v10 の格子は 96。**`swift run`（デバッグビルド）だけ 48 に落とす**——
     /// 実測（Linux・同じコード）で 96 格子の1コマが release 2.5ms に対し debug 56ms、
@@ -338,23 +350,43 @@ final class InkTank {
         d0 = alloc(); p = alloc(); div = alloc(); curl = alloc(); grain = alloc()
         pixels = [UInt8](repeating: 255, count: res * rows * 4)
         for buf in [u, v, u0, v0, d1, d2, d0, p, div, curl] { buf.initialize(repeating: 0, count: size) }
-        for k in 0..<size { grain[k] = Float.random(in: -0.03...0.03) }
+        do { var k = (0) - 1; while k < (size) - 1 { k += 1; grain[k] = Float.random(in: -0.03...0.03) } }
 
         // 種: 差し色は高く浮かべ、墨は低く沈める
-        for _ in 0..<3 { drop(x: .random(in: 0.15...0.9), y: .random(in: 0.15...0.4), r: .random(in: 0.18...0.26), accent: true, amount: 0.7) }
-        for _ in 0..<4 { drop(x: .random(in: 0.1...0.9), y: .random(in: 0.6...0.9), r: .random(in: 0.2...0.3), accent: false, amount: 0.9) }
-        for _ in 0..<Self.warmup { step() }
-        paint()
+        // 温めも裏で（起動直後のメインを止めない）。済むまで面は紙の色のまま
+        queue.async { [self] in
+            do { var _n1 = (0) - 1; while _n1 < (3) - 1 { _n1 += 1; drop(x: .random(in: 0.15...0.9), y: .random(in: 0.15...0.4), r: .random(in: 0.18...0.26), accent: true, amount: 0.7) } }
+            do { var _n2 = (0) - 1; while _n2 < (4) - 1 { _n2 += 1; drop(x: .random(in: 0.1...0.9), y: .random(in: 0.6...0.9), r: .random(in: 0.2...0.3), accent: false, amount: 0.9) } }
+            for _ in 0..<Self.warmup { step() }
+            paint()
+            publish()
+        }
+    }
+
+    private func publish() {
+        lock.lock(); shown = image; stepping = false; lock.unlock()
     }
 
     deinit {
         for buf in [u, v, u0, v0, d1, d2, d0, p, div, curl, grain] { buf.deallocate() }
     }
 
+    @_optimize(speed)
     @inline(__always) private func ix(_ i: Int, _ j: Int) -> Int { i + s * j }
 
-    /// 進める。**呼ばれた分しか進まない**——隠れている間に溜めた時間は捨てる（追いつこうとしない）
+    /// 進める。**呼ばれた分しか進まない**——隠れている間に溜めた時間は捨てる（追いつこうとしない）。
+    /// 画面からは毎コマ呼ばれ、前のコマの計算が済んでいれば次を裏で始めて、いま出来ている1枚を返す
     func frame(at now: Date) -> CGImage? {
+        lock.lock()
+        let image = shown, start = !stepping
+        if start { stepping = true }
+        lock.unlock()
+        if start { queue.async { [self] in advance(now); publish() } }
+        return image
+    }
+
+    @_optimize(speed)
+    private func advance(_ now: Date) {
         for item in pending where item.due <= now {
             drop(x: item.x, y: item.y, r: item.r, accent: item.accent, amount: item.amount)
         }
@@ -368,33 +400,37 @@ final class InkTank {
             step()
             paint()
         }
-        return image
     }
 
     /// 1行ぶんの墨を垂らす。10滴を 90ms おきに、少しずつ下へずらして落とす（v10 の `drip`）
     func drip(x: Float, y: Float, accent: Bool, amount: Float, after delay: Double, now: Date = Date()) {
-        for i in 0..<10 {
-            pending.append((now.addingTimeInterval(delay + Double(i) * 0.09),
-                            x + .random(in: -0.005...0.005), y + Float(i) * 0.0025,
-                            0.03 + Float(i) * 0.002, accent, amount * 0.09))
+        queue.async { [self] in
+            do { var i = (0) - 1; while i < (10) - 1 { i += 1
+                pending.append((now.addingTimeInterval(delay + Double(i) * 0.09),
+                                x + .random(in: -0.005...0.005), y + Float(i) * 0.0025,
+                                0.03 + Float(i) * 0.002, accent, amount * 0.09))
+            } }
         }
     }
 
     /// ホバーでそっと掻き回す（墨は足さない）
     func hover(x: Float, y: Float) {
-        if let last = hover { stir(x: x, y: y, px: last.0, py: last.1, accent: false, amount: 0) }
-        hover = (x, y)
+        queue.async { [self] in
+            if let last = hover { stir(x: x, y: y, px: last.0, py: last.1, accent: false, amount: 0) }
+            hover = (x, y)
+        }
     }
 
-    func endHover() { hover = nil }
+    func endHover() { queue.async { [self] in hover = nil } }
 
-    /// 1滴。柔らかいガウスの雲と、外へのかすかな押し
-    func drop(x: Float, y: Float, r: Float, accent: Bool, amount: Float) {
+    /// 1滴。柔らかいガウスの雲と、外へのかすかな押し（`queue` の上からだけ呼ぶ）
+    @_optimize(speed)
+    private func drop(x: Float, y: Float, r: Float, accent: Bool, amount: Float) {
         let gi = Int(jsRound(Double(x) * Double(n))), gj = Int(jsRound(Double(y) * Double(m)))
         let rr = max(2, Int(jsRound(Double(r) * Double(min(n, m)))))
         let e = Int(ceil(Double(rr) * 1.4))
-        for a in -e...e {
-            for b in -e...e {
+        do { var a = (-e) - 1; while a < (e) { a += 1
+            do { var b = (-e) - 1; while b < (e) { b += 1
                 let i = gi + a, j = gj + b
                 guard i >= 1, i <= n, j >= 1, j <= m else { continue }
                 let dist = Float(hypot(Double(a), Double(b))), q = dist / Float(rr)
@@ -408,16 +444,17 @@ final class InkTank {
                     u[k] += imp * Float(a) / dist
                     v[k] += imp * Float(b) / dist
                 }
-            }
-        }
+            } }
+        } }
     }
 
+    @_optimize(speed)
     private func stir(x: Float, y: Float, px: Float, py: Float, accent: Bool, amount: Float) {
         let gi = max(1, min(n, Int(jsRound(Double(x * Float(n)))))), gj = max(1, min(m, Int(jsRound(Double(y * Float(m))))))
         let rb = max(3, Int(jsRound(Double(Float(n) * brush)))), sg = Float(rb * rb) * 0.35
         let dx = max(-0.12, min(0.12, (x - px) * strength * 4)), dy = max(-0.12, min(0.12, (y - py) * strength * 4))
-        for a in -rb...rb {
-            for b in -rb...rb {
+        do { var a = (-rb) - 1; while a < (rb) { a += 1
+            do { var b = (-rb) - 1; while b < (rb) { b += 1
                 let i = gi + a, j = gj + b
                 guard i >= 1, i <= n, j >= 1, j <= m else { continue }
                 let w = exp(-Float(a * a + b * b) / sg), k = ix(i, j)
@@ -425,83 +462,89 @@ final class InkTank {
                 v[k] += dy * w
                 guard amount > 0 else { continue }
                 if accent { d2[k] = min(1.4, d2[k] + amount * w) } else { d1[k] = min(1.4, d1[k] + amount * w) }
-            }
-        }
+            } }
+        } }
     }
 
+    @_optimize(speed)
     private func bnd(_ x: UnsafeMutablePointer<Float>) {
-        for i in 1...n { x[ix(i, 0)] = x[ix(i, 1)]; x[ix(i, m + 1)] = x[ix(i, m)] }
-        for j in 1...m { x[ix(0, j)] = x[ix(1, j)]; x[ix(n + 1, j)] = x[ix(n, j)] }
+        do { var i = (1) - 1; while i < (n) { i += 1; x[ix(i, 0)] = x[ix(i, 1)]; x[ix(i, m + 1)] = x[ix(i, m)] } }
+        do { var j = (1) - 1; while j < (m) { j += 1; x[ix(0, j)] = x[ix(1, j)]; x[ix(n + 1, j)] = x[ix(n, j)] } }
     }
 
+    @_optimize(speed)
     private func project() {
         let fn = Float(n)
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 div[ix(i, j)] = -0.5 * (u[ix(i + 1, j)] - u[ix(i - 1, j)] + v[ix(i, j + 1)] - v[ix(i, j - 1)]) / fn
                 p[ix(i, j)] = 0
-            }
-        }
-        for _ in 0..<14 {
-            for j in 1...m {
-                for i in 1...n {
+            } }
+        } }
+        do { var _n3 = (0) - 1; while _n3 < (14) - 1 { _n3 += 1
+            do { var j = (1) - 1; while j < (m) { j += 1
+                do { var i = (1) - 1; while i < (n) { i += 1
                     p[ix(i, j)] = (div[ix(i, j)] + p[ix(i - 1, j)] + p[ix(i + 1, j)] + p[ix(i, j - 1)] + p[ix(i, j + 1)]) / 4
-                }
-            }
+                } }
+            } }
             bnd(p)
-        }
-        for j in 1...m {
-            for i in 1...n {
+        } }
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 u[ix(i, j)] -= 0.5 * fn * (p[ix(i + 1, j)] - p[ix(i - 1, j)])
                 v[ix(i, j)] -= 0.5 * fn * (p[ix(i, j + 1)] - p[ix(i, j - 1)])
-            }
-        }
+            } }
+        } }
         bnd(u); bnd(v)
     }
 
+    @_optimize(speed)
     private func vorticity(_ eps: Float) {
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 curl[ix(i, j)] = 0.5 * (v[ix(i + 1, j)] - v[ix(i - 1, j)] - (u[ix(i, j + 1)] - u[ix(i, j - 1)]))
-            }
-        }
-        for j in 2..<m {
-            for i in 2..<n {
+            } }
+        } }
+        do { var j = (2) - 1; while j < (m) - 1 { j += 1
+            do { var i = (2) - 1; while i < (n) - 1 { i += 1
                 let gx = 0.5 * (abs(curl[ix(i + 1, j)]) - abs(curl[ix(i - 1, j)]))
                 let gy = 0.5 * (abs(curl[ix(i, j + 1)]) - abs(curl[ix(i, j - 1)]))
                 let len = (gx * gx + gy * gy).squareRoot() + 1e-5, c = curl[ix(i, j)]
                 u[ix(i, j)] += eps * (gy / len) * c
                 v[ix(i, j)] -= eps * (gx / len) * c
-            }
-        }
+            } }
+        } }
     }
 
+    @_optimize(speed)
     private func advect(_ d: UnsafeMutablePointer<Float>, _ src: UnsafeMutablePointer<Float>, _ dt: Float, _ decay: Float) {
         let fn = Float(n)
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 let x = max(0.5, min(fn + 0.5, Float(i) - dt * fn * u[ix(i, j)]))
                 let y = max(0.5, min(Float(m) + 0.5, Float(j) - dt * fn * v[ix(i, j)]))
                 let i0 = Int(x), j0 = Int(y), i1 = i0 + 1, j1 = j0 + 1
                 let s1 = x - Float(i0), s0 = 1 - s1, t1 = y - Float(j0), t0 = 1 - t1
                 d[ix(i, j)] = decay * (s0 * (t0 * src[ix(i0, j0)] + t1 * src[ix(i0, j1)])
                                      + s1 * (t0 * src[ix(i1, j0)] + t1 * src[ix(i1, j1)]))
-            }
-        }
+            } }
+        } }
         bnd(d)
     }
 
+    @_optimize(speed)
     private func diffuse(_ d: UnsafeMutablePointer<Float>, _ k: Float) {
         guard k > 0 else { return }
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 let q = ix(i, j)
                 d[q] += k * ((d[q - 1] + d[q + 1] + d[q - s] + d[q + s]) * 0.25 - d[q])
-            }
-        }
+            } }
+        } }
         bnd(d)
     }
 
+    @_optimize(speed)
     private func step() {
         let dt = 0.5 * speed
         // 自動: ゆっくりした対流と、ときどきの1滴
@@ -519,12 +562,12 @@ final class InkTank {
         }
         vorticity(curlStrength)
         // 墨は水より重くて沈み、差し色は軽くて浮く
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 let q = ix(i, j), a = d1[q], b = d2[q]
                 v[q] += sink * dt * (a * a - 0.5 * b * b) * 0.0015
-            }
-        }
+            } }
+        } }
         diffuse(u, 0.2); diffuse(v, 0.2)
         u0.update(from: u, count: size); v0.update(from: v, count: size)
         advect(u, u0, dt, viscosity); advect(v, v0, dt, viscosity)
@@ -534,14 +577,15 @@ final class InkTank {
     }
 
     /// 濃さ → 色。紙 → 墨 → 濃い墨（3段）と 紙 → 差し色 → くすんだ差し色 を、墨の割合で混ぜる
+    @_optimize(speed)
     private func paint() {
         let inkDeep = (ink.0 * 0.38, ink.1 * 0.38, ink.2 * 0.38)
         let accentDeep = (accent.0 * 0.55 + ink.0 * 0.25, accent.1 * 0.55 + ink.1 * 0.25, accent.2 * 0.55 + ink.2 * 0.25)
         func mix(_ a: (Float, Float, Float), _ b: (Float, Float, Float), _ t: Float) -> (Float, Float, Float) {
             (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
         }
-        for j in 1...m {
-            for i in 1...n {
+        do { var j = (1) - 1; while j < (m) { j += 1
+            do { var i = (1) - 1; while i < (n) { i += 1
                 let q = ix(i, j), a = max(0, d1[q]), b = max(0, d2[q])
                 let tot = (a + b) * (1 + grain[q])
                 let t = 1 - exp(-1.5 * tot)
@@ -561,8 +605,8 @@ final class InkTank {
                 pixels[o + 1] = UInt8(max(0, min(255, c.1)))
                 pixels[o + 2] = UInt8(max(0, min(255, c.2)))
                 pixels[o + 3] = 255
-            }
-        }
+            } }
+        } }
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return }
         image = CGImage(width: n, height: m, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: n * 4,
                         space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
