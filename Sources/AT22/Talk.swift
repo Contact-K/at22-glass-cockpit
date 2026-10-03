@@ -39,6 +39,8 @@ struct TalkScreen: View {
 
     @State private var draft = ""
     @State private var failed = false
+    /// 会話の一番下が見えているか（「最新へ ↓」と、引き戻すかどうか）
+    @State private var atBottom = true
     @AppStorage(SettingsScreen.levelKey) private var defaultLevel = Gate.defaultLevel.rawValue
     /// 新しい会話を壁打ち（読むだけ）で起こすか
     @State private var planNext = false
@@ -81,11 +83,13 @@ struct TalkScreen: View {
     @ViewBuilder
     private var log: some View {
         let items = entries
+        // 最後の人の発言は1回だけ求める。行ごとに全メッセージを走ると、遡るほど重くなって固まった
+        let lastHuman = cockpit.messages.last { $0.session == cockpit.selectedSession && $0.speaker == .human }?.id
         if frozen != nil {
             // `--shot` は ScrollView の中身を焼かないので、素の VStack に積んで下端を見せる
             VStack(alignment: .leading, spacing: 14) {
                 header
-                ForEach(items.suffix(6)) { entry in row(entry) }
+                ForEach(items.suffix(6)) { entry in row(entry, lastHuman: lastHuman) }
                 tail
             }
             .padding(.trailing, 16)
@@ -96,7 +100,7 @@ struct TalkScreen: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         header
-                        ForEach(items) { entry in row(entry).id(entry.id) }
+                        ForEach(items) { entry in row(entry, lastHuman: lastHuman).id(entry.id) }
                         tail
                         Color.clear.frame(height: 8).id(Self.bottomID)
                     }
@@ -106,8 +110,23 @@ struct TalkScreen: View {
                 }
                 .scrollIndicators(.never)
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: items.last?.id) { scrollDown(proxy) }
-                .onChange(of: cockpit.streaming[cockpit.selectedSession ?? ""]?.count) { scrollDown(proxy) }
+                // 一番下が見えているか。遡っている間は、新しい発言や流れ込みで引き戻さない
+                .onScrollGeometryChange(for: Bool.self) { g in
+                    g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
+                } action: { _, bottom in atBottom = bottom }
+                .overlay(alignment: .bottomTrailing) {
+                    if !atBottom {
+                        Button { atBottom = true; withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) } } label: {
+                            Text("最新へ ↓").font(.mono(11)).tracking(0.9).foregroundStyle(Palette.Light.bg)
+                                .padding(.horizontal, 12).padding(.vertical, 7).background(Palette.Light.fg)
+                        }
+                        .buttonStyle(PressStyle())
+                        .padding(.trailing, 24).padding(.bottom, 10)
+                        .help("いちばん新しいところへ戻る")
+                    }
+                }
+                .onChange(of: items.last?.id) { if atBottom { scrollDown(proxy) } }
+                .onChange(of: cockpit.streaming[cockpit.selectedSession ?? ""]?.count) { if atBottom { scrollDown(proxy) } }
                 .onChange(of: stop?.id) { scrollDown(proxy) }
                 .onChange(of: gate.rewriting) { scrollDown(proxy) }
                 .onChange(of: cockpit.isWorking(cockpit.selectedSession)) { scrollDown(proxy) }
@@ -275,7 +294,7 @@ struct TalkScreen: View {
     }
 
     @ViewBuilder
-    private func row(_ entry: Entry) -> some View {
+    private func row(_ entry: Entry, lastHuman: Int?) -> some View {
         switch entry {
         case let .human(message):
             HStack {
@@ -288,12 +307,12 @@ struct TalkScreen: View {
                     .background { Chevron(point: 18).fill(Palette.Light.fg) }
                     .frame(maxWidth: 560, alignment: .trailing)
             }
-            .reportRect(isLastHuman(message) ? "melast" : "me:\(message.id)")
+            .reportRect(message.id == lastHuman ? "melast" : "me:\(message.id)")
         case let .model(message, label, refs):
             VStack(alignment: .leading, spacing: 10) {
                 Text(label).font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
                 Text(message.text.isEmpty ? AttributedString("（本文は残っていない。考えた時刻だけ分かる）")
-                                          : Self.formatted(message.text))
+                                          : MarkdownCache.text(message.id, message.text))
                     .font(.bodyJP(15)).lineSpacing(15 * 0.8 - 4)
                     .foregroundStyle(message.thinking ? Palette.Light.fg3 : Palette.Light.fg)
                     .textSelection(.enabled)
@@ -338,11 +357,6 @@ struct TalkScreen: View {
     private func isLastReply(_ message: Message) -> Bool {
         let session = cockpit.selectedSession
         return cockpit.messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.id == message.id
-    }
-
-    private func isLastHuman(_ message: Message) -> Bool {
-        let session = cockpit.selectedSession
-        return cockpit.messages.last { $0.session == session && $0.speaker == .human }?.id == message.id
     }
 
     /// Markdown を解釈しつつ改行を保つ。`**` や `` ` `` の記号が消えるだけで長い発言はだいぶ読める。
@@ -397,7 +411,9 @@ struct TalkScreen: View {
                     let backend = Backend(rawValue: parts.first ?? "") ?? .claude
                     ModelPicker(backend: backend, models: cockpit.models(backend),
                                 model: parts.count > 1 ? parts[1] : "", effort: defaultEffort,
-                                onModel: { defaultAgent = backend.rawValue + "|" + $0 }, onEffort: { defaultEffort = $0 })
+                                onModel: { defaultAgent = backend.rawValue + "|" + $0 }, onEffort: { defaultEffort = $0 },
+                                backends: cockpit.usableBackends(),
+                                onBackend: { b in defaultAgent = b.rawValue + "|" + (cockpit.models(b).first?.id ?? "") })
                 }
             }
             .padding(.leading, 14).padding(.trailing, 4)
@@ -919,5 +935,20 @@ struct SessionPicker: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
         }
         .buttonStyle(PressStyle())
+    }
+}
+
+/// 発言の Markdown を解釈した結果を覚えておく。画面は毎秒描き直すので、毎回解釈し直すと
+/// 遡って行が増えるほど重くなる。ponytail: 2000件で丸ごと捨てる（数千件の会話になったら LRU に）
+@MainActor
+enum MarkdownCache {
+    private static var store: [Int: (count: Int, text: AttributedString)] = [:]
+
+    static func text(_ id: Int, _ raw: String) -> AttributedString {
+        if let hit = store[id], hit.count == raw.count { return hit.text }
+        if store.count > 2000 { store.removeAll() }
+        let text = TalkScreen.formatted(raw)
+        store[id] = (raw.count, text)
+        return text
     }
 }

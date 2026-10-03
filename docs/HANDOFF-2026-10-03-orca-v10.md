@@ -71,6 +71,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory）足したプロバイダ（Gemini / Qwen / Goose / OpenCode / Copilot / Kimi）が ACP で本当に繋がるか（どれも手元に無く未確認）。続きを Terminal で開く口は出していない
 - （orca-v10-memory）会話の見出しの段の切り替え・壁打ちのトグル（段は worktree ごとなので同じ worktree の会話すべてに効く）、右列の履歴、「/」の候補（どれもポップオーバーや撮影で worktree を選べず未確認）
 - （orca-v10-memory）文脈 85% の引き継ぎの通し（本物の会話を 85% まで伸ばしていない）。書き終えたかは「ターンが終わった」で見ているだけで、ノートの中身は確かめていない
+- （orca-v10-memory）質問の窓に答えて claude が本当に答えを受け取るか（`answers` を足した updatedInput。SDK の canUseTool と同じ形のはず）、エフォートの効果、「最新へ ↓」、遡った時に固まらないか
 
 ## 残り・後で話す
 

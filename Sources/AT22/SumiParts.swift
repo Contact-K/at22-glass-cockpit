@@ -784,6 +784,9 @@ struct ModelPicker: View {
     let effort: String
     let onModel: (String) -> Void
     let onEffort: (String) -> Void
+    /// 新しい会話の時だけ: 選べるプロバイダと、選んだ時。会話が始まった後はプロバイダを変えられない
+    var backends: [Backend] = []
+    var onBackend: ((Backend) -> Void)? = nil
     @Environment(\.frozenTime) private var frozen
     @State private var open = false
     @State private var openEffort = false
@@ -793,14 +796,18 @@ struct ModelPicker: View {
         let current = models.first { $0.matches(model) }
         let name = current?.label ?? Self.short(model)
         let levels = AgentCatalog.efforts(for: model, in: models)
+        let shown = effort.isEmpty ? AgentCatalog.defaultEffort(backend) : effort
         HStack(spacing: 4) {
-            chip(name + " ▾", open: $open, help: "モデル（次に送った時から）") { board }
+            chip((backend == .claude && onBackend == nil ? "" : backend.title + " · ") + name + " ▾", open: $open,
+                 help: "モデル（次に送った時から）") { board }
             if !levels.isEmpty {
-                chip((effort.isEmpty ? AgentCatalog.defaultEffort(backend) : effort) + " ▾", open: $openEffort,
-                     help: "エフォート（考える深さ）") {
+                chip(shown + " ▾", open: $openEffort, help: "エフォート（考える深さ）") {
                     EffortSlider(levels: levels, value: effort, fallback: AgentCatalog.defaultEffort(backend), onChange: onEffort)
                         .padding(14).frame(width: 300).background(Palette.Light.bg)
                 }
+                // 上げるほど派手に（high で縁が回り、xhigh で滲み、max で火の粉）
+                .modifier(EffortAura(rank: levels.count > 1
+                    ? Double(levels.firstIndex(of: shown) ?? 0) / Double(levels.count - 1) : 0))
             }
         }
         .fixedSize()
@@ -825,8 +832,32 @@ struct ModelPicker: View {
     /// モデルの板（エフォートは隣の札）
     private var board: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let onBackend, backends.count > 1 {
+                Text("PROVIDER プロバイダ").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
+                    .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
+                // 折り返す並び（プロバイダは10前後）
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 4)], alignment: .leading, spacing: 4) {
+                    ForEach(backends, id: \.self) { b in
+                        Button { onBackend(b) } label: {
+                            Text(b.title).font(.mono(11)).lineLimit(1)
+                                .frame(maxWidth: .infinity).padding(.vertical, 5)
+                                .foregroundStyle(b == backend ? Palette.Light.bg : Palette.Light.fg)
+                                .background(b == backend ? Palette.Light.fg : .clear)
+                                .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                Rectangle().fill(Palette.Light.line).frame(height: 1).padding(.top, 10)
+            }
             Text("\(backend.title.uppercased()) // MODEL モデル").font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
+            if onBackend == nil {
+                Text("プロバイダは会話ごとに決まる。変えるなら ＋ 新しい会話").font(.bodyJP(10)).foregroundStyle(Palette.Light.fg3)
+                    .padding(.horizontal, 14).padding(.bottom, 4)
+            }
             ForEach([false, true], id: \.self) { pinned in
                 let rows = models.filter { $0.pinned == pinned }
                 if !rows.isEmpty {
@@ -932,6 +963,50 @@ struct SkillPicker: View {
                 Text("／").font(.mono(12)).foregroundStyle(Palette.Light.fg2).padding(.horizontal, 6)
             }
             .help("スキルを呼ぶ（\(list.count) 本）")
+        }
+    }
+}
+
+// MARK: - エフォートの効果
+
+/// エフォートを上げるほど派手に。0（low）は何もせず、0.5（high）で墨の縁が回り、
+/// 0.75（xhigh）で桃色に滲み、1（max）で四角い火の粉が舞う。動きを減らす設定の時は止める
+struct EffortAura: ViewModifier {
+    let rank: Double
+    @Environment(\.accessibilityReduceMotion) private var still
+    @Environment(\.frozenTime) private var frozen
+
+    func body(content: Content) -> some View {
+        if rank < 0.5 {
+            content
+        } else {
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: still || frozen != nil)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                content
+                    .overlay {
+                        Rectangle().strokeBorder(
+                            AngularGradient(colors: [Palette.blue, Palette.pink, Palette.blue, Palette.pink, Palette.blue],
+                                            center: .center, angle: .degrees(t * 90 * (0.5 + rank))),
+                            lineWidth: 1 + rank * 1.5)
+                    }
+                    .shadow(color: Palette.pink.opacity(rank >= 0.75 ? 0.45 + 0.25 * sin(t * 3) : 0), radius: rank >= 0.75 ? 7 : 0)
+                    .overlay {
+                        if rank >= 0.99 {
+                            Canvas { ctx, size in
+                                for i in 0..<10 {
+                                    let phase = t * 1.4 + Double(i) * 0.63
+                                    let x = size.width / 2 + cos(phase) * (size.width / 2 + 6 + Double(i % 3) * 3)
+                                    let y = size.height / 2 + sin(phase * 1.3) * (size.height / 2 + 5)
+                                    let s = 2.0 + Double(i % 2)
+                                    ctx.fill(Path(CGRect(x: x - s / 2, y: y - s / 2, width: s, height: s)),
+                                             with: .color(i % 3 == 0 ? Palette.blue : Palette.pink))
+                                }
+                            }
+                            .padding(-14)
+                            .allowsHitTesting(false)
+                        }
+                    }
+            }
         }
     }
 }

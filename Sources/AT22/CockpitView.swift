@@ -138,6 +138,12 @@ struct CockpitView: View {
             .onPreferenceChange(SumiRectsKey.self) { [book] value in
                 MainActor.assumeIsolated { book.rects = value }
             }
+            // 訊かれた時の窓。質問と計画はどの画面でも、道具の承認は会話画面以外で（会話画面は門のカード）
+            .overlay {
+                if shot == nil, let ask = asking {
+                    AskWindow(cockpit: cockpit, approval: ask).id(ask.id)
+                }
+            }
             .onAppear { book.size = geo.size }
             .onChange(of: geo.size) { book.size = geo.size }
         }
@@ -604,6 +610,14 @@ struct CockpitView: View {
 
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
     /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ
+    /// 窓で訊く1件。質問・計画はどの会話のものでも（待たせている順）、道具の承認は見ている会話のものを会話画面の外で
+    private var asking: Approval? {
+        let waiting = cockpit.approvals.sorted { $0.at < $1.at }
+        if let ask = waiting.first(where: AskWindow.isWindowed) { return ask }
+        guard !isTower, tab != .talk else { return nil }
+        return waiting.first { $0.session == cockpit.selectedSession }
+    }
+
     /// 設定は 10 SETTINGS の1か所（⌘, の別窓はやめた）。板が開いていれば閉じてから
     private func openSettings() {
         overlay = nil
@@ -1150,7 +1164,7 @@ struct Stop {
 
     @MainActor
     static func current(_ cockpit: Cockpit, chips: [AgentChip]) -> Stop? {
-        if let a = cockpit.approvals.filter({ $0.session == cockpit.selectedSession }).min(by: { $0.at < $1.at }) {
+        if let a = cockpit.approvals.filter({ $0.session == cockpit.selectedSession && !AskWindow.isWindowed($0) }).min(by: { $0.at < $1.at }) {
             return make(a, cockpit: cockpit)
         }
         guard let g = cockpit.gates.min(by: { $0.issued < $1.issued }) else { return nil }
