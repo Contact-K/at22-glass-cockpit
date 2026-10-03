@@ -3852,6 +3852,18 @@ struct P0SelfCheck {
         vList = cockpit.allTasks(session: "v")
         assert(vList[0].status == .completed, "completed を inProgress に戻した: \(vList[0].status)")
 
+        // (e) 組み直す時、再利用した既存の手順が completed なら pending に戻す
+        say("y", "PLAN: A\nPLAN: B")
+        say("y", "DONE: 1\nDONE: 2")
+        var yListBefore = cockpit.allTasks(session: "y")
+        assert(yListBefore[0].status == .completed && yListBefore[1].status == .completed, "A・B が completed でない: \(yListBefore.map { "\($0.subject):\($0.status)" })")
+        say("y", "PLAN: A\nPLAN: C")
+        say("y", "NOW: 1")
+        var yListAfter = cockpit.allTasks(session: "y")
+        assert(yListAfter.map(\.subject) == ["A", "B", "C"], "計画を組み直してリスト: \(yListAfter.map(\.subject))")
+        assert(yListAfter[0].status == .inProgress && yListAfter[1].status == .completed && yListAfter[2].status == .pending,
+               "A が inProgress・B が completed・C が pending でない: \(yListAfter.map { "\($0.subject):\($0.status)" })")
+
         // (c) 範囲外の n（NOW: 0、NOW: 99）で落ちず、状態が変わらない
         say("w", "PLAN: P\nPLAN: Q")
         let wBefore = cockpit.allTasks(session: "w").map { "\($0.subject):\($0.status)" }

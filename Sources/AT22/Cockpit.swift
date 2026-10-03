@@ -2321,6 +2321,12 @@ final class Cockpit {
                 if let existing = tasks.values.filter({ $0.session == session && $0.subject == step })
                     .min(by: { $0.number < $1.number }) {
                     keys.append(existing.id)
+                    // 再利用した手順が completed なら pending に戻す（新しい計画で再実行するため）
+                    if var task = tasks[existing.id], task.status == .completed {
+                        task.status = .pending
+                        task.at = at
+                        tasks[existing.id] = task
+                    }
                 } else {
                     let key = "\(session)#plan\(next)"
                     tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
