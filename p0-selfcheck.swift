@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -83,6 +83,7 @@ struct P0SelfCheck {
         towerLaneFoldsQuietAndBundlesRaces()
         shortStatReadsBothHalves()
         hunkPatchAndGitReaders()
+        sparringReadsProposals()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3772,6 +3773,26 @@ struct P0SelfCheck {
     }
 
     /// ハンクの鍵は行番号に依らない／patch は git apply の形／log と gh pr view を読む
+    /// 壁打ちの返事の末尾の決まった形の行を、手順・決定（理由つき）・問い（選択肢つき）に分ける。
+    /// 形の崩れた行は本文に残す
+    static func sparringReadsProposals() {
+        let reply = Sparring.parse("""
+        3 つに分けるのを勧めます。
+        STEP: Cockpit に categoryCounts を足す
+        - STEP：LegendRow にホバー
+        DECIDE: 0 件のカテゴリは出さない // 今の凡例と同じ規則
+        ASK: 件数は今セッションだけ？ [今セッション | 全期間]
+        STEP:
+        """)
+        assert(reply.body == "3 つに分けるのを勧めます。\nSTEP:", "本文: \(reply.body)")
+        assert(reply.proposals.map(\.text) == ["Cockpit に categoryCounts を足す", "LegendRow にホバー", "0 件のカテゴリは出さない"])
+        assert(reply.proposals[2].kind == .decide && reply.proposals[2].why == "今の凡例と同じ規則")
+        assert(reply.question == Sparring.Question(text: "件数は今セッションだけ？", options: ["今セッション", "全期間"]))
+        assert(Sparring.parse("ASK: どちら？").question?.options == [], "選択肢の無い問い")
+        let prompt = Sparring.prompt("", mode: .decide, decided: ["凡例は View"])
+        assert(prompt.hasPrefix("[壁打ち · DECIDE 決めて] 決めて") && prompt.contains("- 凡例は View"))
+    }
+
     static func hunkPatchAndGitReaders() {
         let h1 = Worktree.Hunk(header: "@@ -10,3 +10,3 @@", lines: [
             .init(kind: .context, old: 10, new: 10, text: "a"), .init(kind: .remove, old: 11, new: nil, text: "b"),

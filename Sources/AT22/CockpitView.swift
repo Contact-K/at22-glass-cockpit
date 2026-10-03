@@ -68,8 +68,9 @@ struct CockpitView: View {
     @State private var craneFx: String?
 
     // 壁打ち
-    @State private var editing: String?
-    @State private var memoryDirty = false
+    /// worktree ごとの壁打ち（採った・決めた印）と、暫定プランの ⑂ から新規の板に渡す最初の指示
+    @State private var spar = SparModel()
+    @State private var newPrompt = ""
     // 構造
     // 門
     @State private var gate = GateUI()
@@ -263,6 +264,11 @@ struct CockpitView: View {
                         GitPanels(model: shotReview ?? review,
                                   branch: tiles.first { $0.id == currentWorkspace }?.branch,
                                   branches: tiles.compactMap(\.branch), height: h)
+                    } else if tab == .spar {
+                        SparPanels(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
+                                   height: h,
+                                   onLaunch: { step in newPrompt = step; overlay = .newWorkspace(from: currentWorkspace) },
+                                   fly: { fly(from: $0, to: $1) }, rects: book.rects)
                     } else if tab == .settings {
                         KeysPanel(height: h)
                     } else if tab == .files {
@@ -350,9 +356,9 @@ struct CockpitView: View {
         let tiles = all.flatMap(\.tiles)
         switch overlay {
         case let .newWorkspace(from):
-            NewWorkspaceSheet(cockpit: cockpit, projects: all, from: from, launcherReady: launcherReady,
-                              onClose: { self.overlay = nil },
-                              onCreated: { self.overlay = nil; setTower(true) },
+            NewWorkspaceSheet(cockpit: cockpit, projects: all, from: from, prompt0: newPrompt, launcherReady: launcherReady,
+                              onClose: { self.overlay = nil; newPrompt = "" },
+                              onCreated: { self.overlay = nil; newPrompt = ""; setTower(true) },
                               onOpenSettings: { openSettings() })
                 .frame(width: w, height: h)
         case let .delete(id):
@@ -400,9 +406,9 @@ struct CockpitView: View {
                 .offset(x: 220, y: 84)
                 .task(id: currentWorkspace) { if shot == nil { await files.load(root: currentWorkspace) } }
         case .spar:
-            SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
-                           width: contentW, height: h - 84 - 60)
-                .offset(x: 220, y: 84)
+            SparScreen(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
+                       width: contentW, height: h, fly: { fly(from: $0, to: $1) }, rects: book.rects)
+                .offset(x: 220, y: 72)
         case .review:
             ReviewScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace, session: cockpit.selectedSession,
                          width: contentW, height: h,
@@ -546,7 +552,7 @@ struct CockpitView: View {
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
     /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ
     private func go(_ to: V11Tab, origin: CGPoint? = nil, fromMenu: Bool = false) {
-        guard wipe == nil, !(memoryDirty && to != tab) else {
+        guard wipe == nil else {
             if fromMenu { hideMenu() }
             return
         }
@@ -573,7 +579,6 @@ struct CockpitView: View {
     /// 右列の中身は 8 コマ目（1/3 の所）で差し替える
     private func setTower(_ value: Bool) {
         guard value != tower, shot == nil else { return }
-        if value && memoryDirty { return }
         tower = value
         settled = false
         let from = towerP, to: Double = value ? 0 : 1, started = Date()

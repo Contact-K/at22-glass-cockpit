@@ -954,15 +954,24 @@ final class Cockpit {
         }
     }
 
+    /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。
+    /// 選択中のセッションも、そのプロジェクトの門の段（`memory/gate/LEVEL`）も動かさない
+    func launchSparring(prompt: String, cwd: String) -> String? {
+        let keep = selectedSession
+        let id = launchClaude(prompt: prompt, cwd: cwd, model: "", allowedTools: [], level: .plan, writesLevel: false)
+        selectedSession = keep
+        return id?.uuidString.lowercased()
+    }
+
     private func launchClaude(prompt: String, cwd: String, model: String,
-                              allowedTools: [String], level: Gate.Level) -> UUID? {
+                              allowedTools: [String], level: Gate.Level, writesLevel: Bool = true) -> UUID? {
         guard let claude else {
             launchError = "claude が見つからない"
             return nil
         }
         // 司令塔は起きてすぐ `memory/gate/LEVEL` を読むので、起こす前に**起こす先のプロジェクトへ**書く。
         // 選択中のセッションの記憶DBに書いていた頃は、別プロジェクトの司令塔の段が変わっていた
-        setGateLevel(level, cwd: cwd)
+        if writesLevel { setGateLevel(level, cwd: cwd) }
         let config = Launcher.Config(cwd: cwd, level: level,
                                      prompt: prompt, allowedTools: allowedTools, model: model)
         let sessionID = UUID()
