@@ -733,6 +733,68 @@ final class Cockpit {
         refreshGates()
         refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
+        watchHandoffs()
+    }
+
+    // MARK: 文脈が溢れる前の引き継ぎ
+
+    /// 引き継ぎを書かせている会話（書かせた時刻）。書き終えたら新しい会話を起こす
+    private(set) var handoffs: [String: Date] = [:]
+    /// もう引き継いだ会話（二度は書かせない）
+    private var handedOff: Set<String> = []
+    /// 引き継ぎがうまくいかなかった時の一言（会話画面に出す）
+    private(set) var handoffProblem: [String: String] = [:]
+
+    /// その会話の文脈の段（50 / 70 / 85%）
+    func contextStage(_ session: String?) -> Snowman.Stage { readings[session ?? ""]?.stage ?? .fresh }
+
+    /// その会話の worktree の段（`memory/gate/LEVEL`）
+    func level(of session: String) -> Gate.Level {
+        guard let cwd = cwd(of: session) else { return gateLevel }
+        return Gate.level(memoryRoot: projectsRoot.appendingPathComponent(Self.projectSlug(cwd)).appendingPathComponent("memory"))
+    }
+
+    /// 引き継ぎに入れるか。壁打ち（読むだけ）は書けないので入らない
+    func canHandOff(_ session: String?) -> Bool {
+        guard let session else { return false }
+        return !handedOff.contains(session) && handoffs[session] == nil && level(of: session) != .plan
+    }
+
+    /// 引き継ぎを書かせる。書き終えたら `watchHandoffs` が新しい会話を起こす
+    @discardableResult
+    func requestHandoff(_ session: String) -> Bool {
+        guard canHandOff(session), !isWorking(session), let cwd = cwd(of: session) else { return false }
+        guard send(Memory.handoffPrompt(dir: memoryDirectory(cwd: cwd), session: session), to: session) else {
+            handoffProblem[session] = launchError ?? "引き継ぎを送れませんでした"
+            return false
+        }
+        handoffProblem[session] = nil
+        handoffs[session] = Date()
+        return true
+    }
+
+    /// 毎秒。Lv.3/4 は 85% で自動で書かせる（Lv.1/2 は会話画面の札から）。
+    /// 書かせた会話のターンが終わったら、同じ worktree・エージェント・モデルで新しい会話を起こす。古い会話は閉じない
+    private func watchHandoffs() {
+        for session in runs.keys where contextStage(session) == .warning && canHandOff(session) && !isWorking(session) {
+            if level(of: session).needsConfirmation { requestHandoff(session) }
+        }
+        for (session, at) in handoffs where Date().timeIntervalSince(at) > 3 && !isWorking(session) {
+            handoffs[session] = nil
+            handedOff.insert(session)
+            guard let cwd = cwd(of: session) else { continue }
+            let note = Memory.eachNotePath(dir: memoryDirectory(cwd: cwd), session: session)
+            let keep = selectedSession
+            guard let id = launch(prompt: Memory.resumePrompt(note: note), cwd: cwd, backend: backend(of: session),
+                                  model: model(of: session) ?? "", level: level(of: session),
+                                  effort: effort(of: session) ?? "")?.uuidString.lowercased() else {
+                handoffProblem[session] = launchError ?? "新しい会話を起こせませんでした"
+                continue
+            }
+            if let title = title(for: session) { titles[id] = "続き · " + title }
+            // 見ていた会話を引き継いだ時だけ、新しい方へ移る
+            if keep != session { selectedSession = keep }
+        }
     }
 
     /// 記憶DBに書く。**AT22 が書くのはここだけ**——コードにも transcript にも触らない。

@@ -63,7 +63,8 @@ struct TalkScreen: View {
                 .frame(width: width, height: height, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                log.frame(width: width, height: max(120, height - 164))
+                log.frame(width: width, height: max(120, height - 164 - (handoffShown ? 44 : 0)))
+                if handoffShown { handoffBar }
                 if failed, let reason = cockpit.launchError {
                     Text(reason).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
                         .lineLimit(2)
@@ -143,6 +144,41 @@ struct TalkScreen: View {
                 .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
         }
         .padding(.vertical, 8)
+    }
+
+    // MARK: 引き継ぎ（文脈 85%）
+
+    private var handoffShown: Bool {
+        guard let s = cockpit.selectedSession else { return false }
+        return cockpit.handoffs[s] != nil || cockpit.handoffProblem[s] != nil
+            || (cockpit.contextStage(s) == .warning && cockpit.canHandOff(s))
+    }
+
+    /// 文脈が 85% を越えた会話の札。Lv.1/2 は押した時だけ、Lv.3/4 は自動で書かせて新しい会話へ移る
+    private var handoffBar: some View {
+        let s = cockpit.selectedSession ?? ""
+        let auto = cockpit.level(of: s).needsConfirmation
+        return HStack(spacing: 10) {
+            if cockpit.handoffs[s] != nil {
+                InkLoader(status: "handoff", pitch: 1.4)
+                Text("引き継ぎを書いています。終わったら新しい会話を起こします").font(.bodyJP(13))
+            } else if let problem = cockpit.handoffProblem[s] {
+                Text(problem).font(.bodyJP(13)).foregroundStyle(Palette.Light.danger)
+            } else {
+                Text("文脈が 85% を越えました。" + (auto ? "ターンが終わったら自動で引き継ぎます" : "引き継いで新しい会話へ移れます"))
+                    .font(.bodyJP(13))
+            }
+            Spacer(minLength: 8)
+            if cockpit.handoffs[s] == nil && cockpit.canHandOff(s) {
+                Button("引き継いで移る ▸") { cockpit.requestHandoff(s) }
+                    .buttonStyle(SumiButtonStyle(primary: true, size: 11))
+                    .disabled(cockpit.isWorking(s))
+                    .help("記憶DB の sessions/each/<ID>.md に引き継ぎを書かせ、そのノートから新しい会話を起こす（古い会話は残る）")
+            }
+        }
+        .padding(.horizontal, 14).frame(height: 34)
+        .foregroundStyle(Palette.Light.fg)
+        .overlay(Rectangle().strokeBorder(Palette.Light.danger, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
     }
 
     /// 壁打ちが入っているか（いまの会話の worktree の段が plan）

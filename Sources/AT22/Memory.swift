@@ -257,6 +257,31 @@ enum Memory {
 
     nonisolated static func projectNotePath(dir: String) -> String { "\(dir)/PROJECT.md" }
 
+    /// そのセッションのノート（`sessions/each/<ID>.md`）
+    nonisolated static func eachNotePath(dir: String, session: String) -> String {
+        "\(dir)/\(sessionsDir)/\(eachDir)/\(session).md"
+    }
+
+    /// 文脈が溢れそうな時の1通。新しい会話がこのノートだけで続きを始められるように書いてもらう
+    nonisolated static func handoffPrompt(dir: String, session: String) -> String {
+        let note = eachNotePath(dir: dir, session: session)
+        return """
+        [AT22] このセッションの文脈がもうすぐ溢れます（85% を越えました）。作業を止めて、引き継ぎを書いてください。
+        \(note) に節を足します（無ければ name / description / type: progress / originSessionId: \(session) の頭を付けて作る）。
+        中身は「決めたこと」「分かったこと」「残り（手順の番号つき）」「次の一手」。読むべきファイルはパスで書きます。
+        末尾に ```state の囲みで `stage: handoff` と `next: 次の一手を1行` を書いてください。
+        書き終えたら、それ以上は進めずに返事を終えてください。AT22 がこのノートから新しい会話を起こします。
+        """
+    }
+
+    /// 引き継ぎから新しい会話を起こす時の最初の1通
+    nonisolated static func resumePrompt(note: String) -> String {
+        """
+        前の会話の文脈が溢れそうになったので、ここから引き継ぎます。まず \(note) を読んでください。
+        読んだら、残りと次の一手を3行でまとめ、そのまま次の一手から続けてください。
+        """
+    }
+
     /// 清書の1通。記憶DBを読んで PROJECT.md を企画書として書き直してもらう
     nonisolated static func composePrompt(dir: String) -> String {
         let project = projectNotePath(dir: dir)
