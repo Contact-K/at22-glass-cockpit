@@ -43,6 +43,7 @@ struct P0SelfCheck {
         orchestratorStaysBusyWhileThinking()
         buildsClaudeArguments()
         resumesWithoutMintingANewSession()
+        codexServerSpeaksV2()
         remembersWhoWasCalledAndWhatFor()
         readsStdoutWithoutLying()
         interruptLineStopsWithoutKilling()
@@ -2107,6 +2108,57 @@ struct P0SelfCheck {
         // 実行できないものを掴まない（同名のディレクトリやテキストを渡された場合）
         assert(Launcher.parseShellReply("/etc/hosts\n/usr/bin").executable == nil,
                "実行できないものを claude として掴んだ")
+    }
+
+    /// codex app-server（v2）の知らせ・承認・段の対応。codex が手元に無いので、形だけはここで固定する
+    static func codexServerSpeaksV2() {
+        var changes: [String: [String]] = [:], reply = "", tokens: Int?
+        func events(_ method: String, _ params: [String: Any]) -> [AgentEvent] {
+            CodexServerConnection.events(method: method, params: params, changes: &changes, reply: &reply, tokens: &tokens)
+        }
+        // 書きかけは差分（Cockpit が足し込む）、確定は item/completed の agentMessage
+        assert(events("item/agentMessage/delta", ["delta": "こん"]) == [.partial("こん")])
+        assert(events("item/agentMessage/delta", ["delta": "にちは"]) == [.partial("にちは")])
+        assert(events("item/completed", ["item": ["type": "agentMessage", "id": "m1", "text": "こんにちは"]])
+               == [.message("こんにちは", thinking: false)])
+        // コマンドは始まりと終わり、ファイルの変更はパスごと
+        let started = events("item/started", ["item": ["type": "commandExecution", "id": "c1", "command": "rg foo"]])
+        guard case let .tool(_, kind, title, _, write, done)? = started.first else { return assertionFailure("コマンドが道具にならない") }
+        assert(kind == .search && title == "rg foo" && !write && !done, "\(started)")
+        let edits = events("item/started", ["item": ["type": "fileChange", "id": "f1",
+                                                     "changes": [["path": "/r/a.swift", "kind": ["type": "update"], "diff": ""]]]])
+        guard case let .tool(_, _, _, path, w, _)? = edits.first else { return assertionFailure("変更が道具にならない") }
+        assert(path == "/r/a.swift" && w && changes["f1"] == ["/r/a.swift"])
+        // トークンは tokenUsage.last.inputTokens、ターンの終わりに載る
+        _ = events("thread/tokenUsage/updated", ["tokenUsage": ["last": ["inputTokens": 1234]]])
+        assert(events("turn/completed", ["turn": ["id": "t", "status": "completed"]]) == [.turnEnded(tokens: 1234)])
+        assert(events("turn/completed", ["turn": ["id": "t", "status": "failed", "error": ["message": "上限"]]]) == [.turnFailed("上限")])
+        assert(events("error", ["error": ["message": "x"], "willRetry": true]).isEmpty, "再試行するエラーで止めた")
+        // 承認: コマンドはコマンドを、ファイルは item/started で覚えたパスを出す。書き換えはできない
+        let bash = CodexServerConnection.approval(method: "item/commandExecution/requestApproval",
+                                                  params: ["command": "rm -rf build", "itemId": "c1"], key: "7", session: "S",
+                                                  changes: changes)
+        assert(bash?.tool == "Bash" && bash?.detail == "rm -rf build" && bash?.canRevise == false && bash?.id == "7")
+        let file = CodexServerConnection.approval(method: "item/fileChange/requestApproval", params: ["itemId": "f1"],
+                                                  key: "8", session: "S", changes: changes)
+        assert(file?.tool == "Edit" && file?.detail == "a.swift")
+        assert(CodexServerConnection.approval(method: "execCommandApproval", params: [:], key: "9", session: "S", changes: [:]) == nil)
+        // 段 → 承認とサンドボックス（codex exec の時と同じ強さ）
+        assert(CodexServerConnection.policy(.plan) == ("on-request", "read-only"))
+        assert(CodexServerConnection.policy(.each) == ("untrusted", "workspace-write"))
+        assert(CodexServerConnection.policy(.normal) == ("on-request", "workspace-write"))
+        assert(CodexServerConnection.policy(.unattended) == ("never", "danger-full-access"))
+        // jsonrpc は付けない
+        let line = String(data: CodexServerConnection.line(["id": 1, "method": "initialize"])!, encoding: .utf8)!
+        assert(!line.contains("jsonrpc") && line.hasSuffix("\n"))
+        // model/list: 隠しを捨て、既定を先頭に、エフォートの段
+        let models = AgentCatalog.parseCodex(["data": [
+            ["id": "a", "model": "gpt-a", "displayName": "A", "hidden": false, "isDefault": false,
+             "supportedReasoningEfforts": [["reasoningEffort": "low"], ["reasoningEffort": "high"]]],
+            ["id": "b", "model": "gpt-b", "displayName": "B", "hidden": false, "isDefault": true, "supportedReasoningEfforts": []],
+            ["id": "h", "model": "gpt-h", "displayName": "H", "hidden": true],
+        ]])
+        assert(models.map(\.id) == ["gpt-b", "gpt-a"] && models[1].efforts == ["low", "high"], "\(models.map(\.id))")
     }
 
     /// 既にあるセッションの続きに繋ぐ引数。**`--resume` と `--session-id` は排他**で、

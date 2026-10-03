@@ -1324,14 +1324,17 @@ final class Cockpit {
             saveRunRecords()
         }
         guard let run = runs[session], run.connection.acceptsInput else { return }
+        // claude は繋いだまま `/model` を送る（Orca と同じ）。繋ぎ直すと数秒待たされ、走っている途中なら切れる
+        if backend(of: session) == .claude, !model.isEmpty, run.connection.send("/model " + model) { return }
         run.connection.close()
         forget(session)
     }
 
-    /// 考える深さを選ぶ。モデルと同じく、ターンの合間なら今の接続を畳み、次に送った時に新しい深さで繋がる
+    /// 考える深さを選ぶ。claude は `/effort` を送る。ほかはターンの合間なら今の接続を畳み、次に送った時に新しい深さで繋がる
     func setEffort(_ effort: String, for session: String) {
         sessionEffort[session] = effort
         guard let run = runs[session], run.connection.acceptsInput else { return }
+        if backend(of: session) == .claude, !effort.isEmpty, run.connection.send("/effort " + effort) { return }
         run.connection.close()
         forget(session)
     }
@@ -1372,6 +1375,50 @@ final class Cockpit {
             let list = AgentCatalog.parseGrok(text)
             if !list.isEmpty { catalog[.grok] = list }
         }
+        if let codex = codexFound, catalog[.codex] == nil {
+            let list = await Task.detached { Self.probeCodexModels(codex) }.value
+            if !list.isEmpty { catalog[.codex] = list }
+        }
+    }
+
+    /// `codex app-server` に initialize → model/list を流して一覧を取る（15 秒で諦める）
+    nonisolated static func probeCodexModels(_ cli: Launcher.Found) -> [AgentCatalog.Model] {
+        let task = Process()
+        task.executableURL = cli.executable
+        task.arguments = ["app-server"]
+        task.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        if let path = cli.path {
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = path
+            task.environment = env
+        }
+        let input = Pipe(), output = Pipe()
+        task.standardInput = input
+        task.standardOutput = output
+        task.standardError = FileHandle.nullDevice
+        guard (try? task.run()) != nil else { return [] }
+        for object: [String: Any] in [
+            ["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "at22", "title": "AT22", "version": "0.2"]]],
+            ["method": "initialized"],
+            ["id": 2, "method": "model/list", "params": ["limit": 100]],
+        ] {
+            if let line = CodexServerConnection.line(object) { input.fileHandleForWriting.write(line) }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15) { if task.isRunning { task.terminate() } }
+        var buffer = Data()
+        var found: [AgentCatalog.Model] = []
+        while task.isRunning, found.isEmpty {
+            let chunk = output.fileHandleForReading.availableData
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                if case let .response(id, result, _)? = RPC.classify(line), id == 2 { found = AgentCatalog.parseCodex(result) }
+            }
+        }
+        task.terminate()
+        return found
     }
 
     /// `claude -p --input-format stream-json` に list_models を流し、control_response を待つ（20 秒で諦める）
@@ -1809,16 +1856,15 @@ final class Cockpit {
             return nil
         }
 
+        _ = codex
         let sessionID = UUID().uuidString.lowercased()
-        let connection = CodexConnection(
-            found: codex, config: CodexLauncher.Config(cwd: cwd, level: level, prompt: "", model: model),
-            threadID: nil, onEvent: agentStream(session: sessionID))
-        guard connection.send(prompt) else {
-            launchError = "codex を起動できなかった"
+        // app-server に繋ぐ（止める・承認に答える、ができる）。言葉はスレッドが開くまで接続が溜めておく
+        guard let run = startCodex(session: sessionID, cwd: cwd, model: model, effort: sessionEffort[sessionID] ?? "",
+                                   level: level, resume: nil),
+              run.connection.send(promised(prompt, session: sessionID, cwd: cwd, level: level)) else {
+            if launchError == nil { launchError = "codex を起動できなかった" }
             return nil
         }
-        runs[sessionID] = Run(connection: connection, token: UUID())
-        backends[sessionID] = .codex
 
         // codex セッションをライブセッション・台帳に登録
         let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
@@ -1871,7 +1917,9 @@ final class Cockpit {
             return false
         }
         sleeping.remove(session)
-        guard run.connection.send(body) else {
+        let wire = promisePending.remove(session) != nil
+            ? promised(body, session: session, cwd: cwd(of: session) ?? "", level: level(of: session)) : body
+        guard run.connection.send(wire) else {
             forget(session)
             launchError = "送れなかった。セッションが終わっている"
             return false
@@ -1899,14 +1947,9 @@ final class Cockpit {
                 launchError = "codex のスレッドID が不明です"
                 return nil
             }
-            let config = CodexLauncher.Config(cwd: record.cwd, level: gateLevel, prompt: "",
-                                              model: sessionModel[session] ?? record.model,
-                                              effort: sessionEffort[session] ?? "")
-            let run = Run(connection: CodexConnection(found: codex, config: config, threadID: thread,
-                                                      onEvent: agentStream(session: session)),
-                          token: UUID())
-            runs[session] = run
-            return run
+            _ = codex
+            return startCodex(session: session, cwd: record.cwd, model: sessionModel[session] ?? record.model,
+                              effort: sessionEffort[session] ?? "", level: gateLevel, resume: thread)
         case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
             let backend = backend(of: session)
             guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
@@ -1940,6 +1983,30 @@ final class Cockpit {
         }
     }
 
+    /// codex の app-server を起こす。`resume` を渡すと thread/resume で続きへ繋ぐ
+    private func startCodex(session: String, cwd: String, model: String, effort: String, level: Gate.Level,
+                            resume: String?) -> Run? {
+        guard let codex = codexFound else {
+            launchError = "codex が見つからない"
+            return nil
+        }
+        let token = UUID()
+        do {
+            let connection = try CodexServerConnection.start(
+                codex.executable, path: codex.path, cwd: cwd, session: session, model: model, effort: effort,
+                level: level, resume: resume, onEvent: agentStream(session: session),
+                onExit: exitHandler(label: "codex", session: session, token: token))
+            let run = Run(connection: connection, token: token)
+            runs[session] = run
+            backends[session] = .codex
+            launchError = nil
+            return run
+        } catch {
+            launchError = "codex を起こせなかった: \(error)"
+            return nil
+        }
+    }
+
     /// ACP の相手を起こす。`resume` を渡すと session/load で続きへ繋ぐ（履歴は相手が送り直す）
     private func startACP(_ backend: Backend, session: String, cwd: String, model: String, level: Gate.Level,
                           resume: String?) -> Run? {
@@ -1965,10 +2032,23 @@ final class Cockpit {
         }
     }
 
+    /// codex / ACP には system prompt の口が無いので、最初の1通の頭に約束（PLAN・Hydra・記憶）を付ける。
+    /// 最初の1通が空で起こした時は、次に送る1通に付ける（`promisePending`）
+    private func promised(_ prompt: String, session: String, cwd: String, level: Gate.Level) -> String {
+        guard !prompt.isEmpty else { promisePending.insert(session); return prompt }
+        var promises = [Sparring.planProtocol, Hydra.protocolText]
+        let dir = memoryDirectory(cwd: cwd)
+        if !dir.isEmpty && level != .plan { promises.append(Memory.protocolText(dir: dir, session: session)) }
+        return "[AT22 からの約束。返事に書き写さなくてよい]\n" + promises.joined(separator: "\n\n") + "\n\n---\n\n" + prompt
+    }
+
+    /// 約束をまだ渡していない会話（最初の1通が空だった）
+    private var promisePending: Set<String> = []
+
     private func launchACP(_ backend: Backend, prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
         let sessionID = UUID().uuidString.lowercased()
         guard let run = startACP(backend, session: sessionID, cwd: cwd, model: model, level: level, resume: nil),
-              run.connection.send(prompt) else { return nil }
+              run.connection.send(promised(prompt, session: sessionID, cwd: cwd, level: level)) else { return nil }
         let tab = LiveSession(id: sessionID, name: String(sessionID.prefix(8)), cwd: cwd, busy: false)
         loadedSessionTabs[sessionID] = tab
         liveSessions.append(tab)

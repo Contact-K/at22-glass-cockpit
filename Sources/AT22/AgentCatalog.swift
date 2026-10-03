@@ -67,6 +67,18 @@ enum AgentCatalog {
         }
     }
 
+    /// `codex app-server` の `model/list` の応答（`data`）。隠しは捨て、既定を先頭に
+    static func parseCodex(_ result: [String: Any]) -> [Model] {
+        let rows = (result["data"] as? [[String: Any]] ?? []).filter { ($0["hidden"] as? Bool) != true }
+        return rows.sorted { ($0["isDefault"] as? Bool ?? false) && !($1["isDefault"] as? Bool ?? false) }.compactMap { m in
+            guard let id = (m["model"] as? String) ?? (m["id"] as? String) else { return nil }
+            let efforts = (m["supportedReasoningEfforts"] as? [[String: Any]] ?? []).compactMap { $0["reasoningEffort"] as? String }
+            return Model(id: id, label: m["displayName"] as? String ?? id,
+                         detail: (m["isDefault"] as? Bool ?? false) ? "既定" : (m["description"] as? String ?? ""),
+                         efforts: efforts, pinned: true)
+        }
+    }
+
     /// `list_models` の応答（`response.models`）。`default` の行と使えない行は捨てる
     static func parseClaude(_ json: Data) -> [Model] {
         guard let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else { return [] }
