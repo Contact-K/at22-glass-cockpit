@@ -58,7 +58,6 @@ struct WedgeMenu: View {
     let state: MenuState
     let rows: [MenuRow]
     let crumbs: [MenuCrumb]
-    let branch: String?
     let size: CGSize
     let onPick: (Int) -> Void
     let onHover: (Int) -> Void
@@ -105,6 +104,7 @@ struct WedgeMenu: View {
         let (start, visible) = window
         return ZStack(alignment: .topLeading) {
             crumbBar
+                .frame(width: crumbRoom, alignment: .leading)
                 .offset(x: x0(top0 - 60) + 18, y: top0 - 60)
                 .modifier(Late(delay: 0.1))
             ForEach(Array(visible.enumerated()), id: \.element.id) { j, row in
@@ -140,21 +140,32 @@ struct WedgeMenu: View {
         .background { if on { Chevron(head: 30).fill(Palette.blue).padding(.trailing, -40) } }
     }
 
+    /// パスの帯が使える幅。白い面の右の辺（「<」）まで、24pt 手前で止める
+    private var crumbRoom: CGFloat {
+        let y = top0 - 60 + 17, xc = size.width - 394, apex = size.width - 540, mid = size.height / 2
+        let edge = y < mid ? xc - (xc - apex) * (y - 56) / (mid - 56) : apex + (xc - apex) * (y - mid) / (size.height - 44 - mid)
+        return max(120, edge - (x0(top0 - 60) + 18) - 24)
+    }
+
+    /// 長い時は、いまの段の名前だけを真ん中で詰める（◂ と上の段は縮めない）
     private var crumbBar: some View {
         HStack(spacing: 14) {
             HStack(spacing: 0) {
                 if state.level != .root {
                     Button(action: onUp) { Text("◂").padding(.horizontal, 8).padding(.vertical, 6) }
                         .buttonStyle(PressStyle())
+                        .fixedSize()
                         .help("上の階層へ (←)")
                     Rectangle().fill(Palette.white.opacity(0.4)).frame(width: 1, height: 22)
                 }
                 ForEach(Array(crumbs.enumerated()), id: \.offset) { i, crumb in
                     let last = i == crumbs.count - 1
-                    if i > 0 { Text("/").opacity(0.6).padding(.vertical, 6) }
+                    if i > 0 { Text("/").opacity(0.6).padding(.vertical, 6).fixedSize() }
                     Button { if !last { onCrumb(crumb.level) } } label: {
-                        Text(crumb.title).underline(!last).padding(.horizontal, 6).padding(.vertical, 6)
+                        Text(crumb.title).underline(!last).lineLimit(1).truncationMode(.middle)
+                            .padding(.horizontal, 6).padding(.vertical, 6)
                     }
+                    .fixedSize(horizontal: !last, vertical: false)
                     .buttonStyle(PressStyle())
                     .disabled(last)
                 }
@@ -162,11 +173,7 @@ struct WedgeMenu: View {
             .font(.mono(10)).tracking(Palette.caps(10))
             .foregroundStyle(Palette.white)
             .background(Palette.blue)
-            if state.level == .workspace, let branch {
-                Text(branch).font(.mono(10)).tracking(0.6).foregroundStyle(Palette.Light.fg2)
-            }
         }
-        .fixedSize()
     }
 }
 

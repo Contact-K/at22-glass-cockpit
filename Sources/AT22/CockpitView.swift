@@ -29,6 +29,8 @@ struct CockpitView: View {
     var shotReview: ReviewModel? = nil
     var shotFiles: FilesModel? = nil
     var shotTerm = false
+    /// `--ripple back:10` / `fwd:4` … 管制塔⇄会話の波紋の途中のコマ（白い面もそのコマの位置に置く）
+    var shotRipple: String? = nil
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -106,7 +108,15 @@ struct CockpitView: View {
     private var tab: V11Tab { shotTab ?? storedTab }
     private var mode: CockpitMode { tab.mode }
     private var isTower: Bool { shot != nil ? shotTower : tower }
-    private var p: CGFloat { CGFloat(shot != nil ? (shotTower ? 0 : 1) : towerP) }
+    private var p: CGFloat { CGFloat(shot != nil ? shotRippleFrame?.p ?? (shotTower ? 0 : 1) : towerP) }
+
+    /// 撮影用: 波紋の始まりと、そのコマの白い面の開き（滑りは 0.5s・会話へは ease-out、管制塔へは ease-in）
+    private var shotRippleFrame: (ripple: TabRipple, p: Double)? {
+        guard let shot, let spec = shotRipple?.split(separator: ":"), spec.count == 2, let n = Int(spec[1]) else { return nil }
+        let back = spec[0] == "back", k = min(1, Double(n) / 12)
+        return (TabRipple(back: back, started: shot.addingTimeInterval(-Double(n) / 24 - 0.01)),
+                back ? 1 - k * k * k : 1 - pow(1 - k, 3))
+    }
 
     var body: some View { reactive }
 
@@ -232,8 +242,7 @@ struct CockpitView: View {
                             .offset(y: 56)
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
-                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
-                                    onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
+                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))
@@ -325,8 +334,6 @@ struct CockpitView: View {
                     case .menu:
                         WedgeMenu(state: menu, rows: rows,
                                   crumbs: menuCrumbs(menu, projects: projects.isEmpty ? TowerData.projects(cockpit) : projects),
-                                  branch: menu.workspace.flatMap { ws in
-                                      TowerData.projects(cockpit).flatMap(\.tiles).first { $0.id == ws }?.branch },
                                   size: size,
                                   onPick: { pickMenu($0) }, onHover: { self.menu?.highlight = $0 },
                                   onCrumb: { menuGo($0) }, onUp: { menuUp() }, onClose: { hideMenu() })
@@ -343,7 +350,7 @@ struct CockpitView: View {
                 overlayView(overlay, snap: snap, projects: projects, w: w, h: h).zIndex(40)
             }
 
-            TabRippleLayer(ripple: ripple).frame(width: w, height: h).zIndex(55)
+            TabRippleLayer(ripple: shotRippleFrame?.ripple ?? ripple, p: Double(p)).frame(width: w, height: h).zIndex(55)
             BurstLayer(bursts: bursts).frame(width: w, height: h).zIndex(59)
             DecideLayer(flights: flights).frame(width: w, height: h).zIndex(60)
             DotWipeLayer(wipe: wipe).frame(width: w, height: h).zIndex(70)
@@ -770,6 +777,11 @@ struct CockpitView: View {
             if rows.indices.contains(n - 1) { jump(to: String(rows[n - 1].key.dropFirst(2)), projects: projects) }
             return .handled
         }
+        // 打っている最中は、修飾キー無しの鍵（1文字のタブ・M・N・門の ←→ ENTER 1–3）を横取りしない。
+        // 入力欄・エディタ（どちらも NSText）に焦点がある時は Esc だけ、端末の時は Esc も通す
+        let responder = NSApp.keyWindow?.firstResponder
+        if Terminals.owns(responder) { return .ignored }
+        if responder is NSText, press.key != .escape { return .ignored }
         if press.key == .escape {
             // 手前から順に畳む。一度に全部消すと、戻るつもりで土台まで戻ってしまう
             if overlay != nil { overlay = nil; return .handled }

@@ -604,8 +604,9 @@ struct Suminagashi: View {
 
 // MARK: - 管制塔 ⇄ 会話の右側の波紋（V11TabRipple）
 
-/// 会話へ: 「<」の先端から「<」形のドットが右へ覆い、抜ける。管制塔へ: 右端から左へ。
-/// 覆う範囲は会話の時の墨流しの窓（「<」の形）だけ。24fps
+/// 会話へ: 「<」の先端から「<」形のドットが右へ覆い、抜ける（範囲は会話の時の墨流しの窓）。
+/// 管制塔へ: 右端から「<」形のドットが左へ、画面の左端まで。毎コマ、退いていく白い面の辺の右側で切り抜く
+/// （白い面の下に描く。退いた所は退いた時点で覆い済み）。24fps
 struct TabRipple: Equatable {
     let back: Bool
     let started: Date
@@ -613,35 +614,45 @@ struct TabRipple: Equatable {
 
 struct TabRippleLayer: View {
     let ripple: TabRipple?
+    /// いまの白い面の開き（0 管制塔 … 1 会話）。戻りの切り抜きに使う
+    let p: Double
 
     var body: some View {
         Ticker(fps: 24, paused: ripple == nil) { now in
             if let ripple {
                 Canvas { ctx, size in
-                    Self.draw(&ctx, size: size, ripple: ripple, n: Int(now.timeIntervalSince(ripple.started) * 24))
+                    Self.draw(&ctx, size: size, ripple: ripple, sheet: p, n: Int(now.timeIntervalSince(ripple.started) * 24))
                 }
             }
         }
         .allowsHitTesting(false)
     }
 
-    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, ripple: TabRipple, n: Int) {
+    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, ripple: TabRipple, sheet q: Double, n: Int) {
         let (c, h, r) = ripple.back ? (12, 3, 9) : (8, 6, 9)
         guard n <= c + h + r else { return }
         let p: Double, covering: Bool
         if n < c { p = Double(n + 1) / Double(c); covering = true }
         else if n < c + h { p = 1; covering = true }
         else { p = max(0, 1 - Double(n - c - h + 1) / Double(r)); covering = false }
-        let w = size.width, ht = size.height, apex = w - 540, cy = ht / 2, xc = w - 394
+        let w = size.width, ht = size.height, apex = w - 540, cy = ht / 2, xc = w - 394, half = (ht - 100) / 2
+        // 切り抜き: 会話へは「<」の窓に固定、戻りはいまの白い面の辺（BlueSheet と同じ XC・XT）
+        let k = CGFloat(ripple.back ? q : 1)
+        let edgeC = xc * k, edgeT = 146 + (apex - 146) * k
         var window = Path()
-        window.addLines([CGPoint(x: xc, y: 56), CGPoint(x: w, y: 56), CGPoint(x: w, y: ht - 44),
-                         CGPoint(x: xc, y: ht - 44), CGPoint(x: apex, y: cy)])
+        window.addLines([CGPoint(x: edgeC, y: 56), CGPoint(x: w, y: 56), CGPoint(x: w, y: ht - 44),
+                         CGPoint(x: edgeC, y: ht - 44), CGPoint(x: edgeT, y: cy)])
         window.closeSubpath()
         ctx.clip(to: window)
         DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16) { x, y in
-            let k = x - 0.37 * abs(y - cy)
-            let d = ripple.back ? (w - k) / (w - apex + 150) : (k - apex) / 540
-            return Double(max(0, min(1, d)))
+            let kl = x - 0.37 * abs(y - cy)
+            guard ripple.back else { return Double(max(0, min(1, (kl - apex) / 540))) }
+            // 白い面が退く速さに合わせ、左ほど遅く覆う（V11TabRipple の戻り）
+            let wt = max(0, 1 - abs(y - cy) / half)
+            let qs = max(0, min(1, (x - 146 * wt) / (xc - 292 * wt)))
+            let u = cbrt(1 - qs)
+            let d = max(0, min(1, (w - kl) / (w + 150)))
+            return Double(min(d, max(0, 1.35 * u - 0.35)))
         }
     }
 }

@@ -136,7 +136,7 @@ enum TowerData {
 /// タイルの ⋯ から選ぶもの
 enum TileAction { case branch, terminal, pick, delete, forget }
 
-/// 00 // TOWER。見出し・数・NEW、プロジェクトごとの木（本体は見出し行、子は分岐元の右、競走は点線の枠）
+/// 00 // TOWER。見出し・数、プロジェクトごとの木（本体は見出し行、子は分岐元の右、競走は点線の枠）
 struct TowerScreen: View {
     let projects: [TowerProject]
     let width: CGFloat
@@ -145,7 +145,6 @@ struct TowerScreen: View {
     @Binding var hover: String?
     let onEnter: (WsTile) -> Void
     let onAct: (TileAction, WsTile) -> Void
-    let onNew: () -> Void
 
     @AppStorage("towerFold") private var fold = true
     @State private var open: Set<String> = []
@@ -163,7 +162,7 @@ struct TowerScreen: View {
                 VStack(alignment: .leading, spacing: 30) {
                     ForEach(projects) { project in lane(project) }
                     if projects.isEmpty {
-                        Text("ワークスペースはまだない。＋ NEW でリポジトリから作るか、エージェントを動かすとここに並ぶ。")
+                        Text("ワークスペースはまだない。上帯の ＋ でリポジトリから作るか、エージェントを動かすとここに並ぶ。")
                             .font(.bodyJP(14)).foregroundStyle(Palette.Blue.fg2)
                     }
                 }
@@ -194,19 +193,8 @@ struct TowerScreen: View {
                     .opacity(n > 0 ? 1 : 0.45)
                 }
             }
-            Button(action: onNew) {
-                HStack(spacing: 8) {
-                    Text("＋").font(.mono(16))
-                    Text("NEW").font(.mono(11)).tracking(Palette.caps(11))
-                }
-                .foregroundStyle(Palette.blue)
-                .padding(.leading, 14).padding(.trailing, 26)
-                .frame(height: 40)
-                .background(Chevron(head: 16).fill(Palette.white))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle())
-            .help("新規ワークスペース (N)")
+            // ＋ NEW は上帯の ＋ に統合した。門の窓に数字が付かないよう間を空ける
+            .padding(.trailing, 28)
         }
     }
 

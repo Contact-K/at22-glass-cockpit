@@ -27,6 +27,9 @@ final class Terminals {
         func processTerminated(source: TerminalView, exitCode: Int32?) { owner?.remove(self) }
     }
 
+    /// その応答者が端末か（端末に打っている間は AT22 の鍵を全部通す。Esc も vim に要る）
+    static func owns(_ responder: NSResponder?) -> Bool { responder is TerminalView }
+
     private(set) var byPath: [String: [Session]] = [:]
     var current: [String: Int] = [:]
 
