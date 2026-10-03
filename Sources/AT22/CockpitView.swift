@@ -44,6 +44,8 @@ struct CockpitView: View {
     @State private var menu: MenuState?
     @State private var wipe: Wipe?
     @State private var flights: [DotFlight] = []
+    @State private var ripple: TabRipple?
+    @State private var bursts: [Burst] = []
     /// 部品の矩形（ドットの出発点と行き先、墨を落とす高さ）。**観測しない箱**に入れる——
     /// @State にすると、スクロールのたびに根ごと組み直す
     @State private var book = RectBook()
@@ -341,6 +343,8 @@ struct CockpitView: View {
                 overlayView(overlay, snap: snap, projects: projects, w: w, h: h).zIndex(40)
             }
 
+            TabRippleLayer(ripple: ripple).frame(width: w, height: h).zIndex(55)
+            BurstLayer(bursts: bursts).frame(width: w, height: h).zIndex(59)
             DecideLayer(flights: flights).frame(width: w, height: h).zIndex(60)
             DotWipeLayer(wipe: wipe).frame(width: w, height: h).zIndex(70)
         }
@@ -420,6 +424,7 @@ struct CockpitView: View {
                       branch: currentWorkspace.flatMap { ws in TowerData.projects(cockpit).flatMap(\.tiles).first { $0.id == ws }?.branch },
                       width: contentW, height: h,
                       onReview: { go(.review) },
+                      onBurst: { burst(at: book.rects[$0]) },
                       onPushing: { on in
                           craneFx = on ? "push" : "ok"
                           if !on { after(1.8) { if craneFx == "ok" { craneFx = nil } } }
@@ -581,6 +586,9 @@ struct CockpitView: View {
         guard value != tower, shot == nil else { return }
         tower = value
         settled = false
+        let wave = TabRipple(back: value, started: Date())
+        ripple = wave
+        after(1.0) { if ripple == wave { ripple = nil } }
         let from = towerP, to: Double = value ? 0 : 1, started = Date()
         after(8.0 / 24) { if tower == value { colTower = value } }
         Task { @MainActor in
@@ -717,6 +725,14 @@ struct CockpitView: View {
         let plan = book.rects["plan:current"] ?? book.rects["plan:0"]
         fly(from: from, to: plan, ink: verdict == .deny ? Palette.Light.fg3 : Palette.blue)
         after(1.15) { fly(from: plan, to: book.rects["act:last"]) }
+    }
+
+    /// 成功の合図。矩形がまだ測れていなければ出さない
+    private func burst(at rect: CGRect?) {
+        guard let rect else { return }
+        let b = Burst(center: CGPoint(x: rect.midX, y: rect.midY))
+        bursts.append(b)
+        after(0.8) { bursts.removeAll { $0.id == b.id } }
     }
 
     /// ファイルをその行で FILES に開く。worktree の外のもの（記憶DB など）は従来の板で読む

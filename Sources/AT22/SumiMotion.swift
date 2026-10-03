@@ -601,3 +601,90 @@ struct Suminagashi: View {
         .clipped()
     }
 }
+
+// MARK: - 管制塔 ⇄ 会話の右側の波紋（V11TabRipple）
+
+/// 会話へ: 「<」の先端から「<」形のドットが右へ覆い、抜ける。管制塔へ: 右端から左へ。
+/// 覆う範囲は会話の時の墨流しの窓（「<」の形）だけ。24fps
+struct TabRipple: Equatable {
+    let back: Bool
+    let started: Date
+}
+
+struct TabRippleLayer: View {
+    let ripple: TabRipple?
+
+    var body: some View {
+        Ticker(fps: 24, paused: ripple == nil) { now in
+            if let ripple {
+                Canvas { ctx, size in
+                    Self.draw(&ctx, size: size, ripple: ripple, n: Int(now.timeIntervalSince(ripple.started) * 24))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    nonisolated static func draw(_ ctx: inout GraphicsContext, size: CGSize, ripple: TabRipple, n: Int) {
+        let (c, h, r) = ripple.back ? (12, 3, 9) : (8, 6, 9)
+        guard n <= c + h + r else { return }
+        let p: Double, covering: Bool
+        if n < c { p = Double(n + 1) / Double(c); covering = true }
+        else if n < c + h { p = 1; covering = true }
+        else { p = max(0, 1 - Double(n - c - h + 1) / Double(r)); covering = false }
+        let w = size.width, ht = size.height, apex = w - 540, cy = ht / 2, xc = w - 394
+        var window = Path()
+        window.addLines([CGPoint(x: xc, y: 56), CGPoint(x: w, y: 56), CGPoint(x: w, y: ht - 44),
+                         CGPoint(x: xc, y: ht - 44), CGPoint(x: apex, y: cy)])
+        window.closeSubpath()
+        ctx.clip(to: window)
+        DotWipeLayer.dots(&ctx, size: size, p: p, covering: covering, pc: 16) { x, y in
+            let k = x - 0.37 * abs(y - cy)
+            let d = ripple.back ? (w - k) / (w - apex + 150) : (k - apex) / 540
+            return Double(max(0, min(1, d)))
+        }
+    }
+}
+
+// MARK: - 成功の合図（V11Burst）
+
+/// 送出や PR が通った所から、8px のピンクのドットが同心に育って消える。16コマ
+struct Burst: Identifiable {
+    let id = UUID()
+    let center: CGPoint
+    let started = Date()
+}
+
+struct BurstLayer: View {
+    let bursts: [Burst]
+
+    var body: some View {
+        Ticker(fps: 24, paused: bursts.isEmpty) { now in
+            Canvas { ctx, _ in
+                for b in bursts { Self.draw(&ctx, burst: b, n: Int(now.timeIntervalSince(b.started) * 24)) }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    nonisolated static func draw(_ ctx: inout GraphicsContext, burst: Burst, n: Int) {
+        guard n <= 16 else { return }
+        let rad: CGFloat = 170, cx = burst.center.x, cy = burst.center.y
+        var y = floor((cy - rad) / 8) * 8
+        while y < cy + rad {
+            var x = floor((cx - rad) / 8) * 8
+            while x < cx + rad {
+                let d = Double(hypot(x + 4 - cx, y + 4 - cy) / rad)
+                let f = Double(n) / 16 * 1.5 - d
+                if d <= 1, f > 0, f <= 0.6 {
+                    let s = f < 0.3 ? f / 0.3 : 1 - (f - 0.3) / 0.3
+                    let sz = max(1, (s * 8).rounded())
+                    ctx.fill(Path(CGRect(x: x + 4 - sz / 2, y: y + 4 - sz / 2, width: sz, height: sz)),
+                             with: .color(f < 0.12 ? Palette.white : Palette.pink))
+                }
+                x += 8
+            }
+            y += 8
+        }
+    }
+}

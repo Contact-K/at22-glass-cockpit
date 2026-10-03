@@ -505,6 +505,8 @@ struct GitScreen: View {
     let width: CGFloat
     let height: CGFloat
     let onReview: () -> Void
+    /// 成功の合図を出す場所（reportRect の鍵）
+    let onBurst: (String) -> Void
     let onPushing: (Bool) -> Void
 
     @State private var message = ""
@@ -642,6 +644,7 @@ struct GitScreen: View {
                         Button(model.pullRequest == nil ? "PR を作る" : "PR を開く ↗", action: pullRequest)
                             .buttonStyle(SumiButtonStyle(primary: pushed, size: 11))
                             .disabled(!pushed && model.pullRequest == nil)
+                            .reportRect("prBtn")
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 12)
@@ -714,6 +717,7 @@ struct GitScreen: View {
             await model.load(cockpit, path: workspace)
             model.pushing = false
             onPushing(false)
+            if model.ahead == 0 { onBurst("remote:cur") }
             flash(Cockpit.plainLine(result))
         }
     }
@@ -724,6 +728,7 @@ struct GitScreen: View {
         Task {
             let result = await cockpit.createPullRequest(workspace)
             await model.refreshPullRequest(workspace)
+            if model.pullRequest != nil { onBurst("prBtn") }
             flash(Cockpit.plainLine(result))
         }
     }
