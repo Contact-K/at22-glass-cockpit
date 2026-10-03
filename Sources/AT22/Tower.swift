@@ -119,9 +119,16 @@ enum TowerData {
     }
 
     /// ⌘J と ←→ の順。プロジェクトごとに本体 → 木の行の順 → 静か
+    /// 静かな worktree を畳むのは、本体以外が `foldFrom` 本以上ある時だけ。数本しか無いのに子が全部
+    /// 「静か」の1行に隠れると、本体しか無いように見えた（2026-10-03）
+    static let foldFrom = 7
+    static func folds(_ project: TowerProject, _ fold: Bool) -> Bool {
+        fold && project.tiles.filter { !$0.isMain }.count >= foldFrom
+    }
+
     static func order(_ projects: [TowerProject], fold: Bool) -> [WsTile] {
         projects.flatMap { project -> [WsTile] in
-            let lane = Cockpit.towerLane(project.tiles.map(\.item), fold: fold)
+            let lane = Cockpit.towerLane(project.tiles.map(\.item), fold: folds(project, fold))
             let byID = Dictionary(uniqueKeysWithValues: project.tiles.map { ($0.id, $0) })
             let placed = lane.placed.sorted { ($0.row, $0.depth) < ($1.row, $1.depth) }.compactMap { byID[$0.id] }
             return (project.main.map { [$0] } ?? []) + placed + lane.quiet.compactMap { byID[$0] }
@@ -200,7 +207,7 @@ struct TowerScreen: View {
 
     @ViewBuilder
     private func lane(_ project: TowerProject) -> some View {
-        let folding = fold && !open.contains(project.id)
+        let folding = TowerData.folds(project, fold) && !open.contains(project.id)
         let lane = Cockpit.towerLane(project.tiles.map(\.item), fold: folding)
         let byID = Dictionary(uniqueKeysWithValues: project.tiles.map { ($0.id, $0) })
         let heights = (0..<lane.rows).map { (lane.raceRows.contains($0) ? Self.raceH : 0) + Self.h + Self.gap }

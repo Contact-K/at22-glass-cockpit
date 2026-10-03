@@ -3170,14 +3170,17 @@ extension Cockpit {
         let asking = chips.filter { $0.waiting != nil && !$0.done }.map(row)
         let busy = chips.filter { $0.busy && $0.waiting == nil && !$0.done }.map(row)
         let resting = chips.filter { !$0.busy && $0.waiting == nil && !$0.done }.map(row)
-        let picked = Array((waiting + asking + busy + resting).prefix(limit))
+        // 空きがあれば、終わった配下も新しい順に DONE の行で並べる（何体動いたかが件数だけでは見えない）
+        let finished = chips.filter { $0.done && $0.depth > 0 }.sorted { $0.lastAt > $1.lastAt }.map(row)
+        let picked = Array((waiting + asking + busy + resting + finished).prefix(limit))
 
         // 並べ直し: 司令塔 → 配下 → 門。待っている司令塔は司令塔の位置のまま
         let root = picked.filter { $0.branch == "│" }
         let workers = picked.filter { $0.branch != "│" && !$0.waiting }
         var ordered = root + workers + picked.filter { $0.waiting && $0.branch != "│" }
         if let last = ordered.lastIndex(where: { $0.branch != "│" }) { ordered[last].branch = "└" }
-        return (ordered, chips.filter(\.done).count)
+        // 件数は行に出しきれなかった分だけ
+        return (ordered, chips.filter(\.done).count - picked.filter { $0.verb == "DONE" }.count)
     }
 
     /// 05 PLAN の5行（下帯のティックは同じ関数を `size: 21` で呼ぶ）。
