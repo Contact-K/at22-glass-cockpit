@@ -73,3 +73,5 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
   プロバイダに Gemini（`gemini --acp`）・Qwen Code（`qwen --acp`）・Goose（`goose acp`）・OpenCode（`opencode acp`）・
   Copilot（`copilot --acp`）・Kimi（`kimi acp`）を足した（起こし方は agentclientprotocol/registry の agent.json の実物）。
   初めからある4つ以外は「＋ 選べるようにする」（`addedAgents`）まで選ぶ口に出さない。モデルとログインは各 CLI 自身に任せる
+- Link（1層目）は入っていて使うものだけを並べ、一番下に「＋ プロバイダを足す」。押すと設定の2層目「SETTINGS › LINK · Add a provider.」
+  （メニューからは着かない。設定のタブを離れると1層目に戻る）。2層目は全プロバイダに Install/Docs ↗ と「＋ 足す」

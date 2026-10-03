@@ -33,6 +33,8 @@ struct SettingsScreen: View {
     @AppStorage(Backend.addedKey) private var addedAgents = ""
     /// Link の左の段で選んでいるプロバイダ
     @State private var picked: Backend = .claude
+    /// 2層目（プロバイダを足す）を開いているか。メニューからは行けない——Link の「＋」からだけ
+    @State private var adding = false
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.4 / Lv.5 は一度だけ確かめる（もう一度押すと決まる）
@@ -41,6 +43,11 @@ struct SettingsScreen: View {
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
+        if adding { addLayer } else { mainLayer }
+    }
+
+    /// 1層目（メニューの 10 SETTINGS が着く所）
+    private var mainLayer: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 SectionMark(number: "10", title: "SETTINGS", jp: "設定")
@@ -92,7 +99,14 @@ struct SettingsScreen: View {
                 HStack(alignment: .top, spacing: 0) {
                     providerList.frame(width: 230)
                     Rectangle().fill(Palette.Light.fg).frame(width: 1)
-                    providerDetail(picked).padding(.leading, 18).frame(maxWidth: .infinity, alignment: .leading)
+                    Group {
+                        if let show = shown.contains(picked) ? picked : shown.first {
+                            providerDetail(show)
+                        } else {
+                            Text("左の「＋ プロバイダを足す」から、入れたいエージェントを選ぶ").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2)
+                        }
+                    }
+                    .padding(.leading, 18).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, 10)
                 .overlay(alignment: .top) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
@@ -200,23 +214,32 @@ struct SettingsScreen: View {
         return Backend.allCases.filter { Backend.builtIn.contains($0) || added.contains($0.rawValue) }
     }
 
-    /// 左の段。使う → ほかのプロバイダ。押すと右に中身
+    /// Link に並べるもの: 使うもの（初めからある4つ＋足したもの）のうち、入っているものだけ
+    private var shown: [Backend] { inUse.filter { cockpit.found[$0] != nil } }
+
+    /// 左の段。入っているものだけ。一番下の「＋」から2層目（全プロバイダ）へ
     private var providerList: some View {
-        let others = Backend.allCases.filter { !inUse.contains($0) }
-        return VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("// 使う  \(inUse.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                Text("// 入っている  \(shown.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
                 Spacer()
                 Button("↻ 探し直す") { cockpit.findCLIs(force: true) }.buttonStyle(.plain).font(.mono(10)).underline()
                     .help("ログインシェルを1回通して、もう一度探す").padding(.trailing, 10)
             }
             .padding(.bottom, 4)
-            ForEach(inUse, id: \.self) { providerRow($0) }
-            if !others.isEmpty {
-                Text("// ほかのプロバイダ  \(others.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
-                    .padding(.top, 12).padding(.bottom, 4)
-                ForEach(others, id: \.self) { providerRow($0) }
+            ForEach(shown, id: \.self) { providerRow($0) }
+            if shown.isEmpty {
+                Text("入っているエージェントはまだない").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3).padding(10)
             }
+            Button { adding = true } label: {
+                Text("＋ プロバイダを足す").font(.mono(11)).tracking(0.9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).frame(height: 34)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.fg, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+            .padding(.top, 10).padding(.trailing, 10)
         }
     }
 
@@ -328,6 +351,68 @@ struct SettingsScreen: View {
             }
         }
         .opacity(using || !Backend.builtIn.contains(backend) ? 1 : 0.55)
+    }
+
+    // MARK: 2層目 · プロバイダを足す
+
+    /// 全プロバイダ。入っているものは「＋ 足す」で Link に並び、入っていないものは入れ方を開く
+    private var addLayer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    SectionMark(number: "10", title: "SETTINGS › LINK", jp: "プロバイダを足す")
+                    Spacer()
+                    Button("← 設定に戻る") { adding = false }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                }
+                Text("Add a provider.").font(.display(44))
+                Text("入っているものは「＋ 足す」で Link に並びます。入っていないものは Install ↗ で入れ方を開き、入れてから ↻ 探し直す。"
+                     + "どれも ACP か各 CLI の公式の口で繋ぎ、AT22 は鍵を預かりません。")
+                    .font(.bodyJP(14)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 18)
+            HStack {
+                Text("// プロバイダ  \(Backend.allCases.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                Spacer()
+                Button("↻ 探し直す") { cockpit.findCLIs(force: true) }.buttonStyle(.plain).font(.mono(10)).underline()
+            }
+            .padding(.bottom, 4)
+            LiveScroll {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Backend.allCases, id: \.self) { addRow($0) }
+                }
+                .frame(width: width, alignment: .leading)
+            }
+            .frame(height: max(200, height - 84 - 120 - 100))
+        }
+        .foregroundStyle(Palette.Light.fg)
+        .frame(width: width, alignment: .topLeading)
+    }
+
+    private func addRow(_ backend: Backend) -> some View {
+        let installed = cockpit.found[backend] != nil
+        let using = inUse.contains(backend)
+        let start = [backend.command] + (backend.isACP ? Cockpit.acpArguments(backend, model: "", level: .normal) : [])
+        return HStack(spacing: 12) {
+            Rectangle().fill(installed ? Palette.pink : Palette.Light.line).frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(backend.title).font(.display(20))
+                Text(start.joined(separator: " ") + "  ·  " + (backend.isACP ? "ACP" : backend == .claude ? "stream-json" : "exec"))
+                    .font(.mono(10)).foregroundStyle(Palette.Light.fg2)
+            }
+            Spacer(minLength: 8)
+            Text(installed ? "入っている" : "未導入").font(.mono(10)).foregroundStyle(Palette.Light.fg3)
+            Button(installed ? "Docs ↗" : "Install ↗") { NSWorkspace.shared.open(backend.homepage) }
+                .buttonStyle(SumiButtonStyle(primary: false, size: 11)).help(backend.homepage.absoluteString)
+            if Backend.builtIn.contains(backend) {
+                Text("初めから").font(.mono(10)).foregroundStyle(Palette.Light.fg3).frame(width: 96)
+            } else {
+                Button(using ? "✓ 足した" : "＋ 足す") { toggleAdded(backend) }
+                    .buttonStyle(SumiButtonStyle(primary: !using, size: 11)).frame(width: 96)
+                    .help(using ? "押すと外す" : installed ? "Link に並べる" : "入れたら Link に並ぶ")
+            }
+        }
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
     }
 
     private func toggleAdded(_ backend: Backend) {
