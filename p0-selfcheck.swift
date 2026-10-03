@@ -233,7 +233,7 @@ struct P0SelfCheck {
         assert(Cockpit.acpArguments(.grok, model: "", level: .auto) == ["agent", "--always-approve", "stdio"],
                "Lv.4 で全部通していない")
         assert(Cockpit.acpArguments(.hermes, model: "x", level: .auto) == ["acp"], "Hermes に知らない引数を渡した")
-        assert(Backend.allCases.filter(\.isACP) == [.grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi])
+        assert(Backend.allCases.filter(\.isACP) == [.grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw])
         // Hermes はトークン数を usage に入れて返す（実測）
         assert(ACPConnection.turnEnd(["stopReason": "end_turn", "usage": ["inputTokens": 14683]]) == .turnEnded(tokens: 14683))
         // claude auth status（JSON）

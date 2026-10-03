@@ -30,14 +30,13 @@ struct SettingsScreen: View {
     /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
     @State private var logins: [Backend: String] = [:]
     @AppStorage(Backend.disabledKey) private var disabledAgents = ""
-    @AppStorage(Backend.addedKey) private var addedAgents = ""
     /// Link の左の段で選んでいるプロバイダ
     @State private var picked: Backend = .claude
     /// 2層目（プロバイダを足す）を開いているか。メニューからは行けない——Link の「＋」からだけ
     @State private var adding = false
     @State private var note: String?
     @State private var skill = SkillInstall.state()
-    /// Lv.4 / Lv.5 は一度だけ確かめる（もう一度押すと決まる）
+    /// Lv.3 / Lv.4 は一度だけ確かめる（もう一度押すと決まる）
     @State private var armed: Gate.Level?
     @State private var levelNote: String?
     @Environment(\.frozenTime) private var frozen
@@ -59,7 +58,7 @@ struct SettingsScreen: View {
             VStack(alignment: .leading, spacing: 0) {
             row("01", "Approval", "承認の段 · 新しいワークスペースの既定と、いまの会話") {
                 HStack(spacing: 0) {
-                    ForEach(Array(Gate.Level.allCases.enumerated()), id: \.offset) { i, l in
+                    ForEach(Array(Gate.Level.ladder.enumerated()), id: \.offset) { i, l in
                         let on = level == l.rawValue
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
@@ -205,17 +204,12 @@ struct SettingsScreen: View {
         .onChange(of: cockpit.loginRuns) { if frozen == nil { Task { await readLogins() } } }
     }
 
-    /// 選ぶ口に出すもの（初めからある4つ＋足したもの − 無効）
-    private var enabled: [Backend] { Backend.enabled(disabled: disabledAgents, added: addedAgents) }
+    /// 選ぶ口に出すもの（入っていて、使わないにしていない）
+    private var enabled: [Backend] { Backend.usable(found: Set(cockpit.found.keys), disabled: disabledAgents) }
 
-    /// 使うもの（初めからある4つ＋足したもの）。無効にしたものもここに残して、戻せるようにする
-    private var inUse: [Backend] {
-        let added = Set(addedAgents.split(separator: ",").map(String.init))
-        return Backend.allCases.filter { Backend.builtIn.contains($0) || added.contains($0.rawValue) }
-    }
-
-    /// Link に並べるもの: 使うもの（初めからある4つ＋足したもの）のうち、入っているものだけ
-    private var shown: [Backend] { inUse.filter { cockpit.found[$0] != nil } }
+    /// Link に並べるもの: 入っているもの全部（使わないにしたものも、戻せるように残す）。
+    /// 入っているかは検出だけで決める——入れ直したら ↻ 探し直す で並び直る
+    private var shown: [Backend] { Backend.allCases.filter { cockpit.found[$0] != nil } }
 
     /// 左の段。入っているものだけ。一番下の「＋」から2層目（全プロバイダ）へ
     private var providerList: some View {
@@ -246,7 +240,7 @@ struct SettingsScreen: View {
     private func providerRow(_ backend: Backend) -> some View {
         let on = picked == backend
         let installed = cockpit.found[backend] != nil
-        let off = !enabled.contains(backend) && inUse.contains(backend)
+        let off = !enabled.contains(backend)
         return HStack(spacing: 8) {
             Rectangle().fill(installed ? Palette.pink : Palette.Light.line).frame(width: 6, height: 6)
             Text(backend.title).font(.bodyJP(14)).lineLimit(1)
@@ -266,7 +260,6 @@ struct SettingsScreen: View {
     /// 右の段。起こし方・使うか・既定・Docs・ログイン・モデル・場所の上書き
     private func providerDetail(_ backend: Backend) -> some View {
         let path = cockpit.found[backend]?.executable.path
-        let using = inUse.contains(backend)
         let on = enabled.contains(backend)
         let run = cockpit.loginRuns[backend]
         let start = [backend.command] + (backend.isACP ? Cockpit.acpArguments(backend, model: "", level: .normal) : [])
@@ -281,13 +274,9 @@ struct SettingsScreen: View {
                 .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             Text("起こし方  " + start.joined(separator: " ")).font(.mono(11)).foregroundStyle(Palette.Light.fg2)
             HStack(spacing: 8) {
-                if Backend.builtIn.contains(backend) {
-                    Button(on ? "■ 使う" : "□ 使う") { toggle(backend) }
-                        .buttonStyle(SumiButtonStyle(primary: on, size: 11))
-                } else {
-                    Button(using ? "外す" : "＋ 選べるようにする") { toggleAdded(backend) }
-                        .buttonStyle(SumiButtonStyle(primary: !using, size: 11))
-                }
+                Button(on ? "■ 使う" : "□ 使う") { toggle(backend) }
+                    .buttonStyle(SumiButtonStyle(primary: on, size: 11))
+                    .help(on ? "外すと、エージェントを選ぶ口に出なくなる" : "選ぶ口に戻す")
                 if path != nil && on && !agent.hasPrefix(backend.rawValue + "|") {
                     Button("既定にする") { agent = backend.rawValue + "|" + (cockpit.models(backend).first?.id ?? "") }
                         .buttonStyle(SumiButtonStyle(primary: false, size: 11))
@@ -350,7 +339,7 @@ struct SettingsScreen: View {
                     .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
             }
         }
-        .opacity(using || !Backend.builtIn.contains(backend) ? 1 : 0.55)
+        .opacity(on ? 1 : 0.55)
     }
 
     // MARK: 2層目 · プロバイダを足す
@@ -365,7 +354,7 @@ struct SettingsScreen: View {
                     Button("← 設定に戻る") { adding = false }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
                 }
                 Text("Add a provider.").font(.display(44))
-                Text("入っているものは「＋ 足す」で Link に並びます。入っていないものは Install ↗ で入れ方を開き、入れてから ↻ 探し直す。"
+                Text("入っているかは AT22 が探して決めます。入っていないものは Install ↗ で入れ方を開き、入れたら ↻ 探し直す で Link に並びます。"
                      + "どれも ACP か各 CLI の公式の口で繋ぎ、AT22 は鍵を預かりません。")
                     .font(.bodyJP(14)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
             }
@@ -386,11 +375,11 @@ struct SettingsScreen: View {
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
+        .onAppear { if frozen == nil { cockpit.findCLIs(force: true) } }
     }
 
     private func addRow(_ backend: Backend) -> some View {
         let installed = cockpit.found[backend] != nil
-        let using = inUse.contains(backend)
         let start = [backend.command] + (backend.isACP ? Cockpit.acpArguments(backend, model: "", level: .normal) : [])
         return HStack(spacing: 12) {
             Rectangle().fill(installed ? Palette.pink : Palette.Light.line).frame(width: 6, height: 6)
@@ -400,25 +389,14 @@ struct SettingsScreen: View {
                     .font(.mono(10)).foregroundStyle(Palette.Light.fg2)
             }
             Spacer(minLength: 8)
-            Text(installed ? "入っている" : "未導入").font(.mono(10)).foregroundStyle(Palette.Light.fg3)
+            Text(installed ? "インストール済み" : "未導入").font(.mono(10))
+                .foregroundStyle(installed ? Palette.Light.fg : Palette.Light.fg3).frame(width: 110, alignment: .trailing)
             Button(installed ? "Docs ↗" : "Install ↗") { NSWorkspace.shared.open(backend.homepage) }
-                .buttonStyle(SumiButtonStyle(primary: false, size: 11)).help(backend.homepage.absoluteString)
-            if Backend.builtIn.contains(backend) {
-                Text("初めから").font(.mono(10)).foregroundStyle(Palette.Light.fg3).frame(width: 96)
-            } else {
-                Button(using ? "✓ 足した" : "＋ 足す") { toggleAdded(backend) }
-                    .buttonStyle(SumiButtonStyle(primary: !using, size: 11)).frame(width: 96)
-                    .help(using ? "押すと外す" : installed ? "Link に並べる" : "入れたら Link に並ぶ")
-            }
+                .buttonStyle(SumiButtonStyle(primary: !installed, size: 11)).frame(width: 110)
+                .help(backend.homepage.absoluteString)
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
-    }
-
-    private func toggleAdded(_ backend: Backend) {
-        var added = Set(addedAgents.split(separator: ",").map(String.init))
-        if added.contains(backend.rawValue) { added.remove(backend.rawValue) } else { added.insert(backend.rawValue) }
-        addedAgents = added.sorted().joined(separator: ",")
     }
 
     private func toggle(_ backend: Backend) {
@@ -432,7 +410,7 @@ struct SettingsScreen: View {
         case .claude: $claudePath
         case .codex: $codexPath
         case .grok: $grokPath
-        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: nil
+        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw: nil
         }
     }
 

@@ -18,6 +18,8 @@ enum Backend: String, CaseIterable, Codable, Sendable {
     case opencode   // `opencode acp`
     case copilot    // `copilot --acp`
     case kimi       // `kimi acp`
+    /// OpenClaw。`openclaw acp` は stdio の ACP を、動いている OpenClaw Gateway へ繋ぐ（Gateway は別に起こしておく）
+    case openclaw
 
     var title: String {
         switch self {
@@ -31,6 +33,7 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .opencode: "OpenCode"
         case .copilot: "Copilot"
         case .kimi: "Kimi"
+        case .openclaw: "OpenClaw"
         }
     }
 
@@ -48,15 +51,15 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .opencode: ["auth", "login"]
         case .goose: ["configure"]
         // CLI を開けば中でログインを訊いてくる
-        case .gemini, .qwen, .copilot, .kimi: []
+        case .gemini, .qwen, .copilot, .kimi, .openclaw: []
         }
     }
 
     /// 探す時のコマンド名。ログインシェルの `-c` に埋め込むので、ここに書いた名前だけを使う
     var command: String { rawValue }
 
-    /// 初めからある4つ。ほかは設定の Link で「足す」まで選ぶ口に出さない
-    static let builtIn: [Backend] = [.claude, .codex, .grok, .hermes]
+    /// まだ探し終わっていない起動直後に、選ぶ口へ仮に出す4つ
+    static let startupGuess: [Backend] = [.claude, .codex, .grok, .hermes]
 
     /// 入れ方と使い方の案内（設定の Docs / Install）。Orca と同じく、AT22 はインストールを走らせない
     var homepage: URL {
@@ -71,6 +74,7 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .opencode: URL(string: "https://opencode.ai/docs/cli/")!
         case .copilot: URL(string: "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli")!
         case .kimi: URL(string: "https://github.com/MoonshotAI/kimi-cli")!
+        case .openclaw: URL(string: "https://docs.openclaw.ai/cli/acp")!
         }
     }
 
@@ -80,14 +84,12 @@ enum Backend: String, CaseIterable, Codable, Sendable {
     /// 無効にしたエージェント（設定の Agents で切る）。選ぶ口に出さない。値は rawValue をカンマで
     static let disabledKey = "disabledAgents"
 
-    /// 足したプロバイダ（初めからある4つ以外）。値は rawValue をカンマで
-    static let addedKey = "addedAgents"
-
-    /// 選ぶ口に出すもの: 初めからある4つ＋足したもの、から無効にしたものを除く
-    static func enabled(disabled raw: String, added: String = UserDefaults.standard.string(forKey: addedKey) ?? "") -> [Backend] {
+    /// 使える（入っていて、無効にしていない）プロバイダ。**入っているかは検出だけで決める**——
+    /// 「初めから」「足した」のような手で持つ印は、入れ直した時に表示と実物がずれる
+    static func usable(found: Set<Backend>, disabled raw: String) -> [Backend] {
         let off = Set(raw.split(separator: ",").map(String.init))
-        let on = Set(added.split(separator: ",").map(String.init))
-        return allCases.filter { (builtIn.contains($0) || on.contains($0.rawValue)) && !off.contains($0.rawValue) }
+        let pool = found.isEmpty ? startupGuess : allCases.filter(found.contains)
+        return pool.filter { !off.contains($0.rawValue) }
     }
 }
 
@@ -124,7 +126,7 @@ extension ModelChoice {
         case .claude: claudeModels
         case .codex: codexModels
         case .grok: grokModels
-        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: []   // 各 CLI 自身の既定
+        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw: []   // 各 CLI 自身の既定
         }
     }
 

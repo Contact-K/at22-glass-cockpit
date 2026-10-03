@@ -15,7 +15,7 @@ enum CockpitMode: String, CaseIterable {
         case .work: "作業"
         case .structure: "構造"
         // ケース名（＝保存値）は変えない。変えると保存済みの選択が黙って初期化される
-        case .memory: "壁打ち"
+        case .memory: "記憶DB"
         }
     }
 }
@@ -1084,7 +1084,7 @@ final class Cockpit {
             return id
         case .codex:
             return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
-        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
             return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
@@ -1492,7 +1492,7 @@ final class Cockpit {
             guard let remote else { return nil }
             resume = "\(exe) --resume \(Self.shellQuote(remote))"
         // ponytail: 続きの開き方は CLI ごとに違い、まだ確かめていない
-        case .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+        case .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
             return nil
         }
         return "cd \(Self.shellQuote(cwd)) && \(resume)"
@@ -1594,6 +1594,11 @@ final class Cockpit {
     }
 
     /// CLI を探す（起動時と、設定の「探し直す」）。場所の上書きは設定の値
+    /// 選ぶ口に出すプロバイダ（入っていて、設定で無効にしていない）
+    func usableBackends() -> [Backend] {
+        Backend.usable(found: Set(found.keys), disabled: UserDefaults.standard.string(forKey: Backend.disabledKey) ?? "")
+    }
+
     func findCLIs(force: Bool) {
         let d = UserDefaults.standard
         let paths: [Backend: String] = [.claude: d.string(forKey: Self.claudePathKey) ?? "",
@@ -1621,7 +1626,7 @@ final class Cockpit {
                 return Self.grokLogin(FileManager.default.contents(atPath: NSHomeDirectory() + "/.grok/auth.json"))
             case .hermes:
                 return "Hermes の設定に従う（hermes setup）"
-            case .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+            case .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
                 return "\(backend.command) の中でログインする"
             }
         }.value
@@ -1790,7 +1795,7 @@ final class Cockpit {
                           token: UUID())
             runs[session] = run
             return run
-        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
             let backend = backend(of: session)
             guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
                 launchError = "\(backend.title) のセッションが見つからない"
@@ -1814,7 +1819,7 @@ final class Cockpit {
             if !effort.isEmpty { arguments += ["--reasoning-effort", effort] }
             if level.needsConfirmation { arguments.append("--always-approve") }
             return arguments + ["stdio"]
-        case .hermes, .goose, .opencode, .kimi:
+        case .hermes, .goose, .opencode, .kimi, .openclaw:
             return ["acp"]
         case .gemini, .qwen, .copilot:
             return ["--acp"]

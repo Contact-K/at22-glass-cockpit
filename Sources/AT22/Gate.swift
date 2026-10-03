@@ -32,13 +32,17 @@ enum Gate {
         case auto        // 任せてる：全部通す
         case unattended  // 留守番：全部通す（無人）
 
+        /// 段として選べるもの（壁打ち＝plan は別のトグル）
+        static let ladder: [Level] = [.each, .normal, .auto, .unattended]
+
         var title: String {
             switch self {
-            case .plan:       "Lv.1 壁打ち"
-            case .each:       "Lv.2 隣で見てる"
-            case .normal:     "Lv.3 気にかけてる"
-            case .auto:       "Lv.4 任せてる"
-            case .unattended: "Lv.5 留守番"
+            // 壁打ちは段ではなく別のトグル（会話画面の「壁打ち」）。値 plan は門の受け渡しのため残す
+            case .plan:       "壁打ち"
+            case .each:       "Lv.1 隣で見てる"
+            case .normal:     "Lv.2 気にかけてる"
+            case .auto:       "Lv.3 任せてる"
+            case .unattended: "Lv.4 留守番"
             }
         }
 

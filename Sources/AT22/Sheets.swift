@@ -221,7 +221,7 @@ struct NewWorkspaceSheet: View {
             }
         default:
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(Gate.Level.allCases, id: \.self) { l in
+                ForEach(Gate.Level.ladder, id: \.self) { l in
                     bigPlate(on: level == l) {
                         HStack(alignment: .firstTextBaseline, spacing: 14) {
                             Text(String(l.title.prefix { $0 != " " }).uppercased()).font(.mono(14)).tracking(1.1)
@@ -259,7 +259,7 @@ struct NewWorkspaceSheet: View {
             }
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    ForEach(Backend.enabled(disabled: UserDefaults.standard.string(forKey: Backend.disabledKey) ?? ""), id: \.self) { b in
+                    ForEach(cockpit.usableBackends(), id: \.self) { b in
                         let on = org == b
                         HStack(spacing: 10) {
                             Text(b.title).font(.display(24))
