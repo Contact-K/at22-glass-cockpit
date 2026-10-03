@@ -17,6 +17,7 @@ struct SettingsScreen: View {
     @AppStorage(agentKey) private var agent = "claude|opus"
     @AppStorage("showThinking") private var showThinking = false
     @State private var note: String?
+    @State private var skill = SkillInstall.state()
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
@@ -26,6 +27,9 @@ struct SettingsScreen: View {
                 Text("Defaults.").font(.display(44))
             }
             .padding(.bottom, 18)
+            // 行が増えて低い窓では下帯に潜るので、行の部分だけ送れるようにする
+            LiveScroll {
+            VStack(alignment: .leading, spacing: 0) {
             row("01", "Approval", "承認の段 · 新しいワークスペースの既定") {
                 HStack(spacing: 0) {
                     ForEach(Array([Gate.Level.each, .normal, .auto, .unattended].enumerated()), id: \.offset) { i, l in
@@ -98,6 +102,19 @@ struct SettingsScreen: View {
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
                 }
             }
+            row("06", "Skill", "門の手順（5段階の承認）") {
+                HStack(spacing: 12) {
+                    Button(skill == .current ? "入れ直す" : "インストール") { installSkill() }
+                        .buttonStyle(SumiButtonStyle(primary: skill != .current, size: 11))
+                        .disabled(SkillInstall.source == nil)
+                    Text(skill.label + " · ~/.claude/skills/\(SkillInstall.name)")
+                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1).minimumScaleFactor(0.8)
+                }
+            }
+            }
+            .frame(width: width, alignment: .leading)
+            }
+            .frame(height: max(200, height - 84 - 120 - 60))
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
@@ -123,6 +140,16 @@ struct SettingsScreen: View {
         .padding(.vertical, height < 900 ? 9 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
+    }
+
+    private func installSkill() {
+        do {
+            try SkillInstall.install()
+            skill = SkillInstall.state()
+            flash("門の手順を入れました（新しく起こしたセッションから効きます）")
+        } catch {
+            flash("入れられませんでした: \(error.localizedDescription)")
+        }
     }
 
     private func flash(_ text: String) {
@@ -152,5 +179,57 @@ struct KeysPanel: View {
             }
         }
         .frame(width: 352, height: height - 136)
+    }
+}
+
+/// 門の手順（Resources/Skills/at22-gate）を Claude Code のユーザーのスキル置き場へ入れる。
+/// **人が押した時だけ書く**。入れた後は claude が自分で読み、サブエージェントを起こす前に gate.sh を呼ぶ
+enum SkillInstall {
+    static let name = "at22-gate"
+
+    enum State {
+        case missing, stale, current
+        var label: String {
+            switch self {
+            case .missing: "未インストール"
+            case .stale: "入っているが AT22 の版と違う（入れ直すと手元の変更は消える）"
+            case .current: "インストール済み"
+            }
+        }
+    }
+
+    /// 配布物は .app の Resources/Skills、`swift run` はリポジトリの Resources/Skills
+    static var source: URL? {
+        let manager = FileManager.default
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("Skills/\(name)"),
+           manager.fileExists(atPath: bundled.path) { return bundled }
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/Skills/\(name)")
+        return manager.fileExists(atPath: repo.path) ? repo : nil
+    }
+
+    static var target: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/skills/\(name)")
+    }
+
+    static func state() -> State {
+        guard let source else { return .missing }
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: target.path) else { return .missing }
+        let files = (try? manager.contentsOfDirectory(atPath: source.path)) ?? []
+        let same = files.allSatisfy { f in
+            manager.contentsEqual(atPath: source.appendingPathComponent(f).path, andPath: target.appendingPathComponent(f).path)
+        }
+        return same ? .current : .stale
+    }
+
+    static func install() throws {
+        guard let source else { throw CocoaError(.fileNoSuchFile) }
+        let manager = FileManager.default
+        try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
+        try manager.copyItem(at: source, to: target)
+        try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.appendingPathComponent("gate.sh").path)
     }
 }

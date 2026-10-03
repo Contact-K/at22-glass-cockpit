@@ -87,6 +87,8 @@ cp "$BUILD/AT22" "$APP/Contents/MacOS/AT22"
 cp "$ROOT/Resources/AT22.icns" "$APP/Contents/Resources/AT22.icns"
 # 書体。SwiftPM の resources: は使わず、起動時に Contents/Resources/Fonts から登録する
 # （Palette.swift の SumiFonts.register）。青柳衡山T が置かれていればそれも一緒に入る
+# 門の手順（Claude Code のスキル）。設定の 06 Skill から ~/.claude/skills に入れる
+cp -R "$ROOT/Resources/Skills" "$APP/Contents/Resources/Skills"
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT"/Resources/Fonts/*.ttf "$ROOT"/Resources/Fonts/*.otf "$ROOT"/Resources/Fonts/*.txt \
   "$APP/Contents/Resources/Fonts/" 2>/dev/null || true
