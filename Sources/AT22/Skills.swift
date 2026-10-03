@@ -99,7 +99,7 @@ enum Skills {
             case .claude: [.claude, .plugin, .repo].contains(s.source)
             case .codex: [.agents, .codex].contains(s.source)
             case .grok: [.agents, .grok].contains(s.source)
-            case .hermes: false
+            case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: false
             }
         }
     }

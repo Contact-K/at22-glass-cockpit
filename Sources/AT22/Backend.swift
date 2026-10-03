@@ -10,6 +10,14 @@ enum Backend: String, CaseIterable, Codable, Sendable {
     case grok
     /// Hermes Agent（Nous Research）。`hermes acp`。プロバイダとモデルは Hermes 自身の設定に従う
     case hermes
+    // ここから下は ACP で話す CLI。起こし方は ACP の registry（agentclientprotocol/registry の agent.json）の実物。
+    // モデル・ログインはどれも CLI 自身の設定に従う
+    case gemini     // `gemini --acp`
+    case qwen       // `qwen --acp`
+    case goose      // `goose acp`
+    case opencode   // `opencode acp`
+    case copilot    // `copilot --acp`
+    case kimi       // `kimi acp`
 
     var title: String {
         switch self {
@@ -17,12 +25,18 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .codex: "Codex"
         case .grok: "Grok"
         case .hermes: "Hermes"
+        case .gemini: "Gemini"
+        case .qwen: "Qwen Code"
+        case .goose: "Goose"
+        case .opencode: "OpenCode"
+        case .copilot: "Copilot"
+        case .kimi: "Kimi"
         }
     }
 
     /// ACP で話す相手。Gemini CLI（`--experimental-acp`）や OpenCode（`acp`）も同じ口なので、
     /// 入れたらここと `Cockpit.acpArguments` に1行ずつ足せば繋がる
-    var isACP: Bool { self == .grok || self == .hermes }
+    var isACP: Bool { self != .claude && self != .codex }
 
     /// ログインを起こすコマンド（CLI の後ろに付ける）。**トークンは各 CLI が持つ**——AT22 は起こすだけ
     var loginArguments: [String] {
@@ -31,11 +45,18 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .codex: ["login"]
         case .grok: ["login"]
         case .hermes: ["setup"]
+        case .opencode: ["auth", "login"]
+        case .goose: ["configure"]
+        // CLI を開けば中でログインを訊いてくる
+        case .gemini, .qwen, .copilot, .kimi: []
         }
     }
 
     /// 探す時のコマンド名。ログインシェルの `-c` に埋め込むので、ここに書いた名前だけを使う
     var command: String { rawValue }
+
+    /// 初めからある4つ。ほかは設定の Link で「足す」まで選ぶ口に出さない
+    static let builtIn: [Backend] = [.claude, .codex, .grok, .hermes]
 
     /// 入れ方と使い方の案内（設定の Docs / Install）。Orca と同じく、AT22 はインストールを走らせない
     var homepage: URL {
@@ -44,18 +65,29 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         case .codex: URL(string: "https://github.com/openai/codex")!
         case .grok: URL(string: "https://docs.x.ai")!
         case .hermes: URL(string: "https://github.com/nousresearch/hermes-agent")!
+        case .gemini: URL(string: "https://github.com/google-gemini/gemini-cli")!
+        case .qwen: URL(string: "https://github.com/QwenLM/qwen-code")!
+        case .goose: URL(string: "https://github.com/block/goose")!
+        case .opencode: URL(string: "https://opencode.ai/docs/cli/")!
+        case .copilot: URL(string: "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli")!
+        case .kimi: URL(string: "https://github.com/MoonshotAI/kimi-cli")!
         }
     }
 
     /// ログインが対話式（質問に答えながら進む）か。対話式は裏で起こせないので Terminal で開く
-    var loginIsInteractive: Bool { self == .hermes }
+    var loginIsInteractive: Bool { ![.claude, .codex, .grok].contains(self) }
 
     /// 無効にしたエージェント（設定の Agents で切る）。選ぶ口に出さない。値は rawValue をカンマで
     static let disabledKey = "disabledAgents"
 
-    static func enabled(disabled raw: String) -> [Backend] {
+    /// 足したプロバイダ（初めからある4つ以外）。値は rawValue をカンマで
+    static let addedKey = "addedAgents"
+
+    /// 選ぶ口に出すもの: 初めからある4つ＋足したもの、から無効にしたものを除く
+    static func enabled(disabled raw: String, added: String = UserDefaults.standard.string(forKey: addedKey) ?? "") -> [Backend] {
         let off = Set(raw.split(separator: ",").map(String.init))
-        return allCases.filter { !off.contains($0.rawValue) }
+        let on = Set(added.split(separator: ",").map(String.init))
+        return allCases.filter { (builtIn.contains($0) || on.contains($0.rawValue)) && !off.contains($0.rawValue) }
     }
 }
 
@@ -92,7 +124,7 @@ extension ModelChoice {
         case .claude: claudeModels
         case .codex: codexModels
         case .grok: grokModels
-        case .hermes: []        // Hermes 自身の既定（hermes model で選ぶ）
+        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: []   // 各 CLI 自身の既定
         }
     }
 

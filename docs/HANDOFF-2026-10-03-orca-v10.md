@@ -68,6 +68,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory）⌘, で 10 SETTINGS に飛ぶか（別窓はやめた）、CLI の場所の欄・ログインの札（TextField は撮れない）
 - （orca-v10-memory）タイルの「再試行」（失敗を起こしにくいので未確認）、置き場を外に書いた時の作成と削除、起こした直後の会話に題が付くか
 - （orca-v10-memory）設定の「ログイン」を裏で起こした時に URL が拾えるか（claude auth login / codex login / grok login。TTY が要る CLI は「止まりました → Terminal で」に落ちる）
+- （orca-v10-memory）足したプロバイダ（Gemini / Qwen / Goose / OpenCode / Copilot / Kimi）が ACP で本当に繋がるか（どれも手元に無く未確認）。続きを Terminal で開く口は出していない
 
 ## 残り・後で話す
 

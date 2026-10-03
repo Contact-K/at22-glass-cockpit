@@ -30,8 +30,9 @@ struct SettingsScreen: View {
     /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
     @State private var logins: [Backend: String] = [:]
     @AppStorage(Backend.disabledKey) private var disabledAgents = ""
-    /// 場所の上書きを開いている行
-    @State private var expanded: Set<Backend> = []
+    @AppStorage(Backend.addedKey) private var addedAgents = ""
+    /// Link の左の段で選んでいるプロバイダ
+    @State private var picked: Backend = .claude
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.4 / Lv.5 は一度だけ確かめる（もう一度押すと決まる）
@@ -76,7 +77,7 @@ struct SettingsScreen: View {
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
                 if let levelNote { Text(levelNote).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
             }
-            row("02", "Agents", "エージェント · 入っているものを見つけて、選んで、ログインする") {
+            row("02", "Link", "連携 · プロバイダを選び、足し、ログインする") {
                 SumiPicker(sections: enabled.map { backend in
                     .init(title: backend.title.uppercased(), items: cockpit.models(backend).map(\.id).map { m in
                         .init(id: backend.rawValue + "|" + m, text: label(backend, m), on: agent == backend.rawValue + "|" + m)
@@ -87,23 +88,16 @@ struct SettingsScreen: View {
                 .font(.mono(13))
                 .padding(.horizontal, 10).frame(height: 38)
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-                // Orca にならう: 入っている／入っていない に分け、行ごとに 有効・既定・Docs・ログイン・場所の上書き
-                let installed = Backend.allCases.filter { cockpit.found[$0] != nil }
-                let missing = Backend.allCases.filter { cockpit.found[$0] == nil }
-                HStack {
-                    Text("// 入っている  \(installed.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
-                    Spacer()
-                    Button("↻ 探し直す") { cockpit.findCLIs(force: true) }.buttonStyle(.plain).font(.mono(10)).underline()
-                        .help("ログインシェルを1回通して、もう一度探す")
+                // 2段: 左でプロバイダを選び、右にその中身（新規の板の「プロバイダ → モデル」と同じ階層）
+                HStack(alignment: .top, spacing: 0) {
+                    providerList.frame(width: 230)
+                    Rectangle().fill(Palette.Light.fg).frame(width: 1)
+                    providerDetail(picked).padding(.leading, 18).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.top, 4)
-                VStack(alignment: .leading, spacing: 0) { ForEach(installed, id: \.self) { agentLine($0) } }
-                if !missing.isEmpty {
-                    Text("// 入っていない  \(missing.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
-                        .padding(.top, 4)
-                    VStack(alignment: .leading, spacing: 0) { ForEach(missing, id: \.self) { agentLine($0) } }
-                }
-                Text("AT22 は API キーも OAuth トークンも預からない。ログインは各 CLI の公式のログインを裏で起こすだけで、トークンは CLI が持つ。")
+                .padding(.vertical, 10)
+                .overlay(alignment: .top) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+                .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+                Text("AT22 は API キーも OAuth トークンも預からない。ログインは各 CLI の公式のログインを起こすだけで、トークンは CLI が持つ。")
                     .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
             }
             row("03", "Launch", "AT22 から起こすか") {
@@ -197,80 +191,149 @@ struct SettingsScreen: View {
         .onChange(of: cockpit.loginRuns) { if frozen == nil { Task { await readLogins() } } }
     }
 
-    /// 有効なエージェント（無効にしたものは選ぶ口に出さない）
-    private var enabled: [Backend] { Backend.enabled(disabled: disabledAgents) }
+    /// 選ぶ口に出すもの（初めからある4つ＋足したもの − 無効）
+    private var enabled: [Backend] { Backend.enabled(disabled: disabledAgents, added: addedAgents) }
 
-    /// 1つのエージェントの行（Orca の AgentCatalogRow にならう）。
-    /// 名前・コマンド・既定・有効・Docs/Install・展開（場所の上書き）、入っていればログイン
-    private func agentLine(_ backend: Backend) -> some View {
-        let path = cockpit.found[backend]?.executable.path
-        let on = enabled.contains(backend)
-        let isDefault = agent.hasPrefix(backend.rawValue + "|")
-        let open = expanded.contains(backend)
-        let run = cockpit.loginRuns[backend]
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Text(backend.title.uppercased()).font(.mono(12)).tracking(0.9).frame(width: 70, alignment: .leading)
-                Text(path ?? backend.command).font(.mono(11)).foregroundStyle(Palette.Light.fg2)
-                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                if isDefault { Text("既定").font(.mono(9)).padding(.horizontal, 4).padding(.vertical, 1).overlay(Rectangle().stroke(lineWidth: 1)) }
-                if !on { Text("無効").font(.mono(9)).foregroundStyle(Palette.Light.fg3) }
-                Spacer(minLength: 8)
-                if path != nil && on && !isDefault {
-                    Button("既定にする") { agent = backend.rawValue + "|" + (cockpit.models(backend).first?.id ?? "") }
-                        .buttonStyle(.plain).font(.mono(10)).underline()
-                }
-                Button(on ? "■ 有効" : "□ 有効") { toggle(backend) }.buttonStyle(.plain).font(.mono(10))
-                    .help(on ? "無効にすると、エージェントを選ぶ口に出なくなる" : "有効に戻す")
-                Button(path == nil ? "Install ↗" : "Docs ↗") { NSWorkspace.shared.open(backend.homepage) }
-                    .buttonStyle(.plain).font(.mono(10)).underline().help(backend.homepage.absoluteString)
-                Button(open ? "▾" : "▸") { if open { expanded.remove(backend) } else { expanded.insert(backend) } }
-                    .buttonStyle(.plain).font(.mono(11)).help("場所の上書き")
+    /// 使うもの（初めからある4つ＋足したもの）。無効にしたものもここに残して、戻せるようにする
+    private var inUse: [Backend] {
+        let added = Set(addedAgents.split(separator: ",").map(String.init))
+        return Backend.allCases.filter { Backend.builtIn.contains($0) || added.contains($0.rawValue) }
+    }
+
+    /// 左の段。使う → ほかのプロバイダ。押すと右に中身
+    private var providerList: some View {
+        let others = Backend.allCases.filter { !inUse.contains($0) }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("// 使う  \(inUse.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                Spacer()
+                Button("↻ 探し直す") { cockpit.findCLIs(force: true) }.buttonStyle(.plain).font(.mono(10)).underline()
+                    .help("ログインシェルを1回通して、もう一度探す").padding(.trailing, 10)
             }
-            if path != nil {
-                HStack(spacing: 10) {
-                    Text(logins[backend] ?? "…").font(.mono(10)).foregroundStyle(Palette.Light.fg3).lineLimit(1)
-                    Spacer(minLength: 8)
-                    if let run, run.running {
-                        InkLoader(status: "upload", pitch: 1.2)
-                        if let url = run.url {
-                            Button("ブラウザで続ける ↗") { NSWorkspace.shared.open(url) }
-                                .buttonStyle(.plain).font(.mono(10)).underline()
-                        } else {
-                            Text("ログインを起こしています").font(.bodyJP(11))
-                        }
-                        Button("やめる") { cockpit.cancelLogin(backend) }.buttonStyle(.plain).font(.mono(10)).underline()
-                    } else {
-                        if let note = run?.note, !note.isEmpty {
-                            Text(note).font(.bodyJP(11)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
-                            if note.hasPrefix("止まりました") {
-                                Button("Terminal で") { _ = cockpit.login(backend) }.buttonStyle(.plain).font(.mono(10)).underline()
-                            }
-                        }
-                        Button(backend.loginIsInteractive ? "設定する ↗" : "ログイン") { cockpit.startLogin(backend) }
-                            .buttonStyle(.plain).font(.mono(10)).underline()
-                            .help(([backend.command] + backend.loginArguments).joined(separator: " ")
-                                  + (backend.loginIsInteractive ? " を Terminal で開く（質問に答えながら進む）" : " を裏で起こす"))
-                    }
-                }
-                .padding(.leading, 80)
-            }
-            if open {
-                if let binding = pathBinding(backend) {
-                    TextField("\(backend.command) の場所（空なら PATH とログインシェルで探す）", text: binding)
-                        .textFieldStyle(.plain).font(.mono(12))
-                        .padding(.horizontal, 10).frame(height: 30)
-                        .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
-                        .padding(.leading, 80)
-                } else {
-                    Text("\(backend.command) は PATH とログインシェルで探す").font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3)
-                        .padding(.leading, 80)
-                }
+            .padding(.bottom, 4)
+            ForEach(inUse, id: \.self) { providerRow($0) }
+            if !others.isEmpty {
+                Text("// ほかのプロバイダ  \(others.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                    .padding(.top, 12).padding(.bottom, 4)
+                ForEach(others, id: \.self) { providerRow($0) }
             }
         }
-        .padding(.vertical, 8)
-        .opacity(on ? 1 : 0.55)
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+    }
+
+    private func providerRow(_ backend: Backend) -> some View {
+        let on = picked == backend
+        let installed = cockpit.found[backend] != nil
+        let off = !enabled.contains(backend) && inUse.contains(backend)
+        return HStack(spacing: 8) {
+            Rectangle().fill(installed ? Palette.pink : Palette.Light.line).frame(width: 6, height: 6)
+            Text(backend.title).font(.bodyJP(14)).lineLimit(1)
+            if agent.hasPrefix(backend.rawValue + "|") { Text("既定").font(.mono(9)) }
+            if off { Text("無効").font(.mono(9)).opacity(0.6) }
+            Spacer(minLength: 4)
+            Text(installed ? "入っている" : "未導入").font(.mono(9)).opacity(0.6)
+            Text("▸").font(.mono(11)).opacity(on ? 1 : 0.3)
+        }
+        .padding(.horizontal, 10).frame(height: 34)
+        .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
+        .background(on ? Palette.Light.fg : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture { picked = backend }
+    }
+
+    /// 右の段。起こし方・使うか・既定・Docs・ログイン・モデル・場所の上書き
+    private func providerDetail(_ backend: Backend) -> some View {
+        let path = cockpit.found[backend]?.executable.path
+        let using = inUse.contains(backend)
+        let on = enabled.contains(backend)
+        let run = cockpit.loginRuns[backend]
+        let start = [backend.command] + (backend.isACP ? Cockpit.acpArguments(backend, model: "", level: .normal) : [])
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(backend.title).font(.display(26))
+                Text(backend.isACP ? "ACP" : backend == .claude ? "stream-json" : "exec").font(.mono(9))
+                    .padding(.horizontal, 4).padding(.vertical, 1).overlay(Rectangle().stroke(lineWidth: 1))
+            }
+            Text(path ?? "見つからない · \(backend.command) を入れるか、下に場所を書く").font(.mono(11))
+                .foregroundStyle(path == nil ? Palette.Light.danger : Palette.Light.fg2)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            Text("起こし方  " + start.joined(separator: " ")).font(.mono(11)).foregroundStyle(Palette.Light.fg2)
+            HStack(spacing: 8) {
+                if Backend.builtIn.contains(backend) {
+                    Button(on ? "■ 使う" : "□ 使う") { toggle(backend) }
+                        .buttonStyle(SumiButtonStyle(primary: on, size: 11))
+                } else {
+                    Button(using ? "外す" : "＋ 選べるようにする") { toggleAdded(backend) }
+                        .buttonStyle(SumiButtonStyle(primary: !using, size: 11))
+                }
+                if path != nil && on && !agent.hasPrefix(backend.rawValue + "|") {
+                    Button("既定にする") { agent = backend.rawValue + "|" + (cockpit.models(backend).first?.id ?? "") }
+                        .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                }
+                Button(path == nil ? "Install ↗" : "Docs ↗") { NSWorkspace.shared.open(backend.homepage) }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11)).help(backend.homepage.absoluteString)
+            }
+            if path != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("// ログイン").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                    HStack(spacing: 10) {
+                        Text(logins[backend] ?? "…").font(.mono(11)).lineLimit(1)
+                        Spacer(minLength: 8)
+                        if let run, run.running {
+                            InkLoader(status: "upload", pitch: 1.2)
+                            if let url = run.url {
+                                Button("ブラウザで続ける ↗") { NSWorkspace.shared.open(url) }.buttonStyle(.plain).font(.mono(10)).underline()
+                            } else {
+                                Text("ログインを起こしています").font(.bodyJP(11))
+                            }
+                            Button("やめる") { cockpit.cancelLogin(backend) }.buttonStyle(.plain).font(.mono(10)).underline()
+                        } else {
+                            if let note = run?.note, !note.isEmpty {
+                                Text(note).font(.bodyJP(11)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
+                                if note.hasPrefix("止まりました") {
+                                    Button("Terminal で") { _ = cockpit.login(backend) }.buttonStyle(.plain).font(.mono(10)).underline()
+                                }
+                            }
+                            Button(backend.loginIsInteractive ? "Terminal で開く ↗" : "ログイン") { cockpit.startLogin(backend) }
+                                .buttonStyle(.plain).font(.mono(10)).underline()
+                                .help(([backend.command] + backend.loginArguments).joined(separator: " ")
+                                      + (backend.loginIsInteractive ? " を Terminal で開く（中で答えながら進む）" : " を裏で起こす"))
+                        }
+                    }
+                }
+            }
+            let models = cockpit.models(backend)
+            if !models.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("// モデル  \(models.count)").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2)
+                        .padding(.bottom, 4)
+                    ForEach(models.map(\.id), id: \.self) { m in
+                        let isDefault = agent == backend.rawValue + "|" + m
+                        HStack(spacing: 10) {
+                            Text(isDefault ? "■" : "□").font(.mono(11))
+                            Text(label(backend, m)).font(.mono(12)).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if on { agent = backend.rawValue + "|" + m } }
+                        .help(on ? "新しく起こす時の既定にする" : "使うようにしてから選べる")
+                    }
+                }
+            }
+            if let binding = pathBinding(backend) {
+                TextField("\(backend.command) の場所（空なら PATH とログインシェルで探す）", text: binding)
+                    .textFieldStyle(.plain).font(.mono(12))
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+            }
+        }
+        .opacity(using || !Backend.builtIn.contains(backend) ? 1 : 0.55)
+    }
+
+    private func toggleAdded(_ backend: Backend) {
+        var added = Set(addedAgents.split(separator: ",").map(String.init))
+        if added.contains(backend.rawValue) { added.remove(backend.rawValue) } else { added.insert(backend.rawValue) }
+        addedAgents = added.sorted().joined(separator: ",")
     }
 
     private func toggle(_ backend: Backend) {
@@ -284,7 +347,7 @@ struct SettingsScreen: View {
         case .claude: $claudePath
         case .codex: $codexPath
         case .grok: $grokPath
-        case .hermes: nil
+        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: nil
         }
     }
 

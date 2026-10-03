@@ -33,7 +33,7 @@ enum AgentCatalog {
         switch backend {
         case .claude, .grok: "high"
         case .codex: "medium"
-        case .hermes: ""
+        case .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi: ""
         }
     }
 
@@ -62,6 +62,8 @@ enum AgentCatalog {
             }
         case .hermes:
             return [Model(id: "", label: "既定", detail: "hermes model で選ぶ", efforts: [], pinned: false)]
+        case .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+            return [Model(id: "", label: "既定", detail: "\(backend.command) 自身の設定に従う", efforts: [], pinned: false)]
         }
     }
 

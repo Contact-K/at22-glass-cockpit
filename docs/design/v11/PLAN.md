@@ -69,3 +69,7 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
   ログインは Terminal を開かず CLI の公式ログインを裏で起こし、出力の URL を「ブラウザで続ける ↗」に出す（hermes setup は対話式なので Terminal）。
   Orca の Args / Env の上書きは入れていない（起こす経路を全部触るため。要る時に Launcher.Config に足す）
 - 01 TALK の見出しに「会話 ▾」: いまの worktree の会話（動いているもの＋過去5本）をその場で切り替える
+- 10 SETTINGS 02 を「Link 連携」として2段に: 左でプロバイダ（使う／ほかのプロバイダ）、右に起こし方・使う/足す・既定・Docs・ログイン・モデル・場所。
+  プロバイダに Gemini（`gemini --acp`）・Qwen Code（`qwen --acp`）・Goose（`goose acp`）・OpenCode（`opencode acp`）・
+  Copilot（`copilot --acp`）・Kimi（`kimi acp`）を足した（起こし方は agentclientprotocol/registry の agent.json の実物）。
+  初めからある4つ以外は「＋ 選べるようにする」（`addedAgents`）まで選ぶ口に出さない。モデルとログインは各 CLI 自身に任せる

@@ -1084,7 +1084,7 @@ final class Cockpit {
             return id
         case .codex:
             return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
-        case .grok, .hermes:
+        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
             return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
     }
@@ -1491,6 +1491,9 @@ final class Cockpit {
         case .hermes:
             guard let remote else { return nil }
             resume = "\(exe) --resume \(Self.shellQuote(remote))"
+        // ponytail: 続きの開き方は CLI ごとに違い、まだ確かめていない
+        case .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+            return nil
         }
         return "cd \(Self.shellQuote(cwd)) && \(resume)"
     }
@@ -1618,6 +1621,8 @@ final class Cockpit {
                 return Self.grokLogin(FileManager.default.contents(atPath: NSHomeDirectory() + "/.grok/auth.json"))
             case .hermes:
                 return "Hermes の設定に従う（hermes setup）"
+            case .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
+                return "\(backend.command) の中でログインする"
             }
         }.value
     }
@@ -1785,7 +1790,7 @@ final class Cockpit {
                           token: UUID())
             runs[session] = run
             return run
-        case .grok, .hermes:
+        case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi:
             let backend = backend(of: session)
             guard let record = runRecords.first(where: { $0.id == session }), let remote = record.threadID else {
                 launchError = "\(backend.title) のセッションが見つからない"
@@ -1809,8 +1814,10 @@ final class Cockpit {
             if !effort.isEmpty { arguments += ["--reasoning-effort", effort] }
             if level.needsConfirmation { arguments.append("--always-approve") }
             return arguments + ["stdio"]
-        case .hermes:
+        case .hermes, .goose, .opencode, .kimi:
             return ["acp"]
+        case .gemini, .qwen, .copilot:
+            return ["--acp"]
         case .claude, .codex:
             return []
         }
