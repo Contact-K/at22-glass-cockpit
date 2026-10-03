@@ -75,6 +75,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - （orca-v10-memory, 2026-10-04）**確かめたこと**: Hydra の通し（`hydra-check.swift` で PASS、約19秒）。**確かめていないこと**: SSH の先での起動、
   Codex の app-server（手元に無い・形は p0 で固定）、ACP 相手への約束の効き方、/model /effort の途中切替、眠らせた後の --resume、定期実行の発火、
   内蔵ブラウザで http の開発サーバー（Xcode から走らせる時は Info.plist が無く ATS に止められるかもしれない）、Issues の一覧（gh）、活動フィード
+- （orca-v10-memory）新しいプロジェクトの3通りは手元で確かめた（ALL PASS）。GitHub にも作る（gh repo create）と、Tailscale SSH での起動は未確認
 
 ## 残り・後で話す
 

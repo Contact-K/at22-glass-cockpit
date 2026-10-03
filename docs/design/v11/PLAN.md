@@ -98,3 +98,7 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
 - 2026-10-04: 保留にしていたエージェント周りを実装（リモート SSH・起こし方の上書き・Codex app-server・約束を全員に・眠らせて再開・定期実行・
   途中のモデル切替・Hydra の上限・内蔵ブラウザ・Issues から worktree・活動フィード・セットアップスクリプト）。
   Hydra は本物の claude（haiku）で通しを確かめた（`hydra-check.swift`）。報告が司令塔に届かない不具合を見つけて直した
+- 08 Remote に「経由」（SSH ／ Tailscale SSH）と ssh の追加オプション（踏み台 -J・ポートなど）。Tailscale は `tailscale status --json` から相手を選べる。
+  経由とオプションは作業場所の文字列（`ssh://相手/パス?via=tailscale&opt=…`）に乗せる。WireGuard などの VPN は繋がっていれば素の ssh で届く
+- 新規ワークスペースの 01 Repository の一番下に「＋ 新しいプロジェクト」: リモートをクローン／ローカルで新しく（init と最初のコミット、GitHub にも）／既存のフォルダ。
+  クローン・init・gh は手元のログインシェルで走らせる（認証も名前の設定も本人のもの）
