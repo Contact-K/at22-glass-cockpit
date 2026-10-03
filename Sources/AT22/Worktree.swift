@@ -84,9 +84,9 @@ enum Worktree {
     // MARK: git を叩く
 
     /// git を1回走らせ、stdout を返す。終了コードが 0 でなければ stderr を載せて投げる。
-    /// ponytail: stdout を読み切ってから stderr を読む。git の stderr は数行なので詰まらない
+    /// 日本語のファイル名を `"\343\203\241..."` に化かさない（`core.quotePath=false`）
     nonisolated static func git(_ arguments: [String], in directory: String) throws -> String {
-        try run("/usr/bin/git", ["-C", directory] + arguments, in: directory)
+        try run("/usr/bin/git", ["-C", directory, "-c", "core.quotePath=false"] + arguments, in: directory)
     }
 
     /// コマンドを1回走らせ、stdout を返す（git・gh 共通）。`path` はログインシェルの PATH——
@@ -201,6 +201,8 @@ extension Worktree {
         let old: Int?
         let new: Int?
         let text: String
+        /// ファイルの最後の行で、後ろに改行が無い（`\ No newline at end of file`）。patch に戻すのに要る
+        var noNewline = false
     }
 
     struct Hunk: Equatable, Sendable {
@@ -260,8 +262,12 @@ extension Worktree {
                 files[index].hunks[hunk].lines.append(DiffLine(kind: .context, old: old, new: new, text: String(line.dropFirst())))
                 old += 1
                 new += 1
+            case "\\":      // "\ No newline at end of file" は直前の行に付く
+                if !files[index].hunks[hunk].lines.isEmpty {
+                    files[index].hunks[hunk].lines[files[index].hunks[hunk].lines.count - 1].noNewline = true
+                }
             default:
-                break       // "\ No newline at end of file" など
+                break
             }
         }
         return files
@@ -308,6 +314,7 @@ extension Worktree {
         var out = "diff --git a/\(path) b/\(path)\n--- a/\(path)\n+++ b/\(path)\n\(hunk.header)\n"
         for line in hunk.lines {
             out += (line.kind == .add ? "+" : line.kind == .remove ? "-" : " ") + line.text + "\n"
+            if line.noNewline { out += "\\ No newline at end of file\n" }
         }
         return out
     }

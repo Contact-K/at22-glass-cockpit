@@ -278,6 +278,8 @@ struct P0SelfCheck {
                && lines[2].new == 11 && lines[3].new == 12 && lines[4].old == 12 && lines[4].new == 13,
                "行番号がずれた: \(lines.map { ($0.old, $0.new) })")
         assert(files[0].added == 2 && files[0].removed == 1 && files[1].isNew && files[1].added == 1)
+        assert(files[1].hunks[0].lines[0].noNewline && Worktree.patch(path: "new.md", hunk: files[1].hunks[0])
+               .hasSuffix("+hello\n\\ No newline at end of file\n"), "改行なしの印が patch に戻らない")
 
         let message = Cockpit.reviewMessage([
             Cockpit.ReviewComment(file: "src/a.swift", line: 12, code: "let z = 4", text: "z は要らない"),
@@ -318,6 +320,19 @@ struct P0SelfCheck {
         _ = try! Worktree.push(made.path, branch: made.branch)
         assert((try? Worktree.git(["branch", "--list", made.branch], in: remote))?.contains("fix") == true,
                "push した枝がリモートに無い")
+
+        // 日本語のファイル名と、末尾に改行の無い最終行も1ハンクずつステージできる
+        try! "x\ny".write(toFile: made.path + "/メモ.txt", atomically: true, encoding: .utf8)
+        _ = try! Worktree.git(["add", "."], in: made.path)
+        _ = try! Worktree.git(id + ["commit", "-qm", "memo"], in: made.path)
+        try! "x\nY".write(toFile: made.path + "/メモ.txt", atomically: true, encoding: .utf8)
+        try! "n\n".write(toFile: made.path + "/新規.txt", atomically: true, encoding: .utf8)
+        assert(try! Worktree.review(made.path, base: "HEAD").contains { $0.path == "新規.txt" && $0.added == 1 },
+               "追跡外の日本語名が化けた")
+        let memo = try! Worktree.stagingState(made.path).unstaged.first
+        assert(memo?.path == "メモ.txt" && memo?.hunks.first?.lines.last?.noNewline == true, "\(String(describing: memo))")
+        try! Worktree.stage(made.path, file: memo!.path, hunk: memo!.hunks[0], on: true)
+        assert(try! Worktree.git(["show", ":メモ.txt"], in: made.path) == "x\nY", "改行の無い最終行を索引に入れられない")
     }
 
     /// 未読（見ていない間に起きたこと）と、Terminal で続きを開くコマンドの引用
