@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - 見え方を1枚に焼く
 
-/// 画面を開かずに PNG へ出す。`AT22 --shot <path> [幅 高さ] [--mode work|structure|memory]`。
+/// 画面を開かずに PNG へ出す。`AT22 --shot <path> [幅 高さ] [--mode talk|files|spar|review|git|settings] [--tower]`。
 ///
 /// **これは検査であって機能ではない。** 組んだ結果を見ないと分からない壊れ方——
 /// 区画の重なり、字の溢れ、色の取り違え——を、窓を開く前に1枚で確かめる。
@@ -15,13 +15,15 @@ import AppKit
 enum Snapshot {
 
     @MainActor
-    static func write(to path: String, size: CGSize, mode: CockpitMode = .work,
-                      transcript: String? = nil, gate: Bool = false, approval: Bool = false) {
+    static func write(to path: String, size: CGSize, tab: V11Tab = .talk, tower: Bool = false,
+                      transcript: String? = nil, gate: Bool = false, approval: Bool = false,
+                      workspaces: Bool = false) {
         let cockpit = Cockpit()
         // 空のまま焼くとセッションの選び口しか写らない。実 transcript を1本流し込むと、
         // ACTIONS の行・会話・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
+        if workspaces { stockWorkspaces(cockpit) }
         // 道具の承認の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
         if approval {
             cockpit.loadApprovalsForProbe([Approval(
@@ -32,12 +34,12 @@ enum Snapshot {
         }
 
         let renderer = ImageRenderer(content:
-            CockpitView(cockpit: cockpit, shot: Date(), shotMode: mode)
+            CockpitView(cockpit: cockpit, shot: Date(), shotTab: tab, shotTower: tower)
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, .light))
         // Retina で焼く。1px の罫は等倍だと潰れて「あるのか無いのか」が読めない
         renderer.scale = 2
-        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) \(mode.rawValue)")
+        emit(renderer, to: path, label: "\(Int(size.width))×\(Int(size.height)) \(tower ? "tower" : tab.rawValue)")
     }
 
     @MainActor
@@ -56,6 +58,62 @@ enum Snapshot {
             FileHandle.standardError.write(Data("AT22: 書けなかった — \(error)\n".utf8))
             exit(1)
         }
+    }
+
+    /// 管制塔の見本。3つのプロジェクトに、分岐・競走・作成中・失敗・あなた待ちを1つずつ置く
+    /// （v11 モックの `V11_SEED` と同じ並び。実機の git と ~/.claude には触らない）
+    @MainActor
+    private static func stockWorkspaces(_ cockpit: Cockpit) {
+        let root = "/Users/me/code"
+        func entry(_ repo: String, _ name: String?, branch: String) -> Worktree.Entry {
+            Worktree.Entry(path: name.map { "\(root)/\(repo)/.claude/worktrees/\($0)" } ?? "\(root)/\(repo)",
+                           head: "a1b2c3d4", branch: branch, isMain: name == nil)
+        }
+        let layout: [(repo: String, items: [(name: String?, branch: String, base: String?, race: String?)])] = [
+            ("AT22", [(nil, "dev", nil, nil), ("legend-fix", "at22/legend-fix", "dev", nil),
+                      ("legend-tooltip", "at22/legend-tooltip", "at22/legend-fix", nil),
+                      ("legend-check", "at22/legend-check", "at22/legend-fix", nil),
+                      ("ctx-meter-claude", "at22/ctx-meter-claude", "dev", "競走 dev ctx"),
+                      ("ctx-meter-grok", "at22/ctx-meter-grok", "dev", "競走 dev ctx"),
+                      ("gate-card", "at22/gate-card", "dev", nil), ("review-tab", "at22/review-tab", "dev", nil),
+                      ("old-spike", "at22/old-spike", "dev", nil)]),
+            ("ink-sim", [(nil, "main", nil, nil), ("metal-port", "ink/metal-port", "main", nil)]),
+            ("sumi-site", [(nil, "main", nil, nil), ("hero-depth", "site/hero-depth", "main", nil),
+                           ("lp-v5", "site/lp-v5", "main", nil)]),
+        ]
+        var lists: [String: [Worktree.Entry]] = [:]
+        var meta: [String: Cockpit.WorkspaceMeta] = [:]
+        for (repo, items) in layout {
+            let entries = items.map { entry(repo, $0.name, branch: $0.branch) }
+            lists["\(root)/\(repo)"] = entries
+            for (e, item) in zip(entries, items) where item.base != nil {
+                meta[e.path] = .init(baseRef: item.base!, baseSHA: "a1b2c3d4", parent: item.race, createdAt: Date())
+            }
+        }
+        let fonts = "\(root)/AT22/.claude/worktrees/fonts-bundle"
+        let drawer = "\(root)/AT22/.claude/worktrees/term-drawer"
+        cockpit.loadWorkspacesForProbe(
+            projects: layout.map { "\(root)/\($0.repo)" }, worktrees: lists,
+            pending: [fonts: .init(repo: "\(root)/AT22", name: "fonts-bundle", error: "枝 at22/fonts-bundle が既にあります"),
+                      drawer: .init(repo: "\(root)/AT22", name: "term-drawer", error: nil)],
+            failed: ["s-hero"], backends: ["s-grok": .grok, "s-metal2": .grok], meta: meta)
+        // 各ワークスペースに1体ずつ（状態は稼働中 busy・あなた待ち waiting・それ以外は完了/待機）
+        let agents: [(id: String, ws: String, busy: Bool, waiting: String?, title: String)] = [
+            ("s-c0", "AT22", false, "permission prompt", "W6 を起こすか訊いています"),
+            ("s-fix", "AT22/.claude/worktrees/legend-fix", true, nil, "凡例の作り直し"),
+            ("s-tip", "AT22/.claude/worktrees/legend-tooltip", true, nil, "凡例の行にホバーで件数"),
+            ("s-claude", "AT22/.claude/worktrees/ctx-meter-claude", true, nil, "CTX 計器を 20 目盛りに"),
+            ("s-grok", "AT22/.claude/worktrees/ctx-meter-grok", true, nil, "CTX 計器を 20 目盛りに"),
+            ("s-gate", "AT22/.claude/worktrees/gate-card", false, "permission prompt", "承認カードを読める形に"),
+            ("s-review", "AT22/.claude/worktrees/review-tab", true, nil, "REVIEW タブを作る"),
+            ("s-metal", "ink-sim/.claude/worktrees/metal-port", true, nil, "格子を Metal へ"),
+            ("s-metal2", "ink-sim/.claude/worktrees/metal-port", false, "permission prompt", "格子を Metal へ"),
+            ("s-hero", "sumi-site/.claude/worktrees/hero-depth", false, nil, "ヒーローの深さを 3 段に"),
+        ]
+        cockpit.liveSessions = agents.map {
+            LiveSession(id: $0.id, name: $0.title, cwd: "\(root)/\($0.ws)", busy: $0.busy, waiting: $0.waiting)
+        }
+        for agent in agents { cockpit.setTitleForProbe(agent.id, agent.title) }
     }
 
     /// 門を1つ立てた状態にする。**門は実際に止まっている時にしか出ない**ので、

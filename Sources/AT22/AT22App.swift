@@ -12,15 +12,17 @@ struct AT22App: App {
 
         // 見え方を画像に焼いて確かめる口。**画面を開かずに** PNG を1枚吐いて終わる。
         //
-        //     swift run AT22 --shot /tmp/cockpit.png [幅 高さ] [--mode work|structure|memory]
+        //     swift run AT22 --shot /tmp/cockpit.png [幅 高さ] [--mode talk|files|spar|review|git|settings] [--tower]
         //                    [--transcript <path.jsonl>] [--gate] [--approval]
         //
         // 動き（墨流し・ドット・InkLoader）は時刻を固定した1コマしか写らない
         if let path = Self.shotPath() {
-            Snapshot.write(to: path, size: Self.shotSize(), mode: Self.shotMode(),
+            Snapshot.write(to: path, size: Self.shotSize(), tab: Self.shotTab(),
+                           tower: CommandLine.arguments.contains("--tower"),
                            transcript: Self.shotTranscript(),
                            gate: CommandLine.arguments.contains("--gate"),
-                           approval: CommandLine.arguments.contains("--approval"))
+                           approval: CommandLine.arguments.contains("--approval"),
+                           workspaces: CommandLine.arguments.contains("--workspaces"))
             exit(0)
         }
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。
@@ -39,12 +41,11 @@ struct AT22App: App {
         return args[i + 1]
     }
 
-    /// `--mode` でどのタブを焼くか（既定は 01 WORK）
-    private static func shotMode() -> CockpitMode {
+    /// `--mode` でどのタブを焼くか（既定は 01 TALK。v10 の work / structure / memory も受ける）
+    private static func shotTab() -> V11Tab {
         let args = CommandLine.arguments
-        guard let i = args.firstIndex(of: "--mode"), i + 1 < args.count,
-              let mode = CockpitMode(rawValue: args[i + 1]) else { return .work }
-        return mode
+        guard let i = args.firstIndex(of: "--mode"), i + 1 < args.count else { return .talk }
+        return V11Tab(rawValue: args[i + 1]) ?? CockpitMode(rawValue: args[i + 1]).map(V11Tab.init) ?? .talk
     }
 
     /// `--transcript <path>` を足すと、その1本を流し込んだ状態で焼く

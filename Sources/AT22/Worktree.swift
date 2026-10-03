@@ -283,6 +283,33 @@ extension Worktree {
         return try git(["commit", "-m", message], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// 差分の量。管制塔のタイルの `+42 −7 · 3 files`
+    struct Stat: Equatable, Sendable {
+        var files = 0
+        var added = 0
+        var removed = 0
+    }
+
+    /// 基点からの差分の量（追跡外の新規ファイルも数える）。読めなければ nil
+    nonisolated static func shortStat(_ path: String, base: String) -> Stat? {
+        guard let out = try? git(["diff", "--shortstat", base], in: path) else { return nil }
+        let untracked = ((try? git(["ls-files", "--others", "--exclude-standard"], in: path)) ?? "")
+            .split(separator: "\n").count
+        return parseShortStat(out, untracked: untracked)
+    }
+
+    /// ` 3 files changed, 42 insertions(+), 7 deletions(-)` を読む（片方が無い行もある）
+    nonisolated static func parseShortStat(_ text: String, untracked: Int = 0) -> Stat {
+        var stat = Stat(files: untracked)
+        for part in text.split(separator: ",") {
+            let n = Int(part.split(separator: " ").first ?? "") ?? 0
+            if part.contains("file") { stat.files += n }
+            else if part.contains("insertion") { stat.added = n }
+            else if part.contains("deletion") { stat.removed = n }
+        }
+        return stat
+    }
+
     nonisolated static func push(_ path: String, branch: String) throws -> String {
         try git(["push", "-u", "origin", branch], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
     }

@@ -4,29 +4,32 @@ import AppKit
 
 // MARK: - 画面の根
 
-/// Sumi v10 の画面。青帯2本・白い五角形・右の青い面（墨流し）・左下の鶴。
+/// Sumi v11 の画面。**2つの姿**を行き来する。
 ///
 /// ```
-/// ┌ 青帯 56 ───────────────────────────────────────────────────────┐
-/// │ 白い五角形（右端が W-394 で尖る）     │ 青＋墨流し               │
-/// │  鶴   01 TALK / 02 STRUCTURE / 03 SPARRING │ 04 ACTIONS / 05 PLAN │
-/// └ 青帯 44: 05 // PLAN のティック ───────────────────────────────┘
+/// 管制塔（p=0）: 青が全面。左に白い三角「01 TALK ▸」、右列は門の窓と同じ指示
+/// 会話（p=1）  : 白い面が「<」の形に開く（XC=W-394・XT=W-540）。右列はタブごとの2枠
 /// ```
-/// 重なりの順（下から）: 画面 → メニュー → タスク・FILE などのモーダル → 決定のドット → DotWipe
+/// 境界は XC=(W-394)p・XT=146+(W-540-146)p で補間し、白い面は 0.5s・24fps で横に滑る。
+/// 上帯 56（AT22_・05 PLAN のティック・日付・＋）、下帯 44（端末の帯・門・一個前→現在地）。
+/// 重なりの順（下から）: 白い面 → 青い面 → 右列 → 切り欠き・鶴・帯 → メニュー → 板 → 決定のドット → DotWipe
 struct CockpitView: View {
     let cockpit: Cockpit
     /// `--shot` が焼く時刻。入っている間は TimelineView・ScrollView・TextField を作らない
     var shot: Date? = nil
     /// `--shot --mode` で焼くタブ。nil なら保存されている値
-    var shotMode: CockpitMode? = nil
+    var shotTab: V11Tab? = nil
+    /// `--shot --tower` で管制塔を焼く
+    var shotTower = false
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
-    @AppStorage("cockpitMode") private var storedMode = CockpitMode.work
+    @AppStorage("v11Tab") private var storedTab = V11Tab.talk
     @AppStorage(Cockpit.launcherEnabledKey) private var launcherEnabled = false
     @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
     @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
     @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
     @AppStorage("showThinking") private var showThinking = false
+    @AppStorage("towerFold") private var towerFold = true
 
     /// 手前に開いているもの。Esc はここから畳む
     @State private var overlay: Overlay?
@@ -36,6 +39,16 @@ struct CockpitView: View {
     /// 部品の矩形（ドットの出発点と行き先、墨を落とす高さ）。**観測しない箱**に入れる——
     /// @State にすると、スクロールのたびに根ごと組み直す
     @State private var book = RectBook()
+
+    // 2つの姿。起動は管制塔から
+    @State private var tower = true
+    @State private var towerP: Double = 0
+    @State private var settled = true
+    /// 右列の中身。白い面が滑り始めて 1/3 の所で差し替える（枠は動かさない）
+    @State private var colTower = true
+    @State private var towerFocus = 0
+    @State private var towerHover: String?
+    @State private var location = Location(prev: nil, cur: "00 TOWER")
 
     // 壁打ち
     @State private var editing: String?
@@ -60,9 +73,19 @@ struct CockpitView: View {
         case newSession
     }
 
-    private var mode: CockpitMode { shotMode ?? storedMode }
+    struct Location: Equatable {
+        var prev: String?
+        var cur: String
+    }
 
-    var body: some View {
+    private var tab: V11Tab { shotTab ?? storedTab }
+    private var mode: CockpitMode { tab.mode }
+    private var isTower: Bool { shot != nil ? shotTower : tower }
+    private var p: CGFloat { CGFloat(shot != nil ? (shotTower ? 0 : 1) : towerP) }
+
+    var body: some View { reactive }
+
+    private var core: some View {
         GeometryReader { geo in
             Ticker(fps: 1) { now in
                 screen(size: geo.size, now: now)
@@ -75,7 +98,7 @@ struct CockpitView: View {
             .onAppear { book.size = geo.size }
             .onChange(of: geo.size) { book.size = geo.size }
         }
-        .background(Palette.Light.bg)
+        .background(Palette.blue)
         // `onKeyPress` はフォーカスを持つ View にしか来ない。焦点の輪は意匠に合わないので消す。
         // 入力欄に焦点がある間は文字がそちらへ吸われるので、ここへは落ちてこない
         .focusable()
@@ -91,6 +114,11 @@ struct CockpitView: View {
         .onChange(of: cockpit.attentionCount, initial: true) { _, count in
             NSApp?.dockTile.badgeLabel = count == 0 ? nil : "\(count)"
         }
+    }
+
+    /// 根の反応（キー以外）。body の連鎖が長すぎると型検査が終わらないので2つに分けた
+    private var reactive: some View {
+        core
         .task { cockpit.onAttention = { _, title, body in Notifier.post(title: title, body: body) } }
         // 止まっている門が入れ替わったら、答えかけを捨てて新しい門の本文から始める
         .onChange(of: stop?.id, initial: true) {
@@ -98,11 +126,12 @@ struct CockpitView: View {
             // 次の門が出た直後の Enter / 1 は受けない。続けて押すと、見ていない門を許可してしまう
             gateArmedAt = Date()
         }
+        .onChange(of: currentLocation) { old, new in location = Location(prev: old, cur: new) }
         .onChange(of: lastReplyID) { old, id in
             // セッションを切り替えた・履歴を読んだだけの時は飛ばさない（返答が着いた時だけ）
             defer { replySession = cockpit.selectedSession }
             guard old != nil, id != nil, replySession == cockpit.selectedSession,
-                  mode == .work, shot == nil else { return }
+                  tab == .talk, !isTower, shot == nil else { return }
             // 返答が着いた。鶴から最後の枠へドットを渡す（v10 の `ask` の後半）
             after(0.06) { fly(from: book.rects["crane"], to: book.rects["c0last"]) }
         }
@@ -132,7 +161,7 @@ struct CockpitView: View {
             guard shot == nil else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2.6))
-                if windowVisible, menu == nil { dripInk() }
+                if windowVisible, menu == nil, !isTower, settled { dripInk() }
             }
         }
     }
@@ -142,7 +171,7 @@ struct CockpitView: View {
     @ViewBuilder
     private func screen(size: CGSize, now: Date) -> some View {
         let w = size.width, h = size.height
-        let snap = cockpit.snapshot(now: now, mode: .work)
+        let snap = cockpit.snapshot(now: now, mode: mode)
         let gates = cockpit.gates
         let actions = Cockpit.actionRows(chips: snap.chips, gates: gates,
                                          cells: snap.cards.flatMap(\.files), now: now)
@@ -151,69 +180,92 @@ struct CockpitView: View {
         let trail = currentTrail()
         let crane = craneStatus(busy: busy, trail: trail)
         let contentW = max(380, w - 780)
+        let p = self.p
+        let towerShown = isTower || !settled
+        let colTower = shot != nil ? shotTower : self.colTower
+        let projects = towerShown || colTower ? TowerData.projects(cockpit) : []
+        let paused = !windowVisible || menu?.settled == true || shot != nil
 
         ZStack(alignment: .topLeading) {
-            // 画面の層。メニューが面を覆いきった間・窓が隠れている間は、ここの時計を全部止める
             ZStack(alignment: .topLeading) {
-                Palette.Light.bg
-                Chassis().fill(Palette.blue, style: FillStyle(eoFill: true))
-                // 右の面。尖りの右側だけを墨流しにする
-                Suminagashi(tank: Ink.tank, paused: !windowVisible || menu?.settled == true || shot != nil)
-                    .frame(width: 540, height: max(1, h - 100))
-                    .clipShape(InkClip())
-                    .offset(x: w - 540, y: 56)
-                Chassis.edge(w: w, h: h).stroke(Palette.white, lineWidth: 3)
-                Chassis.apex(w: w, h: h).stroke(Palette.blue, lineWidth: 3)
-
-                TopBand(cockpit: cockpit, mode: mode, now: now, onGate: { go(.work) },
-                        onNew: { overlay = .newSession })
-                    .frame(width: w, height: 56)
-
-                Group {
-                    switch mode {
-                    case .work:
-                        TalkScreen(cockpit: cockpit, headline: Cockpit.headline(rows: actions.rows),
-                                   subtitle: subtitle(tasks), showThinking: showThinking,
-                                   verdicts: verdicts, gate: $gate, gateFailed: gate.failed != nil && gate.failed == stop?.id,
-                                   stop: Stop.current(cockpit, chips: snap.chips),
-                                   pendingGates: cockpit.stoppedCount, trail: trail, ctxAlarm: ctxAlarm,
-                                   height: h - 72, width: contentW, modalOpen: overlay != nil,
-                                   onChoose: { choose($0) },
-                                   onRewrite: { issueRewrite() },
-                                   onNew: { overlay = .newSession })
-                            .offset(x: 220, y: 72)
-                    case .structure:
-                        StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW, height: h - 84 - 60,
-                                        onOpen: { overlay = .file($0) })
-                            .offset(x: 220, y: 84)
-                    case .memory:
-                        SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
-                                       width: contentW, height: h - 84 - 60)
-                            .offset(x: 220, y: 84)
+                // 白い面。管制塔へ戻る時は左へ退く
+                ZStack(alignment: .topLeading) {
+                    Palette.Light.bg
+                    if !isTower || !settled {
+                        tabContent(snap: snap, actions: actions, tasks: tasks, trail: trail, w: w, h: h, contentW: contentW)
                     }
                 }
+                .frame(width: w, height: h, alignment: .topLeading)
+                .offset(x: (p - 1) * max(0, w - 540))
 
-                CraneButton(mode: mode, status: crane, onTap: { openMenu() })
+                // 青い面。白い面の形にくり抜く。管制塔はここに載る
+                ZStack(alignment: .topLeading) {
+                    Palette.blue
+                    if towerShown {
+                        Suminagashi(tank: Ink.tower, paused: paused || !isTower)
+                            .frame(width: w, height: max(1, h - 100))
+                            .offset(y: 56)
+                        TowerScreen(projects: projects, width: w, height: h,
+                                    focus: towerFocusID(projects), hover: $towerHover,
+                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
+                                    onNew: { overlay = .newSession })
+                    } else {
+                        Suminagashi(tank: Ink.tank, paused: paused)
+                            .frame(width: 540, height: max(1, h - 100))
+                            .clipShape(InkClip())
+                            .offset(x: w - 540, y: 56)
+                    }
+                }
+                .frame(width: w, height: h, alignment: .topLeading)
+                .clipShape(BlueSheet(p: p), style: FillStyle(eoFill: true))
+                .contentShape(BlueSheet(p: p), eoFill: true)
+
+                BlueSheet.edge(p: p, size: size).stroke(p < 0.5 ? Palette.white : Palette.blue, lineWidth: 3)
+                    .allowsHitTesting(false)
+
+                // 右列。枠は動かさず中身だけ差し替える
+                Group {
+                    if colTower {
+                        TowerSide(stops: Stop.all(cockpit, chips: snap.chips), projects: projects, height: h,
+                                  hover: $towerHover,
+                                  onAnswer: { stop, verdict in
+                                      answer(stop, verdict, revised: "", from: nil,
+                                             word: verdict == .deny ? "REJECTED" : "ALLOWED")
+                                  },
+                                  onEnter: { path, stopID in enter(path: path, stopID: stopID, projects: projects) })
+                    } else if tab == .talk || tab == .files {
+                        RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
+                                    snapshot: snap, tasks: tasks, height: h,
+                                    onOpen: { row in
+                                        if let path = row.path { overlay = .file(path) }
+                                        else if !row.waiting { overlay = .agent(row.id) }
+                                        else { go(.talk) }
+                                    })
+                    }
+                }
+                .frame(width: 352)
+                .offset(x: w - 376, y: 76)
+
+                if settled || shot != nil { notch(w: w, h: h) }
+
+                CraneButton(tower: isTower, label: (isTower ? "00 TOWER" : tab.no + " " + tab.en) + " · M",
+                            status: crane, onTap: { menu == nil ? openMenu() : hideMenu() })
                     .frame(width: 150, alignment: .leading)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                     .padding(.leading, 40)
-                    .padding(.bottom, 64)
+                    .padding(.bottom, 46)
 
-                RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
-                            snapshot: snap, tasks: tasks, height: h,
-                            onOpen: { row in
-                                if let path = row.path { overlay = .file(path) }
-                                else if !row.waiting { overlay = .agent(row.id) }
-                                else { go(.work) }
-                            })
-                    .frame(width: 352)
-                    .offset(x: w - 376, y: 76)
+                HeaderBand(tasks: tasks, now: now, width: w,
+                           onTasks: { overlay = overlay == .tasks ? nil : .tasks },
+                           onNew: { overlay = .newSession })
+                    .frame(width: w, height: 56)
 
-                BottomBand(tasks: tasks, actions: actions.rows, busy: busy, width: w,
-                           onTasks: { overlay = overlay == .tasks ? nil : .tasks })
+                FooterBand(width: w, termLine: "\(wsName) % ", busy: busy, stop: stop,
+                           stopCount: cockpit.stoppedCount,
+                           location: shot != nil ? Location(prev: nil, cur: currentLocation) : location,
+                           onTerm: {}, onGate: { if let id = stop.flatMap(stopWorkspace) { enter(path: id, stopID: stop?.id, projects: projects) } else { setTower(false) } })
                     .frame(width: w, height: 44)
                     .offset(y: h - 44)
-
             }
             .environment(\.motionPaused, !windowVisible || menu?.settled == true)
 
@@ -231,7 +283,7 @@ struct CockpitView: View {
             if let overlay {
                 Modals(cockpit: cockpit, overlay: overlay, snapshot: snap,
                        onClose: { self.overlay = nil },
-                       onLaunched: { self.overlay = nil; storedMode = .work },
+                       onLaunched: { self.overlay = nil; storedTab = .talk; setTower(false) },
                        onOpenSettings: { openSettings() })
                     .frame(width: w, height: h)
                     .zIndex(40)
@@ -244,6 +296,85 @@ struct CockpitView: View {
         .clipped()
     }
 
+    /// 白い面の中身。タブごとに1枚
+    @ViewBuilder
+    private func tabContent(snap: CockpitSnapshot, actions: (rows: [ActionRow], doneCount: Int),
+                            tasks: [RoadmapTask], trail: [(path: String, kind: TouchKind)],
+                            w: CGFloat, h: CGFloat, contentW: CGFloat) -> some View {
+        switch tab {
+        case .talk:
+            TalkScreen(cockpit: cockpit, headline: Cockpit.headline(rows: actions.rows),
+                       subtitle: subtitle(tasks), showThinking: showThinking,
+                       verdicts: verdicts, gate: $gate, gateFailed: gate.failed != nil && gate.failed == stop?.id,
+                       stop: stop,
+                       pendingGates: cockpit.stoppedCount, trail: trail, ctxAlarm: ctxAlarm,
+                       height: h - 72, width: contentW, modalOpen: overlay != nil,
+                       onChoose: { choose($0) },
+                       onRewrite: { issueRewrite() },
+                       onNew: { overlay = .newSession })
+                .offset(x: 220, y: 72)
+        case .files:
+            StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW, height: h - 84 - 60,
+                            onOpen: { overlay = .file($0) })
+                .offset(x: 220, y: 84)
+        case .spar:
+            SparringScreen(cockpit: cockpit, editing: $editing, dirty: $memoryDirty,
+                           width: contentW, height: h - 84 - 60)
+                .offset(x: 220, y: 84)
+        case .review, .git, .settings:
+            VStack(alignment: .leading, spacing: 12) {
+                SectionMark(number: tab.no, title: tab.en, jp: tab.jp)
+                Text(tab.desc).font(.display(44))
+                Text("この面はまだ作っている途中です。").font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
+            }
+            .frame(width: contentW, alignment: .leading)
+            .offset(x: 220, y: 84)
+        }
+    }
+
+    /// 切り欠き。管制塔では左の白い三角（会話へ）、会話では右の青い三角（管制塔へ）
+    @ViewBuilder
+    private func notch(w: CGFloat, h: CGFloat) -> some View {
+        let apex = (56 + h - 44) / 2
+        if isTower {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("01").foregroundStyle(Palette.pink)
+                    Text("TALK")
+                    Text("▸").font(.mono(18))
+                    Text("会話").font(.brush(13)).tracking(0)
+                    if stop != nil { Blink() }
+                }
+                .font(.mono(10)).tracking(Palette.caps(10))
+                .foregroundStyle(Palette.blue)
+                .offset(x: 12, y: apex - 56 - 64)
+            }
+            .frame(width: 146, height: h - 100)
+            .contentShape(NotchShape(left: true))
+            .onTapGesture { setTower(false) }
+            .help("会話を開く (⌘0)")
+            .offset(y: 56)
+        } else {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                HStack(spacing: 6) {
+                    Text("◂")
+                    Text("00").foregroundStyle(Palette.pink)
+                    Text("TOWER")
+                }
+                .font(.mono(10)).tracking(Palette.caps(10))
+                .foregroundStyle(Palette.white)
+                .offset(x: 22, y: apex - 56 - 8)
+            }
+            .frame(width: 146, height: h - 100)
+            .contentShape(NotchShape(left: false))
+            .onTapGesture { setTower(true) }
+            .help("管制塔へ戻す (Esc · ⌘0)")
+            .offset(x: w - 540, y: 56)
+        }
+    }
+
     // MARK: 状態の読み出し
 
     private var stop: Stop? {
@@ -251,6 +382,30 @@ struct CockpitView: View {
     }
 
     private var ctxAlarm: Bool { cockpit.reading.stage == .warning }
+
+    /// いま開いているワークスペースの名前（下帯・端末の帯）
+    private var wsName: String {
+        guard let session = cockpit.selectedSession, let path = cockpit.workspacePath(of: session) else {
+            return cockpit.selectedSession.flatMap { cockpit.title(for: $0) }.map { String($0.prefix(18)) } ?? "—"
+        }
+        return (path as NSString).lastPathComponent
+    }
+
+    /// 下帯右の「一個前 → 現在地」の現在地
+    private var currentLocation: String { isTower ? "00 TOWER" : "\(wsName) · \(tab.no) \(tab.en)" }
+
+    /// 止まっている1件が属するワークスペース
+    private func stopWorkspace(_ stop: Stop) -> String? {
+        switch stop.source {
+        case let .approval(a): cockpit.workspacePath(of: a.session)
+        case let .gate(g): cockpit.workspacePath(of: g.by)
+        }
+    }
+
+    private func towerFocusID(_ projects: [TowerProject]) -> String? {
+        let order = TowerData.order(projects, fold: towerFold)
+        return order.indices.contains(towerFocus) ? order[towerFocus].id : nil
+    }
 
     /// 最後の返答。これが変わった時にだけ鶴からドットを飛ばす
     private var lastReplyID: Int? {
@@ -294,23 +449,79 @@ struct CockpitView: View {
     // MARK: 遷移
 
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
-    /// 壁打ちに未保存があると動かない（書きかけを捨てない）
-    private func go(_ to: CockpitMode, origin: CGPoint? = nil, fromMenu: Bool = false) {
-        guard wipe == nil, !(memoryDirty && to != mode) else {
+    /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ
+    private func go(_ to: V11Tab, origin: CGPoint? = nil, fromMenu: Bool = false) {
+        guard wipe == nil, !(memoryDirty && to != tab) else {
             if fromMenu { hideMenu() }
             return
         }
-        guard to != mode || fromMenu else { return }
-        let started = Wipe(from: mode, to: to,
+        if isTower {
+            storedTab = to
+            menu = nil
+            setTower(false)
+            return
+        }
+        guard to != tab || fromMenu else { return }
+        let started = Wipe(from: tab.en, to: to,
                            origin: origin ?? CGPoint(x: book.size.width / 2, y: book.size.height / 2),
                            started: Date())
         wipe = started
         after(Wipe.swapAt) {
-            storedMode = to
+            storedTab = to
             menu = nil
             overlay = nil
         }
         after(Wipe.total) { if wipe == started { wipe = nil } }
+    }
+
+    /// 管制塔 ⇄ 会話。白い面が 0.5s・24fps で滑る（会話へは ease-out、管制塔へは ease-in）。
+    /// 右列の中身は 8 コマ目（1/3 の所）で差し替える
+    private func setTower(_ value: Bool) {
+        guard value != tower, shot == nil else { return }
+        if value && memoryDirty { return }
+        tower = value
+        settled = false
+        let from = towerP, to: Double = value ? 0 : 1, started = Date()
+        after(8.0 / 24) { if tower == value { colTower = value } }
+        Task { @MainActor in
+            let frame = 1.0 / 24, duration = 0.5
+            while tower == value {
+                let k = min(1, floor(Date().timeIntervalSince(started) / frame) * frame / duration)
+                let e = value ? k * k * k : 1 - pow(1 - k, 3)
+                towerP = from + (to - from) * e
+                if k >= 1 { break }
+                try? await Task.sleep(for: .seconds(frame))
+            }
+            if tower == value { settled = true; colTower = value }
+        }
+    }
+
+    /// タイルを押した。先頭のエージェントの会話を開いて、滑って会話へ
+    private func enter(_ tile: WsTile) {
+        if let lead = tile.lead { Task { await cockpit.open(lead) } } else { cockpit.selectedSession = nil }
+        storedTab = .talk
+        setTower(false)
+    }
+
+    /// 門の窓・同じ指示の行から入る。承認ならそのセッションを開く
+    private func enter(path: String, stopID: String?, projects: [TowerProject]) {
+        if let stopID, let approval = cockpit.approvals.first(where: { $0.id == stopID }) {
+            cockpit.selectedSession = approval.session
+            storedTab = .talk
+            setTower(false)
+            return
+        }
+        guard let tile = projects.flatMap(\.tiles).first(where: { $0.id == path }) else { setTower(false); return }
+        enter(tile)
+    }
+
+    private func towerAct(_ action: TileAction, _ tile: WsTile) {
+        switch action {
+        case .branch: overlay = .newSession
+        case .terminal: if let lead = tile.lead { _ = cockpit.openInTerminal(lead.id) }
+        case .forget: cockpit.removeProject(tile.id)
+        case .pick, .delete: break
+        }
     }
 
     /// 決定のドットを1回飛ばす。どちらかの矩形がまだ測れていなければ飛ばさない
@@ -404,22 +615,26 @@ struct CockpitView: View {
 
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         if menu != nil { return menuKey(press) }
+        if press.modifiers == .command, press.characters == "0" {
+            setTower(!tower)
+            return .handled
+        }
         if press.key == .escape {
             // 手前から順に畳む。一度に全部消すと、戻るつもりで土台まで戻ってしまう
             if overlay != nil { overlay = nil; return .handled }
             if gate.rewriting { gate.rewriting = false; return .handled }
+            if !isTower { setTower(true); return .handled }
             return .ignored
         }
         guard overlay == nil, press.modifiers.isEmpty || press.modifiers == .shift else { return .ignored }
-        switch press.characters {
-        case "m": openMenu(); return .handled
-        case "a": go(.work); return .handled
-        case "b": go(.structure); return .handled
-        case "c": go(.memory); return .handled
-        default: break
+        if press.characters == "m" { openMenu(); return .handled }
+        if isTower { return towerKey(press) }
+        if let to = V11Tab.allCases.first(where: { $0.keys.contains(press.characters) }) {
+            go(to)
+            return .handled
         }
         // 門のカードが出ている間だけ ←→ ENTER 1–3 が効く
-        guard mode == .work, stop != nil, !gate.rewriting, wipe == nil,
+        guard tab == .talk, stop != nil, !gate.rewriting, wipe == nil,
               Date().timeIntervalSince(gateArmedAt) > 0.6 else { return .ignored }
         switch press.key {
         case .rightArrow: gate.choice = (gate.choice + 1) % 3; return .handled
@@ -429,6 +644,23 @@ struct CockpitView: View {
         }
         if let n = Int(press.characters), (1...3).contains(n) { choose(n - 1); return .handled }
         return .ignored
+    }
+
+    /// 管制塔: ←→ で1枚ずつ、↑↓ で4枚ずつ、ENTER で入る、N で新規
+    private func towerKey(_ press: KeyPress) -> KeyPress.Result {
+        let order = TowerData.order(TowerData.projects(cockpit), fold: towerFold)
+        let n = order.count
+        switch press.key {
+        case .rightArrow: towerFocus = min(max(0, n - 1), towerFocus + 1)
+        case .leftArrow: towerFocus = max(0, towerFocus - 1)
+        case .downArrow: towerFocus = min(max(0, n - 1), towerFocus + 4)
+        case .upArrow: towerFocus = max(0, towerFocus - 4)
+        case .return: if order.indices.contains(towerFocus) { enter(order[towerFocus]) }
+        default:
+            guard press.characters == "n" else { return .ignored }
+            overlay = .newSession
+        }
+        return .handled
     }
 
     private func findCLIs(force: Bool) {
@@ -540,27 +772,27 @@ struct CockpitView: View {
         }
         switch action {
         case let .tab(to):
-            go(to, origin: origin, fromMenu: true)
+            go(V11Tab(to), origin: origin, fromMenu: true)
         case let .structure(filter):
             structFilter = filter
-            go(.structure, origin: origin, fromMenu: true)
+            go(.files, origin: origin, fromMenu: true)
         case let .note(path):
             if !memoryDirty { editing = path }
-            go(.memory, origin: origin, fromMenu: true)
+            go(.spar, origin: origin, fromMenu: true)
         case .picker:
             cockpit.selectedSession = nil
-            go(.work, origin: origin, fromMenu: true)
+            go(.talk, origin: origin, fromMenu: true)
         case let .session(id):
             cockpit.selectedSession = id
-            go(.work, origin: origin, fromMenu: true)
+            go(.talk, origin: origin, fromMenu: true)
         case let .recent(session):
             cockpit.selectedSession = session.id
             Task { await cockpit.loadSession(session) }
-            go(.work, origin: origin, fromMenu: true)
+            go(.talk, origin: origin, fromMenu: true)
         case let .codex(record):
             cockpit.selectedSession = record.id
             cockpit.resumeRunRecord(record)
-            go(.work, origin: origin, fromMenu: true)
+            go(.talk, origin: origin, fromMenu: true)
         case .newSession:
             hideMenu()
             if launcherReady { overlay = .newSession } else { openSettings() }
@@ -624,7 +856,10 @@ extension View {
 /// 墨流しの水槽は1つだけ。窓を組み直しても溜まった墨を捨てない
 @MainActor
 enum Ink {
+    /// 会話の右の面（540×800）
     static let tank = InkTank()
+    /// 管制塔の全面（1440×800）。格子は横に 4/3 倍
+    static let tower = InkTank(width: 1440, height: 800, res: InkTank.defaultRes * 4 / 3)
 }
 
 /// いま人の答えを待っている1件。**門**（司令塔が自分で止まって待つ）と
@@ -648,12 +883,48 @@ struct Stop {
     @MainActor
     static func current(_ cockpit: Cockpit, chips: [AgentChip]) -> Stop? {
         if let a = cockpit.approvals.filter({ $0.session == cockpit.selectedSession }).min(by: { $0.at < $1.at }) {
-            return Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
-                        title: "Run \(a.tool)?", body: a.detail,
-                        meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
-                        since: a.at, canRevise: a.canRevise, seed: a.input)
+            return make(a, cockpit: cockpit)
         }
         guard let g = cockpit.gates.min(by: { $0.issued < $1.issued }) else { return nil }
+        return make(g, chips: chips)
+    }
+
+    /// 管制塔の右列に出す全部（どのセッションの承認も、どの門も）。待たせている順
+    @MainActor
+    static func all(_ cockpit: Cockpit, chips: [AgentChip]) -> [TowerStop] {
+        let stops = cockpit.approvals.map { make($0, cockpit: cockpit) } + cockpit.gates.map { make($0, chips: chips) }
+        return stops.sorted { $0.since < $1.since }.map { stop in
+            let session: String
+            switch stop.source {
+            case let .approval(a): session = a.session
+            case let .gate(g): session = g.by
+            }
+            let path = cockpit.workspacePath(of: session) ?? session
+            return TowerStop(stop: stop, workspace: path, name: (path as NSString).lastPathComponent)
+        }
+    }
+
+    /// 道具の入力の1行。Bash ならコマンド、ファイルを触る道具ならパス、門なら行き先
+    var inputLine: String {
+        switch source {
+        case .gate: return "→ " + target
+        case let .approval(a):
+            let json = (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:]
+            if let command = json["command"] as? String { return "$ " + command }
+            if let path = (json["file_path"] ?? json["path"] ?? json["notebook_path"]) as? String { return path }
+            return a.detail
+        }
+    }
+
+    @MainActor
+    private static func make(_ a: Approval, cockpit: Cockpit) -> Stop {
+        Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
+             title: "Run \(a.tool)?", body: a.detail,
+             meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
+             since: a.at, canRevise: a.canRevise, seed: a.input)
+    }
+
+    private static func make(_ g: Gate.Request, chips: [AgentChip]) -> Stop {
         let to = g.to.isEmpty ? g.call : g.to
         var meta = [g.risk.isEmpty ? nil : g.risk, g.by.isEmpty ? nil : String(g.by.prefix(8)), "→ " + to]
             .compactMap { $0 }.joined(separator: " · ")
@@ -721,53 +992,98 @@ enum StructFilter: Equatable {
     case hot
 }
 
+// MARK: - タブ
+
+/// v11 のタブ（STRUCTURE は FILES と統合）。`keys` は1文字で飛ぶ鍵
+enum V11Tab: String, CaseIterable {
+    case talk, files, spar, review, git, settings
+
+    var no: String { ["01", "02", "03", "07", "08", "10"][index] }
+    var en: String { ["TALK", "FILES", "SPARRING", "REVIEW", "GIT", "SETTINGS"][index] }
+    var jp: String { ["会話", "構造とファイル", "壁打ち", "差分", "記帳と送出", "設定"][index] }
+    var desc: String { ["会話と門", "木・関係・エディタ", "引き継ぎと記憶", "差分と指摘", "記帳・送出・依頼", "既定と操作"][index] }
+    var keys: [String] { [["a"], ["b", "e"], ["c"], ["d"], ["g"], [","]][index] }
+    /// 畳み込みの見方（構造は FILES、記憶DB は SPARRING）
+    var mode: CockpitMode { self == .files ? .structure : self == .spar ? .memory : .work }
+
+    init(_ mode: CockpitMode) {
+        self = mode == .structure ? .files : mode == .memory ? .spar : .talk
+    }
+
+    private var index: Int { Self.allCases.firstIndex(of: self)! }
+}
+
 // MARK: - 面の形
 
-/// 青い面。白い五角形（右端が W-394 で尖る）をくり抜いた残り
-private struct Chassis: Shape {
+/// 青い面＝全体から白い面をくり抜いた残り。白い面は p で管制塔の「>」（左の三角）から会話の「<」まで変わる。
+/// `polygon(0 56, XC 56, XT apex, XC h-44, 0 h-44)`、XC=(W-394)p・XT=146+(W-540-146)p
+struct BlueSheet: Shape {
+    var p: CGFloat
+
     nonisolated func path(in r: CGRect) -> Path {
-        let w = r.width, h = r.height, apexY = (56 + h - 44) / 2
-        var p = Path()
-        p.addRect(r)
+        var path = Path(r)
+        path.addPath(Self.white(p: p, size: r.size))
+        return path
+    }
+
+    nonisolated static func corners(p: CGFloat, size: CGSize) -> (xc: CGFloat, xt: CGFloat, apex: CGFloat) {
+        let xc = (size.width - 394) * p
+        let xt = 146 + (size.width - 540 - 146) * p
+        return (xc, xt, (56 + size.height - 44) / 2)
+    }
+
+    nonisolated static func white(p: CGFloat, size: CGSize) -> Path {
+        let c = corners(p: p, size: size)
         var hole = Path()
         hole.move(to: CGPoint(x: 0, y: 56))
-        hole.addLine(to: CGPoint(x: w - 540, y: 56))
-        hole.addLine(to: CGPoint(x: w - 394, y: apexY))
-        hole.addLine(to: CGPoint(x: w - 540, y: h - 44))
-        hole.addLine(to: CGPoint(x: 0, y: h - 44))
+        hole.addLine(to: CGPoint(x: c.xc, y: 56))
+        hole.addLine(to: CGPoint(x: c.xt, y: c.apex))
+        hole.addLine(to: CGPoint(x: c.xc, y: size.height - 44))
+        hole.addLine(to: CGPoint(x: 0, y: size.height - 44))
         hole.closeSubpath()
-        p.addPath(hole)
-        return p
+        return hole
     }
 
-    static func edge(w: CGFloat, h: CGFloat) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: 0, y: 56))
-        p.addLine(to: CGPoint(x: w - 540, y: 56))
-        p.addLine(to: CGPoint(x: w - 394, y: (56 + h - 44) / 2))
-        p.addLine(to: CGPoint(x: w - 540, y: h - 44))
-        p.addLine(to: CGPoint(x: 0, y: h - 44))
-        return p
+    /// 境界の折れ線。管制塔では白、会話では青で 3px
+    static func edge(p: CGFloat, size: CGSize) -> Path {
+        let c = corners(p: p, size: size)
+        var path = Path()
+        path.move(to: CGPoint(x: c.xc, y: 56))
+        path.addLine(to: CGPoint(x: c.xt, y: c.apex))
+        path.addLine(to: CGPoint(x: c.xc, y: size.height - 44))
+        return path
     }
+}
 
-    static func apex(w: CGFloat, h: CGFloat) -> Path {
+/// 切り欠きの当たり。管制塔は左の白い三角、会話は右の青い三角（どちらも 146 幅）
+private struct NotchShape: Shape {
+    let left: Bool
+
+    nonisolated func path(in r: CGRect) -> Path {
         var p = Path()
-        p.move(to: CGPoint(x: w - 540, y: 56))
-        p.addLine(to: CGPoint(x: w - 394, y: (56 + h - 44) / 2))
-        p.addLine(to: CGPoint(x: w - 540, y: h - 44))
+        if left {
+            p.move(to: CGPoint(x: 0, y: 0))
+            p.addLine(to: CGPoint(x: r.width, y: r.midY))
+            p.addLine(to: CGPoint(x: 0, y: r.maxY))
+        } else {
+            p.move(to: CGPoint(x: 0, y: r.midY))
+            p.addLine(to: CGPoint(x: r.width, y: 0))
+            p.addLine(to: CGPoint(x: r.width, y: r.maxY))
+        }
+        p.closeSubpath()
         return p
     }
 }
 
-/// 墨流しの切り抜き。尖りの左の三角だけを落とす（`polygon(0 0,540 0,540 h,0 h,146 h/2)`）
+/// 墨流しの切り抜き。尖りの左の三角だけを落とす（`polygon(146 0,540 0,540 h,146 h,0 h/2)`）
 private struct InkClip: Shape {
     nonisolated func path(in r: CGRect) -> Path {
         var p = Path()
-        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.move(to: CGPoint(x: r.minX + 146, y: r.minY))
         p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
         p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.minX + 146, y: r.midY))
+        p.addLine(to: CGPoint(x: r.minX + 146, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.midY))
         p.closeSubpath()
         return p
     }
@@ -775,86 +1091,110 @@ private struct InkClip: Shape {
 
 // MARK: - 上帯
 
-/// 青帯 56。`AT22_ GLASS COCKPIT ✳ ▮▮▮ SESSION/SPEND …… [GATE 門 Wake W6? 応答する↵] 日付 ＋`
-private struct TopBand: View {
-    let cockpit: Cockpit
-    let mode: CockpitMode
+/// 青帯 56。`AT22_ GLASS COCKPIT ✳ │ 05 // PLAN ▮▮▮…（ティック）│ 日付 ＋`
+private struct HeaderBand: View {
+    let tasks: [RoadmapTask]
     let now: Date
-    let onGate: () -> Void
+    let width: CGFloat
+    let onTasks: () -> Void
     let onNew: () -> Void
 
     /// 信号機の幅＋余白。ここより左に何か置くと窓のボタンに重なる（OS が同じ位置に描く）
     static let trafficLightInset: CGFloat = 78
 
     var body: some View {
-        let id = cockpit.selectedSession.map { String($0.prefix(8)).uppercased() } ?? "—"
-        HStack(spacing: 16) {
+        let ticks = max(120, min(840, width - Self.trafficLightInset - 24 - 300 - 118 - 120))
+        HStack(spacing: 12) {
             Text("AT22_").font(.mono(20))
             Text("GLASS COCKPIT").font(.mono(11)).tracking(11 * 0.24)
             RegMark(kind: .star, size: 12)
-            HStack(spacing: 10) {
-                Barcode(value: "AT22-" + id, width: 96, height: 20)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("SESSION " + id)
-                    Text("SPEND \(Snowman.short(Int(cockpit.spendTotal(session: cockpit.selectedSession)))) · \(mode.label)")
-                        .foregroundStyle(Palette.Blue.fg3)
-                }
-                .font(.mono(9)).tracking(Palette.caps(9))
-            }
+            PlanTicks(tasks: tasks, width: ticks, onTasks: onTasks)
             Spacer(minLength: 0)
-            if let stop = Stop.current(cockpit, chips: cockpit.snapshot(now: now, mode: .work).chips) {
-                gatePill(stop)
-            } else {
-                HStack(spacing: 10) {
-                    RegMark(kind: .target, size: 12, color: Palette.Blue.fg2)
-                    Text("GATE 00 · 止まっている指示なし")
-                }
-                .font(.mono(10)).tracking(Palette.caps(10))
-                .foregroundStyle(Palette.Blue.fg2)
-                .padding(.horizontal, 14)
-                .frame(height: 30)
-                .overlay(Rectangle().stroke(Palette.Blue.fg3, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
-            }
             VStack(alignment: .trailing, spacing: 3) {
                 Text(now.formatted(.iso8601.year().month().day()))
                 Text(now.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute()) + " "
                      + (TimeZone.current.abbreviation() ?? "")).foregroundStyle(Palette.Blue.fg3)
             }
             .font(.mono(9)).tracking(Palette.caps(9))
-            .padding(.leading, 8)
-            // 十字は新しいセッションを起こす口
-            Button(action: onNew) { RegMark(kind: .cross, size: 12).padding(6).contentShape(Rectangle()) }
-                .buttonStyle(.plain)
-                .help("新しいセッションを起こす")
+            Button(action: onNew) {
+                RegMark(kind: .cross, size: 14)
+                    .frame(width: 32, height: 32)
+                    .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 1))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+            .help("新規ワークスペース")
         }
         .foregroundStyle(Palette.white)
         .padding(.leading, Self.trafficLightInset)
         .padding(.trailing, 24)
     }
+}
 
-    private func gatePill(_ stop: Stop) -> some View {
-        Button(action: onGate) {
-            HStack(spacing: 12) {
-                Starburst(size: 20, points: 4, color: Palette.pink, fill: true, spin: true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("GATE 門 · \(cockpit.stoppedCount) 件止まっています").font(.mono(9)).tracking(9 * 0.16)
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(stop.title).font(.display(20)).lineLimit(1)
-                        Text("\(Int(max(0, now.timeIntervalSince(stop.since))))s").font(.mono(10)).tracking(0.8)
-                    }
+// MARK: - 下帯
+
+/// 青帯 44。左＝端末の帯（最終行・押すと引き出す ⌃`）、右＝門待ち（鶴が手を挙げる）＋「一個前 → 現在地」
+private struct FooterBand: View {
+    let width: CGFloat
+    let termLine: String
+    let busy: Bool
+    let stop: Stop?
+    let stopCount: Int
+    let location: CockpitView.Location
+    let onTerm: () -> Void
+    let onGate: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onTerm) {
+                HStack(spacing: 12) {
+                    HStack(spacing: 0) { Text("09").foregroundStyle(Palette.pink); Text(" // TERM") }
+                        .font(.mono(10)).tracking(Palette.caps(10))
+                    Text(termLine).font(.mono(12)).lineLimit(1).truncationMode(.tail).opacity(0.85)
+                    Spacer(minLength: 0)
+                    WaveLines(width: 60, height: 16, lines: 3, amp: 3, freq: 2, animate: busy)
+                    Text("▴ 引き出す · ⌃`").font(.mono(9)).tracking(Palette.caps(9))
                 }
-                Text("応答する ↵").font(.mono(10)).tracking(Palette.caps(10))
-                    .padding(.leading, 12)
-                    .overlay(alignment: .leading) { Rectangle().fill(Palette.Light.line).frame(width: 1) }
+                .padding(.horizontal, 12)
+                .frame(width: max(300, min(1016, width - 424)), height: 32)
+                .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 1))
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(Palette.blue)
-            .padding(.leading, 16)
-            .padding(.trailing, 34)
-            .frame(height: 40)
-            .background { Chevron(notch: 10, head: 18).fill(Palette.white) }
-            .contentShape(Chevron(notch: 10, head: 18))
+            .buttonStyle(PressStyle())
+            .help("端末を引き出す (⌃`)")
+            Spacer(minLength: 0)
+            if let stop {
+                Button(action: onGate) {
+                    HStack(spacing: 8) {
+                        Mascot(pitch: 5, lookRight: false, busy: "wait", color: Palette.white)
+                            .offset(y: -6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("GATE · \(stopCount)").foregroundStyle(Palette.pink)
+                            Text(stop.target).foregroundStyle(Palette.Blue.fg3).lineLimit(1)
+                        }
+                        .font(.mono(9)).tracking(1.2)
+                    }
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .help("門が待っています · " + stop.title)
+            }
+            HStack(spacing: 10) {
+                if let prev = location.prev {
+                    Text(prev).foregroundStyle(Palette.Blue.fg3)
+                    Text("→").foregroundStyle(Palette.Blue.fg3)
+                }
+                Text(location.cur)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 1))
+            }
+            .font(.mono(10)).tracking(0.8)
+            .lineLimit(1)
+            .fixedSize()
         }
-        .buttonStyle(PressStyle())
+        .foregroundStyle(Palette.white)
+        .padding(.horizontal, 24)
     }
 }
 
@@ -865,38 +1205,33 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-extension CockpitMode {
-    /// `01 WORK 作業`
-    var label: String {
-        switch self {
-        case .work: "01 WORK 作業"
-        case .structure: "02 STRUCTURE 構造"
-        case .memory: "03 SPARRING 壁打ち"
-        }
-    }
-}
-
 // MARK: - 鶴
 
-/// 左下の1羽。鶴 = メニューボタン = 読み込み表示。押すとメニュー（M）
+/// 左下の1羽。鶴 = メニューボタン = 読み込み表示。押すとメニュー（M）。管制塔では白く、言葉は畳む
 private struct CraneButton: View {
-    let mode: CockpitMode
+    let tower: Bool
+    let label: String
     let status: CraneStatus
     let onTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(status.sub).font(.bodyJP(13)).lineSpacing(3)
-                Text(status.state).font(.mono(10)).tracking(Palette.caps(10))
-                Text(mode.label + " · M").font(.mono(10)).tracking(1)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .overlay(Rectangle().stroke(Palette.Light.fg, lineWidth: 1))
+        let ink = tower ? Palette.white : Palette.Light.fg
+        VStack(alignment: .leading, spacing: 10) {
+            if !tower {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(status.sub).font(.bodyJP(13)).lineSpacing(3).lineLimit(2)
+                    Text(status.state).font(.mono(10)).tracking(Palette.caps(10))
+                        .foregroundStyle(status.busy == "wait" ? Palette.pink : Palette.Light.fg2)
+                }
             }
-            Mascot(pitch: 9, lookRight: true, pose: status.pose, busy: status.busy)
+            Mascot(pitch: 9, lookRight: true, pose: status.pose, busy: status.busy, color: ink)
                 .reportRect("crane")
+            Text(label).font(.mono(10)).tracking(1)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .overlay(Rectangle().stroke(ink, lineWidth: 1))
+                .fixedSize()
         }
-        .foregroundStyle(Palette.Light.fg)
+        .foregroundStyle(ink)
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .help("メニュー (M)")

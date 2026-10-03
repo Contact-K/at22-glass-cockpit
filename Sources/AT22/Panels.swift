@@ -208,23 +208,19 @@ private struct PlanPanel: View {
     }
 }
 
-// MARK: - 下帯
+// MARK: - 計画のティック
 
-/// 青帯 44。`05 // PLAN` ＋ ティック（押すとタスク一覧 ⇧⌘T）＋ 波線と「いま誰が何を」
-struct BottomBand: View {
+/// 上帯の `05 // PLAN` とティック（押すとタスク一覧 ⇧⌘T）。済みは白い面、進行中は白い枠、これからは淡い枠
+struct PlanTicks: View {
     let tasks: [RoadmapTask]
-    let actions: [ActionRow]
-    let busy: Bool
     let width: CGFloat
     let onTasks: () -> Void
 
     var body: some View {
-        let ticksWidth = max(160, min(882, width - 48 - 118 - 32 - 220))
-        let count = max(1, Int((ticksWidth + 4) / 42))
+        let count = max(1, Int((width + 4) / 40))
         let window = Cockpit.planWindow(tasks: tasks, size: count)
         let doneTicks = window.rows.filter { $0.status == .completed }.count
-        let moving = actions.first { !$0.waiting && $0.verb != "IDLE" && $0.verb != "DONE" }
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 0) { Text("05").foregroundStyle(Palette.pink); Text(" // PLAN") }
                     .font(.mono(10)).tracking(Palette.caps(10))
@@ -235,54 +231,35 @@ struct BottomBand: View {
 
             Button(action: onTasks) {
                 ZStack(alignment: .topLeading) {
-                    Ruler(length: ticksWidth).offset(y: 35)
+                    Ruler(length: width).offset(y: 35)
                     HStack(spacing: 4) {
                         ForEach(window.rows) { task in tick(task) }
                     }
                     .offset(y: 6)
                     Rectangle().fill(Palette.white)
-                        .frame(width: max(0, CGFloat(doneTicks) * 42 - 4), height: 1)
+                        .frame(width: max(0, CGFloat(doneTicks) * 40 - 4), height: 1)
                         .offset(y: -1)
                 }
-                .frame(width: ticksWidth, height: 44, alignment: .topLeading)
+                .frame(width: width, height: 44, alignment: .topLeading)
                 .contentShape(Rectangle())
+                .reportRect("planBand")
             }
             .buttonStyle(PressStyle())
             .keyboardShortcut("t", modifiers: [.command, .shift])
             .help("タスク一覧（⇧⌘T）")
-
-            HStack(spacing: 10) {
-                WaveLines(width: 120, height: 24, lines: 4, amp: 4, freq: 2, animate: busy || moving != nil)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(moving.map { "\($0.label) · \($0.jp) \($0.verb == "WRITE" ? $0.note : "")" } ?? "C0 · 待機")
-                    Text(Self.version).foregroundStyle(Palette.Blue.fg3)
-                }
-                .font(.mono(9)).tracking(1.1)
-                .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .foregroundStyle(Palette.white)
-        .padding(.horizontal, 24)
     }
 
-    private static var version: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return "V" + (v ?? "DEV") + " · Σ"
-    }
-
-    /// 38×26 の升。進行中は白い斜め板、済みは薄い面、これからは破線
+    /// 36×22 の升
     private func tick(_ task: RoadmapTask) -> some View {
         let act = task.status == .inProgress, done = task.status == .completed
         return Text(String(format: "%02d", task.number))
-            .font(.mono(10)).tracking(0.4)
-            .foregroundStyle(act ? Palette.blue : done ? Palette.Blue.fg2 : Palette.white)
-            .frame(width: 38, height: 26)
-            .background {
-                if act { Chevron(skew: -18).fill(Palette.white) }
-                else if done { Rectangle().fill(Palette.white.opacity(0.18)) }
-                else { Rectangle().strokeBorder(Palette.Blue.dim, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
-            }
+            .font(.mono(9)).tracking(0.4)
+            .foregroundStyle(done ? Palette.blue : Palette.white)
+            .frame(width: 36, height: 22)
+            .background(done ? Palette.white : Color.clear)
+            .overlay(Rectangle().strokeBorder(act ? Palette.white : done ? .clear : Palette.white.opacity(0.4),
+                                              lineWidth: act ? 2 : 1))
             .help("#\(task.number) \(task.subject)")
     }
 }

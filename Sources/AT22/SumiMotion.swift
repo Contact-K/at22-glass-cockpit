@@ -5,8 +5,9 @@ import SwiftUI
 /// 画面の切り替え1回ぶん。`cover → hold → reveal → idle` は**始めた時刻からの経過だけで決まる**ので、
 /// 状態を持つのはこの値1つ（`components/DotWipe.js` と v10 の `go()`）
 struct Wipe: Equatable {
-    let from: CockpitMode
-    let to: CockpitMode
+    /// 元のタブの英名（`FROM TALK`）
+    let from: String
+    let to: V11Tab
     let origin: CGPoint
     let started: Date
 
@@ -77,15 +78,8 @@ private struct WipeTitle: View {
     let wipe: Wipe
     let elapsed: Double
 
-    private static let words: [CockpitMode: (no: String, en: String, jp: String, desc: String)] = [
-        .work: ("01", "WORK", "作業", "会話と門"),
-        .structure: ("02", "STRUCTURE", "構造", "ファイルの関係"),
-        .memory: ("03", "SPARRING", "壁打ち", "引き継ぎと記憶"),
-    ]
-
     var body: some View {
-        let to = Self.words[wipe.to] ?? Self.words[.work]!
-        let from = Self.words[wipe.from] ?? Self.words[.work]!
+        let to = wipe.to
         let letters = Array(to.en)
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
@@ -95,7 +89,7 @@ private struct WipeTitle: View {
                         .scaleEffect(x: blade(), anchor: out ? .trailing : .leading)
                 }
                 .frame(width: 180, height: 4)
-                Text("FROM " + from.en).foregroundStyle(Palette.Blue.fg3).opacity(fade(420))
+                Text("FROM " + wipe.from).foregroundStyle(Palette.Blue.fg3).opacity(fade(420))
             }
             .font(.mono(12))
             .tracking(12 * 0.16)
@@ -347,9 +341,10 @@ final class InkTank {
     private let sink: Float = 0.05, viscosity: Float = 0.997, strength: Float = 1
     private let curlStrength: Float = 0.18, brush: Float = 0.045, dropEvery: Double = 7
 
-    private let ink: (Float, Float, Float) = (0x12, 0x12, 0xEE)
-    private let accent: (Float, Float, Float) = (0xFF, 0x3D, 0xCC)
-    private let paper: (Float, Float, Float) = (0xFF, 0xFF, 0xFF)
+    /// v11 は青い面の上に紺の墨（`ink=#08085C accent=#FF3DCC bg=#1212EE`）
+    private let ink: (Float, Float, Float)
+    private let accent: (Float, Float, Float)
+    private let paper: (Float, Float, Float)
 
     private var lastStep: Date?
     private var acc: Double = 0
@@ -371,7 +366,14 @@ final class InkTank {
     static let warmup = 40
     #endif
 
-    init(width: CGFloat = 540, height: CGFloat = 800, res: Int = InkTank.defaultRes) {
+    init(width: CGFloat = 540, height: CGFloat = 800, res: Int = InkTank.defaultRes,
+         ink: UInt32 = 0x08085C, accent: UInt32 = 0xFF3DCC, paper: UInt32 = 0x1212EE) {
+        func rgb(_ h: UInt32) -> (Float, Float, Float) {
+            (Float((h >> 16) & 0xFF), Float((h >> 8) & 0xFF), Float(h & 0xFF))
+        }
+        self.ink = rgb(ink)
+        self.accent = rgb(accent)
+        self.paper = rgb(paper)
         let rows = max(8, Int(jsRound(Double(CGFloat(res) * height / width))))
         let count = (res + 2) * (rows + 2)
         n = res

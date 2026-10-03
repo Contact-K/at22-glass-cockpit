@@ -80,6 +80,8 @@ struct P0SelfCheck {
         planWindowStartsAtFirstUnfinished()
         headlineNamesWhoMovesAndWhoWaits()
         waitingAgentShowsAsWaitRow()
+        towerLaneFoldsQuietAndBundlesRaces()
+        shortStatReadsBothHalves()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
         streamingIsPerSession()
         claudePermissionRoundTrip()
@@ -3742,6 +3744,36 @@ struct P0SelfCheck {
         let none = Cockpit.planWindow(tasks: [])
         assert(none.rows.isEmpty && none.total == 0 && none.current == nil)
         assert(Cockpit.planWindow(tasks: tasks(Array(repeating: p, count: 30)), size: 21).rows.count == 21)
+    }
+
+    /// 管制塔の木: 本体は木に置かず、子は rank 順、競走は1組に束ね、静かな枝は畳むと下の列へ
+    static func towerLaneFoldsQuietAndBundlesRaces() {
+        let items = [
+            TowerItem(id: "main", isMain: true, rank: 0),
+            TowerItem(id: "fix", rank: 2),
+            TowerItem(id: "tip", parent: "fix", rank: 2),
+            TowerItem(id: "old", rank: 5, quiet: true),
+            TowerItem(id: "r-claude", race: "r", rank: 3, quiet: true),
+            TowerItem(id: "r-grok", race: "r", rank: 2),
+            TowerItem(id: "wait", rank: 0),
+        ]
+        let lane = Cockpit.towerLane(items, fold: true)
+        assert(lane.main == "main" && !lane.placed.contains { $0.id == "main" }, "\(lane)")
+        assert(lane.quiet == ["old"], "静かな枝だけが畳まれる: \(lane.quiet)")
+        // あなた待ちが先頭、競走は静かな1本も組ごと残る
+        assert(lane.placed.first?.id == "wait", "\(lane.placed)")
+        assert(lane.races.count == 1 && Set(lane.races[0].members) == ["r-claude", "r-grok"], "\(lane.races)")
+        assert(lane.placed.first { $0.id == "tip" }?.depth == 1, "分岐元の子は1段深い")
+        assert(lane.edges.contains { $0.from == "fix" && $0.to == ["tip"] }, "\(lane.edges)")
+        assert(lane.rows == 4, "wait / fix(→tip) / 競走2行 で4行: \(lane.rows)")
+        assert(Cockpit.towerLane(items, fold: false).quiet.isEmpty, "畳まない時は全部置く")
+    }
+
+    static func shortStatReadsBothHalves() {
+        let s = Worktree.parseShortStat(" 3 files changed, 42 insertions(+), 7 deletions(-)", untracked: 1)
+        assert(s == Worktree.Stat(files: 4, added: 42, removed: 7), "\(s)")
+        assert(Worktree.parseShortStat(" 1 file changed, 2 deletions(-)") == Worktree.Stat(files: 1, added: 0, removed: 2))
+        assert(Worktree.parseShortStat("") == Worktree.Stat())
     }
 
     /// 承認待ち・入力待ちのエージェントは WAIT の行になり、見出しが「waits for you」と言う

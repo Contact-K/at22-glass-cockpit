@@ -1724,6 +1724,8 @@ final class Cockpit {
     }()
     /// 各リポジトリの worktree 一覧。git に訊き直すのは数秒おき（裏で）
     private(set) var worktrees: [String: [Worktree.Entry]] = [:]
+    /// 各ワークスペースの基点からの差分の量。管制塔のタイルの `+42 −7` に出す（worktree の読み直しと一緒に取る）
+    private(set) var diffStats: [String: Worktree.Stat] = [:]
     /// 作業ディレクトリ → リポジトリ本体（"" はリポジトリの外）。一度訊いたら覚えておく
     private var repoOf: [String: String] = [:]
     private(set) var pendingWorkspaces: [String: PendingWorkspace] = [:]
@@ -1766,6 +1768,7 @@ final class Cockpit {
         lastWorktreeScan = Date()
         let unknown = Set(liveSessions.map(\.cwd) + runRecords.map(\.cwd)).filter { !$0.isEmpty && repoOf[$0] == nil }
         let known = Set(projects + repoOf.values.filter { !$0.isEmpty })
+        let bases = workspaceMeta.mapValues(\.baseSHA)
         Task.detached(priority: .utility) {
             var roots: [String: String] = [:]
             for cwd in unknown { roots[cwd] = (try? Worktree.root(of: cwd)) ?? "" }
@@ -1773,11 +1776,17 @@ final class Cockpit {
             for repo in known.union(roots.values.filter { !$0.isEmpty }) {
                 lists[repo] = (try? Worktree.list(repo: repo)) ?? []
             }
-            let (found, listed) = (roots, lists)
+            // ponytail: 5秒おきに worktree の数だけ `git diff --shortstat`。数十本を超えたら変わった所だけ読む
+            var stats: [String: Worktree.Stat] = [:]
+            for entry in lists.values.flatMap({ $0 }) {
+                stats[entry.path] = Worktree.shortStat(entry.path, base: bases[entry.path] ?? "HEAD")
+            }
+            let (found, listed, counted) = (roots, lists, stats)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.repoOf.merge(found) { _, new in new }
                 if listed != self.worktrees { self.worktrees = listed }
+                if counted != self.diffStats { self.diffStats = counted }
                 self.scanningWorktrees = false
             }
         }
@@ -3050,4 +3059,147 @@ extension Cockpit {
         }
         return ("C0 // " + steps.joined(separator: " → "), refs)
     }
+}
+
+// MARK: - v11 管制塔の木
+
+/// 管制塔に並べる1本。`parent` は分岐元のワークスペース、`race` は同じ指示で走る組の鍵
+struct TowerItem: Equatable, Sendable {
+    let id: String
+    var parent: String? = nil
+    var race: String? = nil
+    var isMain = false
+    /// 並べる順（あなた待ち 0 → 失敗 → 作業中 → 完了 → 既読の完了 → 待機）
+    var rank = 5
+    /// 待機・既読の完了。畳む時は下の「静か」の列へ送る
+    var quiet = false
+}
+
+/// 1つのプロジェクトの木の置き方。本体はプロジェクトの見出し行に出すので、木には置かない
+struct TowerLane: Equatable, Sendable {
+    struct Placed: Equatable, Sendable {
+        let id: String
+        let depth: Int
+        let row: Int
+    }
+    struct Race: Equatable, Sendable {
+        let key: String
+        let depth: Int
+        let firstRow: Int
+        let lastRow: Int
+        let members: [String]
+    }
+    struct Edge: Equatable, Sendable {
+        let from: String
+        let to: [String]
+        /// 競走の組へ向かう枝（点線）
+        let toRace: Bool
+    }
+    var main: String?
+    var placed: [Placed] = []
+    var races: [Race] = []
+    var edges: [Edge] = []
+    var rows = 0
+    /// 競走の組が始まる行。組の見出しのぶん高くする
+    var raceRows: Set<Int> = []
+    var quiet: [String] = []
+}
+
+extension Cockpit {
+    /// v11 `v11Lane` の写し。親子は分岐元、兄弟は rank 順、同じ `race` は1組に束ねる。
+    /// `fold` の時は、静かで生きた子孫も持たない枝を「静か」の列へ送る（競走の組は1本でも生きていれば残す）
+    nonisolated static func towerLane(_ items: [TowerItem], fold: Bool) -> TowerLane {
+        let main = items.first(where: \.isMain)
+        let ids = Set(items.map(\.id))
+        func parent(_ w: TowerItem) -> String? {
+            if w.isMain { return nil }
+            if let p = w.parent, ids.contains(p), p != w.id { return p }
+            return main?.id
+        }
+        func kids(_ id: String) -> [TowerItem] {
+            items.filter { parent($0) == id }.sorted { $0.rank < $1.rank }
+        }
+        func live(_ w: TowerItem) -> Bool { !w.quiet || kids(w.id).contains(where: live) }
+
+        var lane = TowerLane(main: main?.id)
+        var sunk = Set<String>()
+        func sink(_ w: TowerItem) {
+            lane.quiet.append(w.id)
+            sunk.insert(w.id)
+            kids(w.id).forEach(sink)
+        }
+
+        indirect enum Unit { case node(TowerItem, [Unit]), race(String, [(TowerItem, [Unit])]) }
+        func units(_ id: String) -> [Unit] {
+            var ks = kids(id)
+            if fold {
+                for k in ks where !live(k) && !(k.race.map { key in ks.contains { $0.race == key && live($0) } } ?? false) {
+                    sink(k)
+                }
+                ks = ks.filter { !sunk.contains($0.id) }
+            }
+            var out: [Unit] = []
+            var seen = Set<String>()
+            for k in ks where !seen.contains(k.id) {
+                if let key = k.race {
+                    let group = ks.filter { $0.race == key }
+                    group.forEach { seen.insert($0.id) }
+                    out.append(.race(key, group.map { ($0, units($0.id)) }))
+                } else {
+                    seen.insert(k.id)
+                    out.append(.node(k, units(k.id)))
+                }
+            }
+            return out
+        }
+
+        var row = 0
+        func placeNode(_ w: TowerItem, _ ks: [Unit], depth: Int, from: String?) {
+            lane.placed.append(.init(id: w.id, depth: depth, row: row))
+            if let from { lane.edges.append(.init(from: from, to: [w.id], toRace: false)) }
+            for (i, k) in ks.enumerated() {
+                if i > 0 { row += 1 }
+                placeUnit(k, depth: depth + 1, from: w.id)
+            }
+        }
+        func placeUnit(_ u: Unit, depth: Int, from: String?) {
+            switch u {
+            case let .node(w, ks): placeNode(w, ks, depth: depth, from: from)
+            case let .race(key, members):
+                lane.raceRows.insert(row)
+                let first = row
+                for (i, m) in members.enumerated() {
+                    if i > 0 { row += 1 }
+                    placeNode(m.0, m.1, depth: depth, from: nil)
+                }
+                lane.races.append(.init(key: key, depth: depth, firstRow: first, lastRow: row, members: members.map(\.0.id)))
+                if let from { lane.edges.append(.init(from: from, to: members.map(\.0.id), toRace: true)) }
+            }
+        }
+
+        let roots: [Unit] = main.map { units($0.id) }
+            ?? items.filter { parent($0) == nil }.map { .node($0, units($0.id)) }
+        for (i, u) in roots.enumerated() {
+            if i > 0 { row += 1 }
+            placeUnit(u, depth: 0, from: nil)
+        }
+        lane.rows = roots.isEmpty ? 0 : row + 1
+        return lane
+    }
+
+    /// 分岐元のワークスペース。AT22 が作った時の基点が別の worktree の枝なら、それが親。
+    /// 分からなければ nil（本体の子として並ぶ）
+    func towerParent(of path: String) -> String? {
+        guard let base = workspaceMeta[path]?.baseRef,
+              let list = worktrees.values.first(where: { $0.contains { $0.path == path } }) else { return nil }
+        return list.first { $0.path != path && $0.branch == base }?.path
+    }
+
+    /// 同じ競走の組の鍵（作った時に付けたもの）
+    func raceKey(of path: String) -> String? { workspaceMeta[path]?.parent }
+}
+
+extension Cockpit {
+    /// 画像焼き・検査から題名を直接入れる口（transcript が無いセッションの題名）
+    func setTitleForProbe(_ session: String, _ title: String) { titles[session] = title }
 }
