@@ -129,7 +129,7 @@ swift build -c release --arch arm64
 ./.build/arm64-apple-macosx/release/AT22
 ```
 
-外部依存は **SwiftTerm**（端末のため）1つだけ。Swift 6 と Command Line Tools で通る（Xcode は不要）。
+外部依存は **SwiftTerm 1.18 系**（端末のため）1つだけ。1.19 以降はビルド用プラグインが付き、Xcode で「信頼して有効化」を押すまで組めなくなるので上げない。Swift 6 と Command Line Tools で通る（Xcode は不要）。
 
 ## 開発
 
