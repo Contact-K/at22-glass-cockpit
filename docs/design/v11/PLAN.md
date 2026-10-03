@@ -57,3 +57,6 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
   - 清書: claude を1本起こし PROJECT.md だけを書かせる（`Memory.composeTools`）。門の段も選択中の会話も動かさない
 - 01 TALK: 見出しに「履歴 ▴」（一覧に戻る）。一覧は「＋ 新しい会話」（いまの worktree）と「＋ 新しいワークスペース」に分けた
 - 03 SPARRING: 「＋ 新しい壁打ち」と「過去の壁打ち ▾」。過去の板は `sparShelf`（UserDefaults）に20枚まで、選ぶと今の板と入れ替え
+- 10 SETTINGS を再編し、⌘, の別窓（ThresholdSettings）を取り込んで設定を1か所にした。⌘, はこのタブを開く。
+  行は 01 Approval（Lv.1〜5）/ 02 Agents（既定＋各 CLI の場所・ログイン、場所の欄は見つからない時か手で書いた時だけ）/
+  03 Launch（起こすかどうか）/ 04 Skills / 05 Display（参照回数の閾値を含む）/ 06 Worktrees

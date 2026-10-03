@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - 10 SETTINGS
 
-/// 新しいワークスペースの既定と、表示・片付け。CLI の場所とログインは従来どおり ⌘, の窓
+/// 設定はここ1か所（⌘, もこのタブを開く）。承認の段・エージェントと CLI・起こすかどうか・スキル・表示・置き場
 struct SettingsScreen: View {
     static let levelKey = "defaultLevel"
     static let agentKey = "defaultAgent"
@@ -13,11 +13,22 @@ struct SettingsScreen: View {
     let width: CGFloat
     /// 窓の高さ。900 未満では行の上下を詰めて、最後の行まで下帯の上に収める
     var height: CGFloat = 900
-    let onLink: () -> Void
 
     @AppStorage(levelKey) private var level = Gate.defaultLevel.rawValue
     @AppStorage(agentKey) private var agent = "claude|opus"
     @AppStorage("showThinking") private var showThinking = false
+    /// 上限は参照の点の数（Cockpit.maxReadTicks）に合わせる。
+    /// ここを超えると点が埋まりきったまま増えず、「あと何回でフラグか」が読めなくなる
+    @AppStorage(Cockpit.thresholdKey) private var threshold = 3
+    /// 連携機能は既定オフ。**入れただけで LLM を起こすアプリにはしない**
+    @AppStorage(Cockpit.launcherEnabledKey) private var launcherEnabled = false
+    /// CLI の場所を人が指定する口。空ならログインシェルに訊く
+    @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
+    @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
+    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
+    /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
+    @State private var logins: [Backend: String] = [:]
+    @State private var loginProblem: String?
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.4 / Lv.5 は一度だけ確かめる（もう一度押すと決まる）
@@ -62,52 +73,39 @@ struct SettingsScreen: View {
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
                 if let levelNote { Text(levelNote).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
             }
-            row("02", "Agent", "既定のエージェント") {
+            row("02", "Agents", "既定のエージェントと、各 CLI の場所・ログイン") {
                 SumiPicker(sections: Backend.allCases.map { backend in
                     .init(title: backend.title.uppercased(), items: cockpit.models(backend).map(\.id).map { m in
                         .init(id: backend.rawValue + "|" + m, text: label(backend, m), on: agent == backend.rawValue + "|" + m)
                     })
                 }, onPick: { _, id in agent = id }) {
-                    Text(agentLabel + " ▾").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("既定  " + agentLabel + " ▾").frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .font(.mono(13))
                 .padding(.horizontal, 10).frame(height: 38)
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-            }
-            row("03", "Worktrees", "置き場") {
-                // ponytail: 置き場は各リポジトリの中で固定。外に出したい要望が出たら Worktree.location に根を渡す
-                Text("<リポジトリ>/" + Worktree.directory + "/<名前>  ·  枝は " + Worktree.branch(for: "<名前>"))
-                    .font(.mono(13)).lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 10).frame(height: 38)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
-            }
-            row("04", "Display", "表示と片付け") {
-                HStack(spacing: 8) {
-                    Button(showThinking ? "■ 思考を見せる" : "□ 思考を見せる") { showThinking.toggle() }
-                        .buttonStyle(SumiButtonStyle(primary: showThinking, size: 11))
-                    Button("止まったエージェントを畳む") {
-                        cockpit.clearIdleAgents(now: Date())
-                        flash("止まったエージェントを畳みました")
-                    }
-                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Button("全部まっさらに") {
-                        cockpit.clear()
-                        flash("ここから先だけを数えます")
-                    }
-                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                // 見つかった場所を必ず出す。見つからない時しか出さないと「探したのか・見つけたのか」が読めない
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Backend.allCases, id: \.self) { agentLine($0) }
                 }
+                if let loginProblem { Text(loginProblem).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger) }
+                Text("AT22 は API キーも OAuth トークンも預からない。ログイン済みの CLI を起こすだけで、通信はそのプロセスが行う。"
+                     + "場所は通常ログインシェルを1回通して見つける。見つからない環境だけ絶対パスを書く。")
+                    .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).fixedSize(horizontal: false, vertical: true)
             }
-            row("05", "Link", "連携とログイン") {
+            row("03", "Launch", "AT22 から起こすか") {
                 HStack(spacing: 12) {
-                    Button("⌘, で開く", action: onLink).buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                    Text("CLI の場所・ログイン・起こすかどうか。AT22 は鍵を預からない")
+                    Button(launcherEnabled ? "■ セッションを起こす · 続きを送る" : "□ セッションを起こす · 続きを送る") {
+                        launcherEnabled.toggle()
+                    }
+                    .buttonStyle(SumiButtonStyle(primary: launcherEnabled, size: 11))
+                    Text("既定は切。入れただけで LLM を起こすアプリにしないため")
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
                 }
             }
-            row("06", "Skill", "門の手順（5段階の承認）") {
+            row("04", "Skills", "門の手順と、入っているスキル") {
                 HStack(spacing: 12) {
-                    Button(skill == .current ? "入れ直す" : "インストール") { installSkill() }
+                    Button(skill == .current ? "入れ直す" : "門の手順をインストール") { installSkill() }
                         .buttonStyle(SumiButtonStyle(primary: skill != .current, size: 11))
                         .disabled(SkillInstall.source == nil)
                     Text(skill.label + " · ~/.claude/skills/\(SkillInstall.name)")
@@ -139,6 +137,39 @@ struct SettingsScreen: View {
                 }
                 .task { await cockpit.refreshSkills(repo: nil) }
             }
+            row("05", "Display", "表示と片付け") {
+                HStack(spacing: 8) {
+                    Button(showThinking ? "■ 思考を見せる" : "□ 思考を見せる") { showThinking.toggle() }
+                        .buttonStyle(SumiButtonStyle(primary: showThinking, size: 11))
+                    Button("止まったエージェントを畳む") {
+                        cockpit.clearIdleAgents(now: Date())
+                        flash("止まったエージェントを畳みました")
+                    }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    Button("全部まっさらに") {
+                        cockpit.clear()
+                        flash("ここから先だけを数えます")
+                    }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    if let note { Text(note).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                }
+                HStack(spacing: 8) {
+                    Button("−") { threshold = max(2, threshold - 1) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    Text("\(threshold) 回").font(.mono(13)).frame(width: 44)
+                    Button("＋") { threshold = min(Cockpit.maxReadTicks, threshold + 1) }
+                        .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                    // 実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）
+                    Text("同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑ を立てる")
+                        .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2)
+                }
+            }
+            row("06", "Worktrees", "置き場") {
+                // ponytail: 置き場は各リポジトリの中で固定。外に出したい要望が出たら Worktree.location に根を渡す
+                Text("<リポジトリ>/" + Worktree.directory + "/<名前>  ·  枝は " + Worktree.branch(for: "<名前>"))
+                    .font(.mono(13)).lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 10).frame(height: 38)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+            }
             }
             .frame(width: width, alignment: .leading)
             }
@@ -146,6 +177,58 @@ struct SettingsScreen: View {
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
+        .task(id: cockpit.found.keys.sorted { $0.rawValue < $1.rawValue }) { if frozen == nil { await readLogins() } }
+    }
+
+    /// 1つのエージェントの行。見つかった場所・ログインの状態・ログインの口・場所の手入力
+    private func agentLine(_ backend: Backend) -> some View {
+        let path = cockpit.found[backend]?.executable.path
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(backend.title.uppercased()).font(.mono(11)).tracking(0.9).frame(width: 64, alignment: .leading)
+                Text(path ?? "見つからない · 下の欄に絶対パスを書く").font(.mono(11))
+                    .foregroundStyle(path == nil ? Palette.Light.danger : Palette.Light.fg2)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer(minLength: 8)
+                if path != nil {
+                    Text(logins[backend] ?? "…").font(.mono(10)).foregroundStyle(Palette.Light.fg3).lineLimit(1)
+                    Button("ログイン") {
+                        loginProblem = cockpit.login(backend)
+                        // Terminal で済ませて戻ってきた頃に読み直す
+                        Task {
+                            try? await Task.sleep(for: .seconds(20))
+                            await readLogins()
+                        }
+                    }
+                    .buttonStyle(.plain).font(.mono(10)).underline()
+                    .help("\(backend.command) \((backend.loginArguments).joined(separator: " ")) を Terminal で開く")
+                }
+            }
+            // 欄は見つからない時か、既に手で書いてある時だけ。見つかっている CLI に欄を並べると行が倍に伸びる
+            if let binding = pathBinding(backend), path == nil || !binding.wrappedValue.isEmpty {
+                TextField("\(backend.command) の場所（空ならログインシェルに訊く）", text: binding)
+                    .textFieldStyle(.plain).font(.mono(12))
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+            }
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+    }
+
+    private func pathBinding(_ backend: Backend) -> Binding<String>? {
+        switch backend {
+        case .claude: $claudePath
+        case .codex: $codexPath
+        case .grok: $grokPath
+        case .hermes: nil
+        }
+    }
+
+    private func readLogins() async {
+        for backend in Backend.allCases where cockpit.found[backend] != nil {
+            logins[backend] = await cockpit.loginStatus(backend)
+        }
     }
 
     private var agentLabel: String {
@@ -218,7 +301,7 @@ struct SettingsScreen: View {
 struct KeysPanel: View {
     let height: CGFloat
 
-    static let keys = [("M", "メニュー"), ("←  →", "メニューの階層を上る · 入る"), ("⌘0", "管制塔 ⇄ 会話"),
+    static let keys = [("M", "メニュー"), ("⌘,", "設定（このタブ）"), ("←  →", "メニューの階層を上る · 入る"), ("⌘0", "管制塔 ⇄ 会話"),
                        ("⌘J", "ワークスペースへ飛ぶ"), ("⌘1–6", "待ちの順に飛ぶ"), ("⌃`", "端末を引き出す · しまう"),
                        ("⌘P", "ファイルを開く"), ("⌘S", "開いたファイルを保存"), ("ESC", "閉じる · 戻る")]
 

@@ -65,6 +65,7 @@ swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|
 - 端末のタブを足す・閉じる、⌃` が端末の中で効くか
 - （orca-v10-memory）新しい会話を送って立ち上がるか・「履歴 ▴」で戻れるか、壁打ちの棚との入れ替え（ポップオーバーは撮れない）
 - （orca-v10-memory）司令塔が each/<ID>.md と SHARED.md を本当に書くか、「清書 ▸」で PROJECT.md が書かれるか（許可の規則 `Write(//…)` が効くか）
+- （orca-v10-memory）⌘, で 10 SETTINGS に飛ぶか（別窓はやめた）、CLI の場所の欄・ログインの札（TextField は撮れない）
 
 ## 残り・後で話す
 

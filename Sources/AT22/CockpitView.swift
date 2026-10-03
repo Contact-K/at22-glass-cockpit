@@ -89,7 +89,6 @@ struct CockpitView: View {
     @State private var replySession: String?
     @State private var windowVisible = true
 
-    @Environment(\.openSettings) private var openSettings
 
     enum Overlay: Equatable {
         case tasks
@@ -179,6 +178,7 @@ struct CockpitView: View {
             // 返答が着いた。鶴から最後の枠へドットを渡す（v10 の `ask` の後半）
             after(0.06) { fly(from: book.rects["crane"], to: book.rects["c0last"]) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .at22OpenSettings)) { _ in openSettings() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { _ in
             windowVisible = NSApp.windows.contains { $0.isVisible && $0.occlusionState.contains(.visible) }
         }
@@ -466,7 +466,7 @@ struct CockpitView: View {
                       })
                 .offset(x: 220, y: 84)
         case .settings:
-            SettingsScreen(cockpit: cockpit, width: contentW, height: h, onLink: { openSettings() })
+            SettingsScreen(cockpit: cockpit, width: contentW, height: h)
             .offset(x: 220, y: 84)
         }
     }
@@ -591,6 +591,12 @@ struct CockpitView: View {
 
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
     /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ
+    /// 設定は 10 SETTINGS の1か所（⌘, の別窓はやめた）。板が開いていれば閉じてから
+    private func openSettings() {
+        overlay = nil
+        go(.settings)
+    }
+
     private func go(_ to: V11Tab, origin: CGPoint? = nil, fromMenu: Bool = false) {
         guard wipe == nil else {
             if fromMenu { hideMenu() }

@@ -93,137 +93,17 @@ struct AT22App: App {
         // 帯を自前で描くので、システムのタイトルバーは畳む。
         // **信号機だけは OS が同じ位置に描き続ける**ので、上帯は左端を 78pt 空けてある
         .windowStyle(.hiddenTitleBar)
-
-        // ⌘, で開く。しきい値は環境と使い方で最適値が動くので、外から変えられるようにしておく
-        Settings {
-            ThresholdSettings(cockpit: cockpit)
+        // 設定は 10 SETTINGS の1か所。⌘, は別窓ではなくそのタブを開く
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("設定…") { NotificationCenter.default.post(name: .at22OpenSettings, object: nil) }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
 
-private struct ThresholdSettings: View {
-    let cockpit: Cockpit
-
-    /// 上限は参照の点の数（Cockpit.maxReadTicks）に合わせる。
-    /// ここを超えると点が埋まりきったまま増えず、「あと何回でフラグか」が読めなくなる
-    @AppStorage(Cockpit.thresholdKey) private var threshold = 3
-    /// 連携機能は既定オフ。**入れただけで LLM を起こすアプリにはしない**
-    @AppStorage(Cockpit.launcherEnabledKey) private var launcherEnabled = false
-    /// CLI の場所を人が指定する口。空ならログインシェルに訊く
-    @AppStorage(Cockpit.claudePathKey) private var claudePath = ""
-    @AppStorage(Cockpit.codexPathKey) private var codexPath = ""
-    @AppStorage(Cockpit.grokPathKey) private var grokPath = ""
-    /// 各 CLI のログインの状態。開いた時と、ログインを押して戻った時に読み直す
-    @State private var logins: [Backend: String] = [:]
-    @State private var loginProblem: String?
-
-    var body: some View {
-        Form {
-            Section {
-                Stepper("フラグを立てる参照回数: \(threshold)回",
-                        value: $threshold, in: 2...Cockpit.maxReadTicks)
-                note("同じエージェントがこの回数以上読み、一度も書いていないファイルに ⚑ を立てる。"
-                     + "実 transcript 2478組の分布から既定は3回（当てはまるのは全体の1.4%）。")
-            } header: { chapter("01", "表示") }
-
-            Section {
-                Toggle("セッションを起こす／続きを送る", isOn: $launcherEnabled)
-                note("既定でオフなのは、AT22 が入れただけで LLM を起動するアプリにしないため。"
-                     + "AT22 は API キーも OAuth トークンも保存せず、"
-                     + "あなたが既にログイン済みの CLI（claude / codex / grok / hermes）を起こすだけで、"
-                     + "通信はそのプロセスが行う。「ログイン」は各 CLI 自身のログインを Terminal で起こす。")
-
-                // 見つかった場所を必ず出す。**以前は見つからない時しか何も出ず**、
-                // 「探しに行ったのか」「見つけたのか」が画面から分からなかった
-                ForEach(Backend.allCases, id: \.self) { backend in
-                    agentRow(backend)
-                }
-                if let loginProblem {
-                    Text(loginProblem).font(.system(size: 11)).foregroundStyle(Palette.Light.danger)
-                }
-
-                note("GUI アプリの `PATH` には `~/.local/bin` も `/opt/homebrew/bin` も無いので、"
-                     + "通常はログインシェルを1回通して自動で見つける。"
-                     + "見つからない環境だけ絶対パスを書く。")
-            } header: { chapter("02", "連携") }
-        }
-        .formStyle(.grouped)
-        .frame(width: 480)
-        .task(id: cockpit.found.keys.sorted { $0.rawValue < $1.rawValue }) { await readLogins() }
-    }
-
-    /// 1つのエージェントの行。見つかった場所・ログインの状態・ログインの口・場所の手入力
-    @ViewBuilder
-    private func agentRow(_ backend: Backend) -> some View {
-        found(backend.command, cockpit.found[backend]?.executable.path)
-        if cockpit.found[backend] != nil {
-            HStack(spacing: Palette.Space.s2) {
-                Text(logins[backend] ?? "…")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Palette.Light.fg2)
-                    .lineLimit(1)
-                Spacer()
-                Button("ログイン") {
-                    loginProblem = cockpit.login(backend)
-                    // Terminal で済ませて戻ってきた頃に読み直す
-                    Task {
-                        try? await Task.sleep(for: .seconds(20))
-                        await readLogins()
-                    }
-                }
-                .font(.system(size: 11))
-                .help("\(backend.command) \((backend.loginArguments).joined(separator: " ")) を Terminal で開く")
-            }
-        }
-        if let path = pathBinding(backend) {
-            TextField("\(backend.command) の場所（空ならログインシェルに訊く）", text: path)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11, design: .monospaced))
-        }
-    }
-
-    private func pathBinding(_ backend: Backend) -> Binding<String>? {
-        switch backend {
-        case .claude: $claudePath
-        case .codex: $codexPath
-        case .grok: $grokPath
-        case .hermes: nil
-        }
-    }
-
-    private func readLogins() async {
-        for backend in Backend.allCases where cockpit.found[backend] != nil {
-            logins[backend] = await cockpit.loginStatus(backend)
-        }
-    }
-
-    /// 本編と同じ章見出しの形（番号 → 章名）
-    private func chapter(_ number: String, _ title: String) -> some View {
-        HStack(spacing: Palette.Space.s2) {
-            Text(number).foregroundStyle(Palette.pink)
-            Text("// " + title).foregroundStyle(Palette.Light.fg2)
-        }
-        .font(.mono(11))
-        .tracking(Palette.caps(11))
-    }
-
-    private func note(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func found(_ name: String, _ path: String?) -> some View {
-        HStack(spacing: Palette.Space.s2) {
-            Image(systemName: path == nil ? "xmark.circle" : "checkmark.circle")
-                .foregroundStyle(path == nil ? Palette.Light.danger : Palette.Light.success)
-            Text(path ?? "\(name) が見つからない。下の欄に絶対パスを書く")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(path == nil ? Palette.Light.danger : Palette.Light.fg2)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-    }
+extension Notification.Name {
+    /// ⌘, → 10 SETTINGS
+    static let at22OpenSettings = Notification.Name("at22.openSettings")
 }
