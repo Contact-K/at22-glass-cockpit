@@ -488,7 +488,7 @@ struct CockpitView: View {
                       })
                 .offset(x: 220, y: 84)
         case .settings:
-            SettingsScreen(cockpit: cockpit, width: contentW, height: h)
+            SettingsScreen(cockpit: cockpit, width: contentW, height: h, onTalk: { go(.talk) })
             .offset(x: 220, y: 84)
         }
     }

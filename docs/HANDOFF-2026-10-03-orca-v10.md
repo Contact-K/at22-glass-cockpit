@@ -20,7 +20,7 @@
 
 ```
 # p0（SwiftUI 非依存。ファイルを足したら README の行にも足す）
-swiftc -parse-as-library Sources/AT22/{Transcript,Cockpit,Structure,Memory,Gate,Launcher,Backend,CodexLauncher,Agents,ACP,Worktree,Snowman,Category,Sparring,Hydra,AgentCatalog,Skills}.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+swiftc -parse-as-library Sources/AT22/{Transcript,Cockpit,Structure,Memory,Gate,Launcher,Backend,CodexLauncher,Agents,ACP,Worktree,Snowman,Category,Sparring,Hydra,AgentCatalog,Skills,Remote}.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 
 # 画像に焼く（ImageRenderer。ポップオーバー・Menu・TextField・ScrollView は写らない）
 swift run AT22 --shot /tmp/x.png 1440 900 [--tower] [--workspaces] [--mode talk|files|spar|review|git|settings]

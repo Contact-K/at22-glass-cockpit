@@ -18,10 +18,14 @@ enum Hydra {
     }
 
     /// 1通で起こせる上限（暴走止め）
-    static let maxHeads = 4
+    /// 1通で起こせる上限・1つの司令塔が任せるラウンドの上限（設定の 07 で変える）
+    static let maxHeadsKey = "hydraMaxHeads"
+    static let maxRoundsKey = "hydraMaxRounds"
+    nonisolated static var maxHeads: Int { (UserDefaults.standard.object(forKey: maxHeadsKey) as? Int).map { max(1, $0) } ?? 4 }
+    nonisolated static var maxRounds: Int { (UserDefaults.standard.object(forKey: maxRoundsKey) as? Int).map { max(1, $0) } ?? 3 }
 
     /// 司令塔に渡す約束（`--append-system-prompt` に足す）
-    static let protocolText = """
+    static var protocolText: String { """
     ほかのエージェントに並列で任せたい仕事がある時は、返事の最後に次の形の囲みを書いてください（最大\(maxHeads)体）:
     ```hydra
     [{"name":"短い英数字の名前","agent":"codex","model":"","task":"一言で","prompt":"渡す指示の全文"}]
@@ -29,7 +33,7 @@ enum Hydra {
     agent は claude / codex / grok / hermes。AT22 が人の許可を取ってから head ごとに worktree を作って起こし、
     それぞれの最初の報告を次のメッセージで返します。報告を待つためにループを回す必要はありません。
     変更は各 worktree に残り、マージするかは人が決めます。
-    """
+    """ }
 
     /// 返事から ```` ```hydra ```` の囲みを拾う。壊れた JSON・知らないエージェント・空の指示は捨てる
     static func heads(in text: String) -> [Head] {

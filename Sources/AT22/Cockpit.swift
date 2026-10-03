@@ -734,6 +734,29 @@ final class Cockpit {
         refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
         watchHandoffs()
+        sleepIdleSessions()
+    }
+
+    // MARK: 眠らせて再開
+
+    /// 何分動かなかったら、claude のプロセスを畳むか（0 で畳まない）。送る時に `--resume` で起こし直す
+    static let sleepAfterKey = "sleepAfterMinutes"
+    /// 畳んだ会話（画面に「眠っている」を出す）
+    private(set) var sleeping: Set<String> = []
+
+    private func sleepIdleSessions() {
+        let minutes = UserDefaults.standard.object(forKey: Self.sleepAfterKey) as? Int ?? 15
+        guard minutes > 0 else { return }
+        let now = Date()
+        for (session, run) in runs where backend(of: session) == .claude && !isWorking(session)
+            && run.connection.acceptsInput && !approvals.contains(where: { $0.session == session })
+            && handoffs[session] == nil {
+            let last = agents[session]?.lastAt ?? .distantPast
+            guard now.timeIntervalSince(last) > Double(minutes) * 60 else { continue }
+            run.connection.close()
+            forget(session)
+            sleeping.insert(session)
+        }
     }
 
     // MARK: 文脈が溢れる前の引き継ぎ
@@ -882,6 +905,8 @@ final class Cockpit {
     /// 本体の置き場を使うので、そこに揃える（worktree ごとに分けると本人の記憶と別の DB になる）。
     /// リポジトリでないフォルダはそのフォルダの置き場
     func memoryDirectory(cwd: String) -> String {
+        // リモートの相手は手元の記憶DB を書けない
+        guard !Remote.isRemote(cwd) else { return "" }
         let base = (try? Worktree.root(of: cwd)) ?? cwd
         return projectsRoot.appendingPathComponent(Self.projectSlug(base)).appendingPathComponent("memory").path
     }
@@ -1007,6 +1032,8 @@ final class Cockpit {
     private var hydraSeen: Set<String> = []
     /// 司令塔が作業中で渡せなかった報告。手が空いたら送る
     private var hydraOutbox: [String: [String]] = [:]
+    /// 司令塔ごとの Hydra のラウンド数（上限は設定）
+    private var hydraRounds: [String: Int] = [:]
 
     /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
     /// Lv.4 / Lv.5 のプロジェクトなら人に訊かずに許可する
@@ -1016,7 +1043,15 @@ final class Cockpit {
         let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
         let memory = project.appendingPathComponent("memory")
         let level = Gate.level(memoryRoot: memory)
-        for head in Hydra.heads(in: text) where hydraSeen.insert(session + "#" + head.name).inserted {
+        let heads = Hydra.heads(in: text).filter { !hydraSeen.contains(session + "#" + $0.name) }
+        guard !heads.isEmpty else { return }
+        // 上限: 1つの司令塔が任せる回数（ラウンド）
+        guard hydraRounds[session, default: 0] < Hydra.maxRounds else {
+            noteAttention(session, "Hydra の上限（\(Hydra.maxRounds) ラウンド）に達したので、これ以上は任せない")
+            return
+        }
+        hydraRounds[session, default: 0] += 1
+        for head in heads where hydraSeen.insert(session + "#" + head.name).inserted {
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
             let path = memory.appendingPathComponent("\(Gate.directory)/\(stamp)-hydra-\(head.name).md").path
             let text = Hydra.gateText(head, by: session, at: Date())
@@ -1760,7 +1795,7 @@ final class Cockpit {
     /// 送った発言をすぐ会話に出す。claude は同じ発言を transcript にも書くので、それが届いた時に
     /// 二重に並ばないよう覚えておく（`apply` の `.said` が1回だけ読み飛ばす）
     func appendHuman(_ text: String, session: String) {
-        if backend(of: session) == .claude { echoes[session, default: []].append(text) }
+        if backend(of: session) == .claude, !Remote.isRemote(cwd(of: session) ?? "") { echoes[session, default: []].append(text) }
         messages.append(Message(id: messages.count, session: session, agent: session,
                                 text: text, thinking: false, speaker: .human, at: Date()))
         if messages.count > Self.maxMessages {
@@ -1835,6 +1870,7 @@ final class Cockpit {
             launchError = "まだ前のターンを処理している"
             return false
         }
+        sleeping.remove(session)
         guard run.connection.send(body) else {
             forget(session)
             launchError = "送れなかった。セッションが終わっている"
@@ -2357,10 +2393,30 @@ final class Cockpit {
         let path = Worktree.location(repo: repo, name: racer.name)
         switch result {
         case let .success(made):
-            pendingWorkspaces[path] = nil
             workspaceMeta[made.path] = WorkspaceMeta(baseRef: base, baseSHA: made.baseSHA, parent: parent, createdAt: Date())
             saveWorkspaceMeta()
             refreshWorktreesIfNeeded(force: true)
+            // セットアップスクリプト（リポジトリごと）。終わってからエージェントを起こす
+            let script = (UserDefaults.standard.dictionary(forKey: Self.setupScriptsKey)?[repo] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !script.isEmpty, setupDone.insert(made.path).inserted {
+                pendingWorkspaces[path]?.error = nil
+                setupRunning.insert(made.path)
+                Task {
+                    let result = await Task.detached(priority: .userInitiated) {
+                        Result { try Worktree.run("/bin/zsh", ["-lc", script], in: made.path, withErrors: true) }
+                    }.value
+                    setupRunning.remove(made.path)
+                    if case let .failure(error) = result {
+                        noteAttention(made.path, "セットアップスクリプトが失敗した — \(error)")
+                        appendLaunchError("セットアップ（\((made.path as NSString).lastPathComponent)）: \(error)")
+                    }
+                    finishWorkspace(repo: repo, racer: racer, base: base, parent: parent, result: .success(made),
+                                    prompt: prompt, level: level, thinking: thinking, then: then)
+                }
+                return
+            }
+            pendingWorkspaces[path] = nil
             let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !prompt.isEmpty else { then?(made.path, nil, nil); return }
             let session = launch(prompt: prompt, cwd: made.path, backend: racer.backend, model: racer.model, level: level,
@@ -2372,6 +2428,12 @@ final class Cockpit {
             then?(path, nil, "\(error)")
         }
     }
+
+    /// リポジトリごとのセットアップスクリプト（`[リポジトリのパス: スクリプト]`）
+    static let setupScriptsKey = "setupScripts"
+    /// セットアップを走らせた／走らせている worktree（二度は走らせない）
+    private var setupDone: Set<String> = []
+    private(set) var setupRunning: Set<String> = []
 
     /// 作れなかったワークスペースを同じ中身で作り直す。
     /// ponytail: 競走の1本として作り直しても競走の束には戻さない（勝ちを決める時に並ばない）

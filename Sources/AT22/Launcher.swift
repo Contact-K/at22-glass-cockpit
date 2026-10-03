@@ -63,6 +63,18 @@ enum Launcher {
     static let efforts = ["low", "medium", "high", "xhigh", "max"]
 
     /// stdout の1行を `StreamEvent` に変換する。知らない型は nil で返す
+    /// `assistant` 行の本文（司令塔のもの・テキストだけ）。手元の会話は transcript から読むので使わない。
+    /// transcript を読めないリモートの会話だけが、確定した発言をここから取る
+    nonisolated static func assistantText(_ data: Data) -> String? {
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              dict["type"] as? String == "assistant",
+              (dict["parent_tool_use_id"] as? String ?? "").isEmpty,
+              let message = dict["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return nil }
+        let text = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
+    }
+
     nonisolated static func parseStreamLine(_ data: Data) -> StreamEvent? {
         // JSON をデコード。不正な形は黙って捨てる
         guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -430,6 +442,7 @@ enum Launcher {
                                    sessionID: UUID = UUID(),
                                    resuming: String? = nil,
                                    onExit: (@Sendable (Int32, String) -> Void)? = nil,
+                                   onText: (@Sendable (String) -> Void)? = nil,
                                    onStream: (@Sendable (StreamEvent) -> Void)? = nil) throws -> Started {
         let (process, input) = try spawn(found.executable,
                                          arguments: resuming.map { resumeArguments(sessionID: $0, config: config) }
@@ -437,6 +450,7 @@ enum Launcher {
                                          cwd: config.cwd, path: found.path,
                                          onLine: { line in
                                              if let event = parseStreamLine(line) { onStream?(event) }
+                                             if let onText, let text = assistantText(line) { onText(text) }
                                          },
                                          onExit: onExit)
         // 最初の指示も割り込みと同じ経路で送る。ここを argv に戻すと、
@@ -459,14 +473,26 @@ enum Launcher {
                                   onLine: @escaping @Sendable (Data) -> Void,
                                   onExit: (@Sendable (Int32, String) -> Void)?) throws -> (process: Process, input: FileHandle) {
         let task = Process()
-        task.executableURL = executable
-        task.arguments = arguments
-        task.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        if path != nil || !extra.isEmpty {
-            var env = ProcessInfo.processInfo.environment
-            if let path { env["PATH"] = path }
-            env.merge(extra) { _, new in new }
-            task.environment = env
+        // 設定の「起こし方の上書き」（コマンド名ごと）。引数は前に足す（後ろに足すと codex の位置引数とぶつかる）
+        let command = executable.lastPathComponent
+        let custom = LaunchOverrides.current(for: command)
+        let extra = extra.merging(custom.environment) { _, new in new }
+        if let remote = Remote.parse(cwd) {
+            // 作業場所が ssh://… なら、相手のマシンで同じコマンドを起こす（stdio は ssh がそのまま繋ぐ）
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            task.arguments = Remote.sshArguments(target: remote.target, path: remote.path, command: command,
+                                                 arguments: custom.arguments + arguments, environment: extra)
+            task.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        } else {
+            task.executableURL = executable
+            task.arguments = custom.arguments + arguments
+            task.currentDirectoryURL = URL(fileURLWithPath: cwd)
+            if path != nil || !extra.isEmpty {
+                var env = ProcessInfo.processInfo.environment
+                if let path { env["PATH"] = path }
+                env.merge(extra) { _, new in new }
+                task.environment = env
+            }
         }
 
         let output = Pipe(), errors = Pipe(), stdin = Pipe()

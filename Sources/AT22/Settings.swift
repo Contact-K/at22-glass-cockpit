@@ -34,6 +34,13 @@ struct SettingsScreen: View {
     @State private var picked: Backend = .claude
     /// 2層目（プロバイダを足す）を開いているか。メニューからは行けない——Link の「＋」からだけ
     @State private var adding = false
+    /// SSH の接続先（08 Remote）。書き換えたら保存する
+    @State private var hosts: [Remote.Host] = Remote.hosts
+    @AppStorage(Cockpit.sleepAfterKey) private var sleepAfter = 15
+    @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 4
+    @AppStorage(Hydra.maxRoundsKey) private var hydraRounds = 3
+    /// 会話を起こした後に会話画面へ（08 Remote の「会話を起こす」）
+    var onTalk: () -> Void = {}
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.3 / Lv.4 は一度だけ確かめる（もう一度押すと決まる）
@@ -163,6 +170,26 @@ struct SettingsScreen: View {
                 Text(Worktree.location(repo: "<リポジトリ>", name: "名前", root: worktreeRoot)
                      + "  ·  枝は " + Worktree.branch(for: "名前"))
                     .font(.mono(11)).foregroundStyle(Palette.Light.fg2).lineLimit(1).minimumScaleFactor(0.7)
+                Text("// セットアップ · worktree を作った直後に、その中で走らせる（終わってからエージェントを起こす）")
+                    .font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2).padding(.top, 6)
+                ForEach(cockpit.projects, id: \.self) { repo in
+                    HStack(spacing: 10) {
+                        Text((repo as NSString).lastPathComponent).font(.mono(12)).frame(width: 150, alignment: .leading).lineLimit(1)
+                        TextField("例 npm install && cp ../.env .env", text: Binding(
+                            get: { UserDefaults.standard.dictionary(forKey: Cockpit.setupScriptsKey)?[repo] as? String ?? "" },
+                            set: { value in
+                                var all = UserDefaults.standard.dictionary(forKey: Cockpit.setupScriptsKey) ?? [:]
+                                all[repo] = value
+                                UserDefaults.standard.set(all, forKey: Cockpit.setupScriptsKey)
+                            }))
+                            .textFieldStyle(.plain).font(.mono(12))
+                            .padding(.horizontal, 10).frame(height: 30)
+                            .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+                    }
+                }
+                if cockpit.projects.isEmpty {
+                    Text("登録したリポジトリはまだない（管制塔で足すとここに並ぶ）").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3)
+                }
             }
             row("06", "Skills", "門の手順と、入っているスキル") {
                 HStack(spacing: 12) {
@@ -198,6 +225,35 @@ struct SettingsScreen: View {
                 }
                 .task { await cockpit.refreshSkills(repo: nil) }
             }
+            row("07", "Sessions", "会話の動かし方 · 裏で動いているものの扱い") {
+                settingLine("眠らせる", "この分数動かなかった claude のプロセスを畳む。送る時に続きから起こし直す（0 で畳まない）") {
+                    stepper(value: $sleepAfter, range: 0...240, step: 5, unit: "分")
+                }
+                settingLine("Hydra 同時", "司令塔が1回に並列で任せられる数") {
+                    stepper(value: $hydraHeads, range: 1...8, step: 1, unit: "体")
+                }
+                settingLine("Hydra 回数", "1つの司令塔が任せられる回数（ラウンド）。越えたら任せずに知らせる") {
+                    stepper(value: $hydraRounds, range: 1...10, step: 1, unit: "回")
+                }
+            }
+            row("08", "Remote", "SSH の先のマシンで動かす · 鍵は ~/.ssh の設定に任せる（パスワードは訊かない）") {
+                ForEach($hosts) { $host in
+                    HStack(spacing: 8) {
+                        hostField("名前", text: $host.name).frame(width: 110)
+                        hostField("user@host または Host 名", text: $host.target)
+                        hostField("相手の作業フォルダ（絶対パス）", text: $host.path)
+                        Button("会話を起こす ▸") { startRemote(host) }
+                            .buttonStyle(SumiButtonStyle(primary: true, size: 11))
+                            .disabled(host.target.isEmpty || host.path.isEmpty)
+                        Button("×") { hosts.removeAll { $0.id == host.id } }.buttonStyle(.plain).font(.mono(12))
+                    }
+                }
+                Button("＋ 接続先を足す") { hosts.append(.init(name: "", target: "", path: "")) }
+                    .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+                Text("相手のマシンにも、使うエージェント（claude など）を入れてログインしておく。相手の transcript と記憶DB は読めないので、会話は流れてきた分だけを出す")
+                    .font(.bodyJP(11)).foregroundStyle(Palette.Light.fg3).fixedSize(horizontal: false, vertical: true)
+            }
+            .onChange(of: hosts) { Remote.hosts = hosts }
             }
             .frame(width: width, alignment: .leading)
             }
@@ -344,6 +400,10 @@ struct SettingsScreen: View {
                     .padding(.horizontal, 10).frame(height: 30)
                     .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
             }
+            // Orca の Args / Env。手元でも SSH の先でも、起こす時に効く
+            Text("// 起こし方の上書き").font(.mono(10)).tracking(Palette.caps(10)).foregroundStyle(Palette.Light.fg2).padding(.top, 4)
+            field("引数（前に足す・空白区切り）", key: LaunchOverrides.argsKey(backend.command))
+            field("環境変数（K=V を ; で区切る・例 OLLAMA_HOST=http://localhost:11434）", key: LaunchOverrides.envKey(backend.command))
         }
         .opacity(on ? 1 : 0.55)
     }
@@ -403,6 +463,42 @@ struct SettingsScreen: View {
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+    }
+
+    private func stepper(value: Binding<Int>, range: ClosedRange<Int>, step: Int, unit: String) -> some View {
+        HStack(spacing: 6) {
+            Button("−") { value.wrappedValue = max(range.lowerBound, value.wrappedValue - step) }
+                .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+            Text("\(value.wrappedValue) \(unit)").font(.mono(13)).frame(width: 56)
+            Button("＋") { value.wrappedValue = min(range.upperBound, value.wrappedValue + step) }
+                .buttonStyle(SumiButtonStyle(primary: false, size: 11))
+        }
+    }
+
+    private func hostField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text).textFieldStyle(.plain).font(.mono(12))
+            .padding(.horizontal, 8).frame(height: 30)
+            .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
+    }
+
+    /// SSH の先で、既定のエージェントの会話を起こす（最初の1通は会話画面で）
+    private func startRemote(_ host: Remote.Host) {
+        let parts = agent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        let backend = Backend(rawValue: parts.first ?? "") ?? .claude
+        if cockpit.launch(prompt: "", cwd: host.workspace, backend: backend, model: parts.count > 1 ? parts[1] : "") != nil {
+            onTalk()
+        } else {
+            flash(cockpit.launchError ?? "起こせませんでした")
+        }
+    }
+
+    /// UserDefaults の文字列1つに直に繋ぐ欄（鍵がプロバイダごとに変わるので @AppStorage が使えない）
+    private func field(_ placeholder: String, key: String) -> some View {
+        TextField(placeholder, text: Binding(get: { UserDefaults.standard.string(forKey: key) ?? "" },
+                                             set: { UserDefaults.standard.set($0, forKey: key) }))
+            .textFieldStyle(.plain).font(.mono(12))
+            .padding(.horizontal, 10).frame(height: 30)
+            .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
     }
 
     private func toggle(_ backend: Backend) {

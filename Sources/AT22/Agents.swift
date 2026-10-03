@@ -81,8 +81,14 @@ final class ClaudeConnection: AgentConnection {
                       session: String, sessionID: UUID = UUID(), resuming: String? = nil,
                       onEvent: @escaping @Sendable (AgentEvent) -> Void,
                       onExit: @escaping @Sendable (Int32, String) -> Void) throws -> ClaudeConnection {
+        // リモートは transcript を読めないので、確定した発言を stdout から取る
+        var onText: (@Sendable (String) -> Void)?
+        if Remote.isRemote(config.cwd) {
+            onText = { @Sendable text in onEvent(AgentEvent.message(text, thinking: false)) }
+        }
         let started = try Launcher.launch(config, using: found, sessionID: sessionID, resuming: resuming,
                                           onExit: onExit,
+                                          onText: onText,
                                           onStream: { event in
                                               if let mapped = agentEvent(event, session: session) { onEvent(mapped) }
                                           })
