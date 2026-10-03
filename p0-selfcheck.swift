@@ -3783,14 +3783,90 @@ struct P0SelfCheck {
         assert(Sparring.progressLines("NOW: 2\nDONE: 1 済み").map(\.step) == [2, 1])
         let cockpit = Cockpit()
         let at = Date()
-        func say(_ t: String) { cockpit.apply([.said(agent: "s", session: "s", text: t, speaker: .model, thinking: false, at: at)]) }
-        say("PLAN: 1. 凡例を作り直す\nPLAN: 2. 検査を足す")
-        say("PLAN: 凡例を作り直す")
+        func say(_ session: String, _ t: String) { cockpit.apply([.said(agent: session, session: session, text: t, speaker: .model, thinking: false, at: at)]) }
+        say("s", "PLAN: 1. 凡例を作り直す\nPLAN: 2. 検査を足す")
+        say("s", "PLAN: 凡例を作り直す")
         var list = cockpit.allTasks(session: "s")
         assert(list.map(\.subject) == ["凡例を作り直す", "検査を足す"], "\(list.map(\.subject))")
-        say("DONE: 1\nNOW: 2")
+        say("s", "DONE: 1\nNOW: 2")
         list = cockpit.allTasks(session: "s")
         assert(list[0].status == .completed && list[1].status == .inProgress)
+
+        // 別セッションで計画を立て直すケース。A・B を完了、C・D を立て直して NOW: 1
+        say("t", "PLAN: A\nPLAN: B")
+        say("t", "DONE: 1\nDONE: 2")
+        say("t", "PLAN: C\nPLAN: D")
+        say("t", "NOW: 1")
+        let result = cockpit.allTasks(session: "t")
+        assert(result.map(\.subject) == ["A", "B", "C", "D"], "計画を立て直してリスト: \(result.map(\.subject))")
+        assert(result[0].status == .completed && result[1].status == .completed
+               && result[2].status == .inProgress && result[3].status == .pending,
+               "C が inProgress、A・B が completed、D が pending: \(result.map { "\($0.subject):\($0.status)" })")
+        // 組み直し後に DONE: 2 が新しい計画の2番目（D）に効き、組み直しで外れた過去の手順（A・B）の状態は変わらない
+        say("t", "DONE: 2")
+        let resultAfter = cockpit.allTasks(session: "t")
+        assert(resultAfter[0].status == .completed && resultAfter[1].status == .completed
+               && resultAfter[2].status == .inProgress && resultAfter[3].status == .completed,
+               "DONE: 2 が新 D に効かない: \(resultAfter.map { "\($0.subject):\($0.status)" })")
+
+        // (a) 既存 subject のキー再利用。B の番号が変わらず、新しい D が積まれ、adoptedPlans が [B, D] になる
+        say("u", "PLAN: B\nPLAN: C")
+        let uFirst = cockpit.allTasks(session: "u")
+        let bKeyFirst = uFirst.first { $0.subject == "B" }?.id
+        let bNumFirst = uFirst.first { $0.subject == "B" }?.number
+        say("u", "PLAN: B\nPLAN: D")
+        let uSecond = cockpit.allTasks(session: "u")
+        let bKeySecond = uSecond.first { $0.subject == "B" }?.id
+        let bNumSecond = uSecond.first { $0.subject == "B" }?.number
+        let dKey = uSecond.first { $0.subject == "D" }?.id
+        assert(bKeyFirst == bKeySecond && bNumFirst == bNumSecond, "B のキーと番号が変わった")
+        assert(dKey != nil, "新規の D が積まれていない")
+        // NOW を使って adoptedPlans の順序を確認：NOW: 1 が B、NOW: 2 が D に効く（C は adoptedPlans から外れているので NOW: 3 に無反応）
+        say("u", "NOW: 1")
+        let afterNow1 = cockpit.allTasks(session: "u")
+        let bAfterNow1 = afterNow1.first { $0.subject == "B" }?.status
+        assert(bAfterNow1 == .inProgress, "NOW: 1 が B に効かない")
+        say("u", "NOW: 2")
+        let afterNow2 = cockpit.allTasks(session: "u")
+        let dAfterNow2 = afterNow2.first { $0.subject == "D" }?.status
+        assert(dAfterNow2 == .inProgress, "NOW: 2 が D に効かない: adoptedPlans は [B, D] でない可能性")
+        let cBeforeNow3 = afterNow2.first { $0.subject == "C" }?.status
+        say("u", "NOW: 3")
+        let afterNow3 = cockpit.allTasks(session: "u")
+        let cAfterNow3 = afterNow3.first { $0.subject == "C" }?.status
+        assert(cBeforeNow3 == cAfterNow3, "adoptedPlans から外れた C が NOW: 3 で変わった（adoptedPlans は [B, D] ではない）")
+
+        // steps 内の重複の検査：A が2回出ても1件だけ積まれる
+        say("r", "PLAN: A\nPLAN: A\nPLAN: B")
+        let rList = cockpit.allTasks(session: "r")
+        let aCount = rList.filter { $0.subject == "A" }.count
+        assert(aCount == 1, "重複した A が複数積まれた: \(aCount)件")
+        assert(rList.map(\.subject) == ["A", "B"], "重複除去の結果: \(rList.map(\.subject))")
+
+        // (b) completed な手順への NOW: が inProgress に戻さない
+        say("v", "PLAN: X\nPLAN: Y")
+        say("v", "DONE: 1")
+        var vList = cockpit.allTasks(session: "v")
+        assert(vList[0].status == .completed)
+        say("v", "NOW: 1")
+        vList = cockpit.allTasks(session: "v")
+        assert(vList[0].status == .completed, "completed を inProgress に戻した: \(vList[0].status)")
+
+        // (c) 範囲外の n（NOW: 0、NOW: 99）で落ちず、状態が変わらない
+        say("w", "PLAN: P\nPLAN: Q")
+        let wBefore = cockpit.allTasks(session: "w").map { "\($0.subject):\($0.status)" }
+        say("w", "NOW: 0")
+        say("w", "NOW: 99")
+        let wAfter = cockpit.allTasks(session: "w").map { "\($0.subject):\($0.status)" }
+        assert(wBefore == wAfter, "範囲外の n で状態が変わった: \(wBefore) → \(wAfter)")
+
+        // (d) 空の PLAN:（手順なし）で何も起きない
+        say("x", "PLAN: 手順1")
+        let xBefore = cockpit.allTasks(session: "x")
+        say("x", "PLAN:")
+        let xAfter = cockpit.allTasks(session: "x")
+        assert(xBefore.count == xAfter.count && xBefore.map(\.subject) == xAfter.map(\.subject),
+               "空の PLAN: で状態が変わった")
     }
 
     /// 動作の印は最後の道具から。Bash の swift build の最中は build（以前は think だった）、

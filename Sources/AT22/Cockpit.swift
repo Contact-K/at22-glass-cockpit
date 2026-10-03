@@ -2294,24 +2294,55 @@ final class Cockpit {
     /// 並びは `number` 昇順。同じ番号が複数セッションで衝突するので、同番号のときは
     /// `session` 文字列で決定的に並べる。
     /// 壁打ちの計画を `PLAN:` 行で受け取った司令塔の分。TaskCreate の無い相手のために AT22 が積む
-    /// （セッション → 積んだ順のキー）。`NOW: n` / `DONE: n` で n 番目の状態を進める
+    /// （セッション → 積んだ順のキー）。`NOW: n` / `DONE: n` で n 番目の状態を進める。
+    /// **組み直すと、過去の手順は adoptedPlans から外れ、以後の NOW:/DONE: は新しい計画にだけ効く。**
+    /// session と subject が同じなら TaskCreate 由来のタスクも同じ手順として再利用する。
     private var adoptedPlans: [String: [String]] = [:]
 
     private func adoptPlan(_ text: String, session: String, at: Date) {
         guard text.contains("PLAN") || text.contains("NOW") || text.contains("DONE") else { return }
         let steps = Sparring.planLines(text)
-        var next = (tasks.values.filter { $0.session == session }.map(\.number).max() ?? 0) + 1
-        for step in steps where !tasks.values.contains(where: { $0.session == session && $0.subject == step }) {
-            let key = "\(session)#plan\(next)"
-            tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
-                                     detail: "壁打ちの計画（PLAN: 行で受け取り）", status: .pending, at: at)
-            adoptedPlans[session, default: []].append(key)
-            next += 1
+
+        // steps 内の重複した subject は最初の1つだけ残す
+        var seen = Set<String>()
+        let uniqueSteps = steps.filter { seen.insert($0).inserted }
+
+        // 返事の PLAN: に新しい subject があるか確認
+        let hasNewStep = uniqueSteps.contains { step in
+            !tasks.values.contains { $0.session == session && $0.subject == step }
         }
+
+        // 返事に新しい手順があれば adoptedPlans を組み直す
+        if hasNewStep {
+            var keys: [String] = []
+            var next = (tasks.values.filter { $0.session == session }.map(\.number).max() ?? 0) + 1
+            for step in uniqueSteps {
+                // 既に積まれた subject のキーを再利用。複数候補がある場合は number が最小のものを選ぶ
+                if let existing = tasks.values.filter({ $0.session == session && $0.subject == step })
+                    .min(by: { $0.number < $1.number }) {
+                    keys.append(existing.id)
+                } else {
+                    let key = "\(session)#plan\(next)"
+                    tasks[key] = RoadmapTask(id: key, session: session, number: next, subject: step, activeForm: step,
+                                           detail: "壁打ちの計画（PLAN: 行で受け取り）", status: .pending, at: at)
+                    keys.append(key)
+                    next += 1
+                }
+            }
+            adoptedPlans[session] = keys
+        }
+
         for (n, done) in Sparring.progressLines(text) {
             guard let keys = adoptedPlans[session], keys.indices.contains(n - 1) else { continue }
-            tasks[keys[n - 1]]?.status = done ? .completed : .inProgress
-            tasks[keys[n - 1]]?.at = at
+            guard var task = tasks[keys[n - 1]] else { continue }
+            // DONE は常に completed、NOW は既に completed を inProgress に戻さない
+            if done {
+                task.status = .completed
+            } else if task.status != .completed {
+                task.status = .inProgress
+            }
+            task.at = at
+            tasks[keys[n - 1]] = task
         }
     }
 
