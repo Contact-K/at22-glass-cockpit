@@ -36,6 +36,8 @@ final class ReviewModel {
     var seen: Set<String> = []
     var selected = 0
     var pushing = false
+    /// 送り終わった直後。遠くの自分の枝の行を青く光らせる
+    var fresh = false
 
     func load(_ cockpit: Cockpit, path: String?) async {
         if path != self.path { notes = []; seen = []; selected = 0; pullRequest = nil }
@@ -507,6 +509,8 @@ struct GitScreen: View {
     let onReview: () -> Void
     /// 成功の合図を出す場所（reportRect の鍵）
     let onBurst: (String) -> Void
+    /// 決定のドットを飛ばす（reportRect の鍵から鍵へ、色）
+    let onFly: (String, String, Color) -> Void
     let onPushing: (Bool) -> Void
 
     @State private var message = ""
@@ -585,12 +589,13 @@ struct GitScreen: View {
                         }
                         .buttonStyle(PressStyle())
                         .disabled(!canCommit(staged))
+                        .reportRect("commitBtn")
                     }
                     .frame(height: 48)
                     .overlay(alignment: .top) { Rectangle().fill(Palette.Light.fg).frame(height: 2) }
                 }
             }
-            .frame(height: 300).offset(y: 130)
+            .frame(height: commitH).offset(y: 130)
             step("02", "Push", "送出", state: pushed ? "done" : model.ahead > 0 ? (staged.isEmpty ? "now" : "wait") : "wait") {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 5) {
@@ -619,7 +624,7 @@ struct GitScreen: View {
                 }
                 .padding(.horizontal, 14).frame(maxHeight: .infinity)
             }
-            .frame(height: 140).offset(y: 442)
+            .frame(height: pushH).offset(y: 130 + commitH + 12)
             step("03", "Pull request", "依頼", state: model.pullRequest != nil ? "done" : pushed ? "now" : "wait") {
                 VStack(alignment: .leading, spacing: 10) {
                     Group {
@@ -649,7 +654,7 @@ struct GitScreen: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 12)
             }
-            .frame(height: 162).offset(y: 594)
+            .frame(height: prH).offset(y: 130 + commitH + 12 + pushH + 12)
         }
         .foregroundStyle(Palette.Light.fg)
         .frame(width: width, alignment: .topLeading)
@@ -658,6 +663,13 @@ struct GitScreen: View {
             if let workspace { await model.refreshPullRequest(workspace) }
         }
     }
+
+    /// 3段の高さ。900 の窓で 300 / 140 / 162（v11 の 214〜514・526〜666・678〜840）。
+    /// 低い窓では先に 02・03 を詰め（中身は1行ずつ）、残りを 01 に回して 3 段とも下帯の上に収める
+    private var tight: Bool { height < 900 }
+    private var pushH: CGFloat { tight ? 112 : 140 }
+    private var prH: CGFloat { tight ? 146 : 162 }
+    private var commitH: CGFloat { max(190, height - 84 - 130 - 60 - 12 - pushH - 12 - prH) }
 
     private struct Item {
         let file: Worktree.DiffFile
@@ -701,23 +713,46 @@ struct GitScreen: View {
     private func commit() {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canCommit(stagedHunks) else { return }
+        let before = model.commits.count
         Task {
             let result = await model.commit(cockpit, message: text)
             message = ""
+            // 記帳できたら、ボタンから新しいコミットの行へドットを渡す
+            if model.commits.count > before {
+                try? await Task.sleep(for: .milliseconds(40))
+                onFly("commitBtn", "commit:0", Palette.blue)
+            }
             flash(result.map { Cockpit.plainLine($0) } ?? "記帳しました")
         }
     }
 
+    /// v11 の push: ボタン → 先頭のコミット（ピンク）、1.1 秒後に未送出のコミットから順に遠くの枝へ、
+    /// 送り終わったら遠くの行が青く光ってピンクの波紋。git が速く終わっても動きは 2.8 秒見せる
     private func push() {
         guard let workspace, canPush(stagedHunks) else { return }
+        let ahead = model.ahead, started = Date()
         model.pushing = true
         onPushing(true)
+        onFly("pushBtn", "commit:0", Palette.pink)
+        Task {
+            try? await Task.sleep(for: .seconds(1.1))
+            for i in 0..<min(ahead, 6) {
+                onFly("commit:\(i)", "remote:cur", Palette.pink)
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
         Task {
             let result = await cockpit.push(workspace)
+            let rest = 2.8 - Date().timeIntervalSince(started)
+            if rest > 0 { try? await Task.sleep(for: .seconds(rest)) }
             await model.load(cockpit, path: workspace)
             model.pushing = false
             onPushing(false)
-            if model.ahead == 0 { onBurst("remote:cur") }
+            if model.ahead == 0 {
+                model.fresh = true
+                onBurst("remote:cur")
+                Task { try? await Task.sleep(for: .seconds(1.8)); model.fresh = false }
+            }
             flash(Cockpit.plainLine(result))
         }
     }
@@ -781,6 +816,7 @@ struct GitPanels: View {
                 ForEach(Array(model.commits.enumerated()), id: \.offset) { i, c in
                     CommitRow(commit: c, unsent: i < model.ahead)
                         .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+                        .reportRect("commit:\(i)")
                 }
                 if model.commits.isEmpty {
                     Text("基点からのコミットはまだない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2)
@@ -802,6 +838,9 @@ struct GitPanels: View {
             Text(head).font(.mono(11))
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
+        .foregroundStyle(me && model.fresh ? Palette.white : Palette.blue)
+        .background(me && model.fresh ? Palette.blue : .clear)
+        .animation(.easeInOut(duration: 0.3), value: model.fresh)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
         .reportRect(me ? "remote:cur" : "remote-\(name)")
     }

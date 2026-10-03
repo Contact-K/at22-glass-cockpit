@@ -6,7 +6,12 @@ import SwiftUI
 /// ここが持つのは「採った・決めた・答えた」の印だけ（アプリを閉じると消える）
 @MainActor @Observable
 final class SparModel {
-    struct Step: Equatable { var text: String; var ok: Bool }
+    struct Step: Equatable {
+        var text: String
+        var ok: Bool
+        /// 司令塔が計画（TaskCreate）に積んだのを確かめた
+        var planned = false
+    }
     struct Decision: Equatable {
         let text: String
         let why: String
@@ -22,6 +27,8 @@ final class SparModel {
         var decisions: [Decision] = []
         var taken: Set<String> = []
         var answered: Set<String> = []
+        /// 05 PLAN に送って、司令塔が積むのを待っている手順と、送った時のタスク数
+        var sending: (steps: [String], base: Int)?
     }
 
     var boards: [String: Board] = [:]
@@ -50,6 +57,7 @@ struct SparScreen: View {
 
     var body: some View {
         let entries = log
+        let lastReply = entries.last { if case .reply = $0.kind { return true } else { return false } }?.id
         VStack(alignment: .leading, spacing: 0) {
             ScrollViewReader { proxy in
                 LiveScroll {
@@ -57,7 +65,7 @@ struct SparScreen: View {
                         VStack(alignment: .leading, spacing: 12) {
                             SectionMark(number: "03", title: "SPARRING", jp: "壁打ち")
                             Text("Shape the plan before anyone writes.").font(.display(52)).lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .minimumScaleFactor(0.6)
                             Text("Claude と計画を練る場所です。案を採ると右の暫定プランに積まれ、合意したものだけ 05 PLAN に送ります。書込はしません。")
                                 .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -69,7 +77,7 @@ struct SparScreen: View {
                         ForEach(entries) { entry in
                             switch entry.kind {
                             case let .me(text): MeBubble(text: text)
-                            case let .reply(reply): replyCard(entry.id, reply)
+                            case let .reply(reply): replyCard(entry.id, reply, last: entry.id == lastReply)
                             }
                         }
                         if let s = board.session, cockpit.isWorking(s) {
@@ -119,7 +127,8 @@ struct SparScreen: View {
         }
     }
 
-    private func replyCard(_ id: Int, _ reply: Sparring.Reply) -> some View {
+    /// - Parameter last: いちばん新しい返事。訊きたいことが無ければ、ここに「次に」の札を出す
+    private func replyCard(_ id: Int, _ reply: Sparring.Reply, last: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("SPAR // THINK → REPLY").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
@@ -149,24 +158,26 @@ struct SparScreen: View {
                 .opacity(taken ? 0.45 : 1)
                 .overlay(alignment: .top) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
             }
+            // 簡易な質問の札。訊きたいことがあればその選択肢、無ければ（最新の返事にだけ）次の型
             if let q = reply.question {
-                FlowLayout(spacing: 8, lineSpacing: 6) {
-                    Text("? 訊きたい").font(.mono(10)).tracking(1.2)
-                    Text(q.text).font(.bodyJP(14))
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("? 訊きたい").font(.mono(10)).tracking(1.2)
+                        Text(q.text).font(.bodyJP(14)).fixedSize(horizontal: false, vertical: true)
+                    }
                     if board.answered.contains(q.text) {
                         Text("決めた ✓").font(.mono(10)).tracking(1)
                     } else {
-                        ForEach(q.options, id: \.self) { o in
-                            Button(o) { answer(q, o) }.buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                        }
+                        ChipRow(items: q.options.map { ("", $0) }, onTap: { answer(q, q.options[$0]) })
                     }
                 }
-                .padding(.horizontal, 16).padding(.vertical, 9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Palette.Light.bg2)
-                .overlay(alignment: .top) {
-                    Rectangle().stroke(Palette.Light.fg, style: StrokeStyle(lineWidth: 1, dash: [3, 2])).frame(height: 1)
+                .modifier(AskStrip())
+            } else if last, !busy {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("▸ 次に").font(.mono(10)).tracking(1.2)
+                    SparModeChips(mode: nil, onPick: { next($0) })
                 }
+                .modifier(AskStrip())
             }
         }
         .frame(maxWidth: 680, alignment: .leading)
@@ -183,10 +194,11 @@ struct SparScreen: View {
                 Group {
                     if frozen != nil {
                         Text("相談したいこと — 空のまま送ると案を出します").foregroundStyle(Palette.Light.fg3)
+                            .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         TextField("相談したいこと — 空のまま送ると案を出します", text: $draft)
-                            .textFieldStyle(.plain).onSubmit(send)
+                            .textFieldStyle(.plain).lineLimit(1).onSubmit(send)
                     }
                 }
                 .font(.bodyJP(16))
@@ -203,6 +215,15 @@ struct SparScreen: View {
     }
 
     // MARK: 操作
+
+    private var busy: Bool { board.session.map { cockpit.isWorking($0) } ?? false }
+
+    /// 「次に」の札から: 文は空のまま、その型で送る
+    private func next(_ mode: Sparring.Mode) {
+        model.boards[ws, default: .init()].mode = mode
+        draft = ""
+        send()
+    }
 
     private func send() {
         guard let workspace else { return }
@@ -251,26 +272,54 @@ struct SparScreen: View {
 }
 
 /// 壁打ちの型の札（PROPOSE 案を出して / OBJECT 反論して / BREAK DOWN 分解して / DECIDE 決めて）。
-/// いまは画面に出していない（2026-10-03 本人の指示で外した）。後で使うので部品として残す
+/// 入力欄の上からは外し（2026-10-03）、返事の下の「次に」の札として使う
 struct SparModeChips: View {
-    @Binding var mode: Sparring.Mode
+    /// 選ばれている型（無ければどれも白抜き）
+    var mode: Sparring.Mode?
+    let onPick: (Sparring.Mode) -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(Sparring.Mode.allCases, id: \.self) { m in
-                let on = mode == m
+        let modes = Sparring.Mode.allCases
+        ChipRow(items: modes.map { ($0.en, $0.jp) }, selected: mode.flatMap { modes.firstIndex(of: $0) },
+                onTap: { onPick(modes[$0]) })
+    }
+}
+
+/// 札の並び（英字の小見出し＋和文）。壁打ちの型・問いの選択肢が同じ見た目を使う
+struct ChipRow: View {
+    let items: [(en: String, jp: String)]
+    var selected: Int? = nil
+    let onTap: (Int) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: 6, lineSpacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                let on = selected == i
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(m.en).font(.mono(10)).tracking(1)
-                    Text(m.jp).font(.bodyJP(12))
+                    if !item.en.isEmpty { Text(item.en).font(.mono(10)).tracking(1) }
+                    Text(item.jp).font(.bodyJP(12))
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .foregroundStyle(on ? Palette.Light.bg : Palette.Light.fg)
-                .background(on ? Palette.Light.fg : .clear)
+                .background(on ? Palette.Light.fg : Palette.Light.bg)
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
                 .contentShape(Rectangle())
-                .onTapGesture { mode = m }
+                .onTapGesture { onTap(i) }
             }
         }
+    }
+}
+
+/// 返事の下の札の帯（点線の上罫・淡い地）
+private struct AskStrip: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.Light.bg2)
+            .overlay(alignment: .top) {
+                Rectangle().stroke(Palette.Light.fg, style: StrokeStyle(lineWidth: 1, dash: [3, 2])).frame(height: 1)
+            }
     }
 }
 
@@ -313,14 +362,16 @@ struct SparPanels: View {
 
     var body: some View {
         let b = model.board(ws)
-        let agreed = b.steps.filter(\.ok)
+        let agreed = b.steps.filter { $0.ok && !$0.planned }
+        let planned = lead.map { cockpit.allTasks(session: $0).count } ?? 0
+        let working = cockpit.isWorking(lead)
         let lower = max(260, height - 406)
         VStack(spacing: 14) {
             SumiPanel(number: "03", title: "PROVISIONAL", jp: "暫定プラン", right: "合意 \(agreed.count) / \(b.steps.count)") {
                 ForEach(Array(b.steps.enumerated()), id: \.offset) { i, s in
                     HStack(spacing: 6) {
-                        Text(s.ok ? "■" : "□").font(.mono(14)).frame(width: 22)
-                            .onTapGesture { model.boards[ws]?.steps[i].ok.toggle() }
+                        Text(s.planned ? "✓" : s.ok ? "■" : "□").font(.mono(14)).frame(width: 22)
+                            .onTapGesture { if !s.planned { model.boards[ws]?.steps[i].ok.toggle() } }
                         Text("#\(i + 1)").font(.mono(11)).frame(width: 30, alignment: .leading)
                         Text(s.text).font(.bodyJP(13)).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
@@ -332,8 +383,9 @@ struct SparPanels: View {
                             .padding(.horizontal, 6)
                     }
                     .padding(EdgeInsets(top: 9, leading: 12, bottom: 9, trailing: 10))
-                    .foregroundStyle(s.ok ? Palette.white : Palette.blue)
-                    .background(s.ok ? Palette.blue : .clear)
+                    .foregroundStyle(s.ok && !s.planned ? Palette.white : Palette.blue)
+                    .background(s.ok && !s.planned ? Palette.blue : .clear)
+                    .opacity(s.planned ? 0.5 : 1)
                     .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
                     .reportRect("draft:\(i)")
                 }
@@ -343,15 +395,20 @@ struct SparPanels: View {
                 }
             } footer: {
                 HStack(spacing: 8) {
-                    Text(note ?? "□ 暫定 · ■ 合意")
+                    if b.sending != nil {
+                        InkLoader(status: "transfer", pitch: 1.4)
+                        Text("司令塔が積むのを待っています")
+                    } else {
+                        Text(note ?? "□ 暫定 · ■ 合意 · ✓ 積んだ")
+                    }
                     Spacer(minLength: 0)
-                    Button("05 PLAN に送る ▸") { toPlan(agreed.map(\.text)) }
+                    Button("05 PLAN に送る ▸") { toPlan(agreed.map(\.text), base: planned) }
                         .buttonStyle(.plain)
                         .foregroundStyle(agreed.isEmpty ? Palette.Light.fg3 : Palette.white)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(agreed.isEmpty ? .clear : Palette.blue)
                         .overlay(Rectangle().strokeBorder(agreed.isEmpty ? Palette.Light.line : Palette.blue, lineWidth: 1))
-                        .disabled(agreed.isEmpty)
+                        .disabled(agreed.isEmpty || b.sending != nil)
                         .reportRect("toPlan")
                 }
             }
@@ -359,6 +416,9 @@ struct SparPanels: View {
             decisions(b).frame(height: height - 60 - lower)
         }
         .frame(width: 352)
+        // 司令塔が TaskCreate で積んだら確定。ドットを PLAN へ飛ばし、手順に ✓ を付ける
+        .onChange(of: planned) { confirmPlan(count: planned, working: working) }
+        .onChange(of: working) { confirmPlan(count: planned, working: working) }
     }
 
     private func decisions(_ b: SparModel.Board) -> some View {
@@ -441,15 +501,33 @@ struct SparPanels: View {
         if let q = d.question { model.boards[ws]?.answered.remove(q) }
     }
 
-    /// 合意した手順を司令塔に渡し、TaskCreate で計画に積んでもらう（05 PLAN はそれを読む）
-    private func toPlan(_ steps: [String]) {
+    /// 合意した手順を司令塔に渡し、TaskCreate で計画に積んでもらう（05 PLAN はそれを読む）。
+    /// ここではまだ確定させない——積まれたのを見てから `confirmPlan` がドットを飛ばす
+    private func toPlan(_ steps: [String], base: Int) {
         guard !steps.isEmpty else { return }
         guard let lead, cockpit.canSend(to: lead), cockpit.send(Sparring.planMessage(steps), to: lead) else {
             flash("司令塔に送れません（会話のセッションがありません）")
             return
         }
-        fly(rects["toPlan"], rects["planBand"])
-        flash("05 PLAN に送りました")
+        model.boards[ws, default: .init()].sending = (steps, base)
+    }
+
+    /// 送った手順の数だけタスクが増えたら確定。増えたが足りないまま司令塔が手を止めた時も、増えた分で確定する。
+    /// 1つも積まずに止まったら、積まなかったと伝えて手順は暫定のまま戻す
+    private func confirmPlan(count: Int, working: Bool) {
+        guard let sending = model.board(ws).sending else { return }
+        let added = count - sending.base
+        if added >= sending.steps.count || (added > 0 && !working) {
+            model.boards[ws]?.sending = nil
+            for i in model.board(ws).steps.indices where sending.steps.contains(model.board(ws).steps[i].text) {
+                model.boards[ws]?.steps[i].planned = true
+            }
+            fly(rects["toPlan"], rects["planTicks"])
+            flash("05 PLAN に \(added) 件積まれました")
+        } else if !working && added <= 0 {
+            model.boards[ws]?.sending = nil
+            flash("司令塔は計画に積みませんでした（返事は 01 TALK に）")
+        }
     }
 
     private func writeHandoff(_ decided: [SparModel.Decision]) {

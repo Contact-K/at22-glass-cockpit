@@ -242,6 +242,7 @@ struct PlanTicks: View {
                 }
                 .frame(width: width, height: 44, alignment: .topLeading)
                 .contentShape(Rectangle())
+                .reportRect("planTicks")
                 .reportRect("planBand")
             }
             .buttonStyle(PressStyle())

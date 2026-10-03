@@ -9,6 +9,8 @@ struct SettingsScreen: View {
 
     let cockpit: Cockpit
     let width: CGFloat
+    /// 窓の高さ。900 未満では行の上下を詰めて、最後の行まで下帯の上に収める
+    var height: CGFloat = 900
     let onLink: () -> Void
 
     @AppStorage(levelKey) private var level = Gate.defaultLevel.rawValue
@@ -68,7 +70,7 @@ struct SettingsScreen: View {
             row("03", "Worktrees", "置き場") {
                 // ponytail: 置き場は各リポジトリの中で固定。外に出したい要望が出たら Worktree.location に根を渡す
                 Text("<リポジトリ>/" + Worktree.directory + "/<名前>  ·  枝は " + Worktree.branch(for: "<名前>"))
-                    .font(.mono(13)).padding(.horizontal, 10).frame(height: 38)
+                    .font(.mono(13)).lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 10).frame(height: 38)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
             }
@@ -118,7 +120,7 @@ struct SettingsScreen: View {
             }
             content()
         }
-        .padding(.vertical, 16)
+        .padding(.vertical, height < 900 ? 9 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
     }

@@ -445,13 +445,14 @@ struct CockpitView: View {
                       width: contentW, height: h,
                       onReview: { go(.review) },
                       onBurst: { burst(at: book.rects[$0]) },
+                      onFly: { a, b, ink in fly(from: book.rects[a], to: book.rects[b], ink: ink) },
                       onPushing: { on in
                           craneFx = on ? "push" : "ok"
                           if !on { after(1.8) { if craneFx == "ok" { craneFx = nil } } }
                       })
                 .offset(x: 220, y: 84)
         case .settings:
-            SettingsScreen(cockpit: cockpit, width: contentW, onLink: { openSettings() })
+            SettingsScreen(cockpit: cockpit, width: contentW, height: h, onLink: { openSettings() })
             .offset(x: 220, y: 84)
         }
     }
