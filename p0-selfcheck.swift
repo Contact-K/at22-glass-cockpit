@@ -296,7 +296,8 @@ struct P0SelfCheck {
         let review = try! Worktree.review(made.path, base: made.baseSHA)
         let a = review.first { $0.path == "a.txt" }, fresh = review.first { $0.path == "fresh.txt" }
         assert(a?.added == 2 && a?.removed == 1, "基点からのコミット済み＋作業中が揃っていない: \(String(describing: a))")
-        assert(fresh?.untracked == true && fresh?.added == 2, "追跡外の新規が出ない: \(String(describing: fresh))")
+        // 末尾の改行は行として数えない（"fresh\n" は1行）
+        assert(fresh?.untracked == true && fresh?.added == 1, "追跡外の新規が出ない: \(String(describing: fresh))")
         assert((try? Worktree.git(["diff", "--cached", "--name-only"], in: made.path))?.isEmpty == true,
                "レビューでインデックスに触った")
         _ = try! Worktree.run("/usr/bin/git", id + ["-C", made.path, "add", "-A"], in: made.path)
