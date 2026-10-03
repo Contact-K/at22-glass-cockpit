@@ -35,6 +35,16 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
 | G | GIT（記帳→送出→依頼・REMOTE/COMMITS）・PR の状態 | `Review.swift`・`Worktree.swift` |
 | H | FILES（エディタ・木と関係・検索・⌘P・衝突） | `Files.swift`（新規） |
 | I | 端末（SwiftTerm・下から ∧ の波紋で引き出す・2分割） | `Terminal.swift`（新規）・`Package.swift` |
-| J | SPARRING（4つの型・暫定プラン・決定事項）・SETTINGS | `Panels.swift` |
+| J | SPARRING（4つの型・暫定プラン・決定事項）・SETTINGS | `SparScreen.swift`・`Sparring.swift`・`Settings.swift` |
+
+**2026-10-03 時点で A〜J はすべて `orca-v10` に載った**（動き: DotWipe・TabRipple・Pull・Burst・決定のドット）。
+モックと違えたところ:
+
+- 置き場（10 SETTINGS の 03 Worktrees）は表示だけ。各リポジトリの `.claude/worktrees` で固定（Worktree.location）
+- 端末の2分割は「いまのタブと隣」。モックは先頭の2本
+- SPARRING の返事は claude（plan モード）の末尾の `STEP:` / `DECIDE:` / `ASK:` の行から拾う（モックは台本）
+- 05 PLAN に送る＝司令塔に TaskCreate で積んでもらう1通（PLAN 自体は読み取り専用のまま）
+- 旧 03 SPARRING の記憶DBエディタは外した。記憶DBへの書き込みは「HANDOFF に書く」だけ
+- FILES の木の git 印（M / ??）と凡例の1行はまだ
 
 モックにあってデータが無いものは、作らずに HANDOFF に書く（例: タスク番号は transcript に無い → 最初の指示の一致で束ねる）。
