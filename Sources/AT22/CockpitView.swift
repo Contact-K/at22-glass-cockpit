@@ -263,6 +263,8 @@ struct CockpitView: View {
                         GitPanels(model: shotReview ?? review,
                                   branch: tiles.first { $0.id == currentWorkspace }?.branch,
                                   branches: tiles.compactMap(\.branch), height: h)
+                    } else if tab == .settings {
+                        KeysPanel(height: h)
                     } else if tab == .files {
                         FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
                     } else if tab == .talk {
@@ -418,12 +420,7 @@ struct CockpitView: View {
                       })
                 .offset(x: 220, y: 84)
         case .settings:
-            VStack(alignment: .leading, spacing: 12) {
-                SectionMark(number: tab.no, title: tab.en, jp: tab.jp)
-                Text(tab.desc).font(.display(44))
-                Text("この面はまだ作っている途中です。").font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
-            }
-            .frame(width: contentW, alignment: .leading)
+            SettingsScreen(cockpit: cockpit, width: contentW, onLink: { openSettings() })
             .offset(x: 220, y: 84)
         }
     }

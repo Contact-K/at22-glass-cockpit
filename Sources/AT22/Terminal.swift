@@ -128,7 +128,7 @@ struct TerminalDrawer: View {
                 .buttonStyle(PressStyle())
                 .help("端末を足す")
                 Spacer(minLength: 0)
-                Text(".worktrees/\(name) · その場で直す").font(.mono(9)).tracking(0.9)
+                Text((path as NSString).abbreviatingWithTildeInPath + " · その場で直す").font(.mono(9)).tracking(0.9)
                     .foregroundStyle(Palette.Blue.fg2).lineLimit(1).truncationMode(.head)
                     .padding(.horizontal, 12)
                 Button(action: onClose) {

@@ -27,6 +27,9 @@ struct NewWorkspaceSheet: View {
     @State private var picks: [Pick] = [Pick(backend: .claude, model: "opus")]
     @State private var prompt = ""
     @State private var level = Gate.defaultLevel
+    /// 10 SETTINGS で決めた既定（承認の段・エージェント）
+    @AppStorage(SettingsScreen.levelKey) private var defaultLevel = Gate.defaultLevel.rawValue
+    @AppStorage(SettingsScreen.agentKey) private var defaultAgent = "claude|opus"
     @State private var step = 0
     @State private var org: Backend = .claude
     @State private var opened = Date()
@@ -231,7 +234,7 @@ struct NewWorkspaceSheet: View {
         }
     }
 
-    private static let levelNote: [Gate.Level: String] = [
+    static let levelNote: [Gate.Level: String] = [
         .each: "道具はすべて訊く", .normal: "書き込みと実行を訊く", .auto: "門だけ訊く", .unattended: "何も訊かない",
     ]
 
@@ -278,7 +281,7 @@ struct NewWorkspaceSheet: View {
                         Text(cockpit.found[org] == nil ? "見つからない" : org.isACP ? "ACP · 書換なし" : "")
                             .font(.mono(10)).tracking(1).opacity(0.7)
                     }
-                    ForEach(models(org), id: \.self) { m in
+                    ForEach(Self.models(org), id: \.self) { m in
                         let on = picks.contains(Pick(backend: org, model: m))
                         HStack(spacing: 12) {
                             Text(on ? "■" : "□").font(.mono(13))
@@ -377,7 +380,7 @@ struct NewWorkspaceSheet: View {
 
     private var canLaunch: Bool { launcherReady && project != nil && !name.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    private func models(_ backend: Backend) -> [String] {
+    static func models(_ backend: Backend) -> [String] {
         let list = ModelChoice.models(for: backend).map(\.id)
         return list.isEmpty ? [""] : list
     }
@@ -392,6 +395,12 @@ struct NewWorkspaceSheet: View {
 
     private func seed() {
         prompt = prompt0
+        level = Gate.Level(rawValue: defaultLevel) ?? Gate.defaultLevel
+        let agent = defaultAgent.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        if let backend = Backend(rawValue: agent.first ?? "") {
+            picks = [Pick(backend: backend, model: agent.count > 1 ? agent[1] : "")]
+            org = backend
+        }
         let start = projects.first { p in p.tiles.contains { $0.id == from } } ?? projects.first
         repo = start?.id ?? ""
         fromID = from.flatMap { id in start?.tiles.first { $0.id == id }?.id } ?? start?.main?.id ?? ""
