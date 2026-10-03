@@ -141,10 +141,13 @@ struct TerminalDrawer: View {
                 Text((path as NSString).abbreviatingWithTildeInPath + " · その場で直す").font(.mono(9)).tracking(0.9)
                     .foregroundStyle(Palette.Blue.fg2).lineLimit(1).truncationMode(.head)
                     .padding(.horizontal, 12)
+                // 閉じるは白地に青（青い面の中で、ここで閉じると一目で分かるように）
                 Button(action: onClose) {
                     Text("[×] ⌃`").font(.mono(10)).tracking(1).padding(.horizontal, 12).frame(maxHeight: .infinity)
+                        .foregroundStyle(Palette.blue).background(Palette.white).contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
+                .help("端末をしまう（シェルは生きたまま）")
             }
             .frame(height: 34)
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.white).frame(height: 2) }
