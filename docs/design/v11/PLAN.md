@@ -45,6 +45,5 @@ git 操作の動きは**新しく描かない**（InkLoader と決定のドッ�
 - SPARRING の返事は claude（plan モード）の末尾の `STEP:` / `DECIDE:` / `ASK:` の行から拾う（モックは台本）
 - 05 PLAN に送る＝司令塔に TaskCreate で積んでもらう1通（PLAN 自体は読み取り専用のまま）
 - 旧 03 SPARRING の記憶DBエディタは外した。記憶DBへの書き込みは「HANDOFF に書く」だけ
-- FILES の木の git 印（M / ??）と凡例の1行はまだ
 
 モックにあってデータが無いものは、作らずに HANDOFF に書く（例: タスク番号は transcript に無い → 最初の指示の一致で束ねる）。

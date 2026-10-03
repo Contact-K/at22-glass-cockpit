@@ -24,6 +24,18 @@ final class FilesModel {
     private(set) var hits: [(path: String, line: Int, text: String)] = []
 
     var dirty: Bool { text != loaded }
+    /// 木の右の git の印（`M` / `??`）。読み直すたびに `git status` から
+    private(set) var marks: [String: String] = [:]
+
+    nonisolated static func marks(_ root: String) -> [String: String] {
+        let out = (try? Worktree.git(["status", "--porcelain", "-uall"], in: root)) ?? ""
+        var marks: [String: String] = [:]
+        for line in out.split(separator: "\n") where line.count > 3 {
+            let code = String(line.prefix(2)), path = String(line.dropFirst(3))
+            marks[path.components(separatedBy: " -> ").last ?? path] = code == "??" ? "??" : "M"
+        }
+        return marks
+    }
 
     /// 木を読み直す（`.gitignore` を尊重する: 追跡しているもの＋無視されていない追跡外）
     func load(root: String?) async {
@@ -36,6 +48,7 @@ final class FilesModel {
         }.value
         guard self.root == root else { return }
         files = listed
+        marks = await Task.detached { Self.marks(root) }.value
         if open.isEmpty { open = Set(listed.compactMap { $0.split(separator: "/").first.map(String.init) }.prefix(3)) }
     }
 
@@ -45,6 +58,7 @@ final class FilesModel {
         files = ((try? Worktree.git(["ls-files", "--cached", "--others", "--exclude-standard"], in: root)) ?? "")
             .split(separator: "\n").map(String.init).sorted()
         open = Set(files.compactMap { $0.split(separator: "/").first.map(String.init) })
+        marks = Self.marks(root)
         if let file { show(file, line: 1) }
     }
 
@@ -86,6 +100,7 @@ final class FilesModel {
             external = false
             conflict = false
             flash = force ? "上書きしました" : "保存しました"
+            marks = Self.marks(root)
         } catch {
             failure = "保存できなかった: \(error.localizedDescription)"
         }
@@ -357,7 +372,12 @@ struct FilesPanels: View {
                         try? await Task.sleep(for: .milliseconds(250))
                         await model.search()
                     }
-                if !model.query.isEmpty { results } else { tree }
+                if !model.query.isEmpty { results } else {
+                    tree
+                    HStack(spacing: 10) { Text("墨 = いま触られている"); Text("▮ = 書込量"); Text("→ 使う · ← 使われる") }
+                        .font(.mono(9)).tracking(0.7).foregroundStyle(Palette.Light.fg2)
+                        .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             .frame(height: lower - 76 - 14)
             ties.frame(height: height - 60 - lower)
@@ -427,6 +447,7 @@ struct FilesPanels: View {
             Text(row.name + (on && model.dirty ? " ■" : "")).font(.mono(12)).fontWeight(live != nil ? .bold : .regular)
                 .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
+            Text(model.marks[row.path] ?? "").font(.mono(9)).opacity(0.8).frame(width: 20)
             HStack(spacing: 1) {
                 ForEach(0..<5, id: \.self) { i in
                     Rectangle().fill(i < weight ? (on ? Palette.white : Palette.blue) : (on ? Palette.white.opacity(0.3) : Palette.Light.line))
