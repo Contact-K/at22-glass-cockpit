@@ -23,6 +23,8 @@ struct CockpitView: View {
     var shotTower = false
     /// `--shot --menu root|project|workspace|jump` でメニューを開いた所を焼く
     var shotMenu: String? = nil
+    /// `--shot --sheet new|delete|pick` で板を開いた所を焼く（見本の worktree を使う）
+    var shotSheet: String? = nil
 
     @AppStorage(Cockpit.thresholdKey) private var threshold = 3
     @AppStorage("v11Tab") private var storedTab = V11Tab.talk
@@ -72,7 +74,11 @@ struct CockpitView: View {
         case tasks
         case file(String)
         case agent(String)
-        case newSession
+        /// 新規ワークスペース（斜線の板）。分岐元の worktree を渡せる
+        case newWorkspace(from: String?)
+        case delete(String)
+        /// 競走の勝者を採る（組の鍵）
+        case pick(String)
     }
 
     struct Location: Equatable {
@@ -210,7 +216,7 @@ struct CockpitView: View {
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
                                     onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
-                                    onNew: { overlay = .newSession })
+                                    onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))
@@ -259,7 +265,7 @@ struct CockpitView: View {
 
                 HeaderBand(tasks: tasks, now: now, width: w,
                            onTasks: { overlay = overlay == .tasks ? nil : .tasks },
-                           onNew: { overlay = .newSession })
+                           onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
                     .frame(width: w, height: 56)
 
                 FooterBand(width: w, termLine: "\(wsName) % ", busy: busy, stop: stop,
@@ -292,13 +298,8 @@ struct CockpitView: View {
                 .zIndex(30)
             }
 
-            if let overlay {
-                Modals(cockpit: cockpit, overlay: overlay, snapshot: snap,
-                       onClose: { self.overlay = nil },
-                       onLaunched: { self.overlay = nil; storedTab = .talk; setTower(false) },
-                       onOpenSettings: { openSettings() })
-                    .frame(width: w, height: h)
-                    .zIndex(40)
+            if let overlay = self.overlay ?? shotOverlay(projects) {
+                overlayView(overlay, snap: snap, projects: projects, w: w, h: h).zIndex(40)
             }
 
             DecideLayer(flights: flights).frame(width: w, height: h).zIndex(60)
@@ -306,6 +307,35 @@ struct CockpitView: View {
         }
         .frame(width: w, height: h, alignment: .topLeading)
         .clipped()
+    }
+
+    /// 手前に開いた板。新規は全面、削除・採るは幕の上の白い板、それ以外は v10 のモーダル
+    @ViewBuilder
+    private func overlayView(_ overlay: Overlay, snap: CockpitSnapshot, projects: [TowerProject],
+                             w: CGFloat, h: CGFloat) -> some View {
+        let all = projects.isEmpty ? TowerData.projects(cockpit) : projects
+        let tiles = all.flatMap(\.tiles)
+        switch overlay {
+        case let .newWorkspace(from):
+            NewWorkspaceSheet(cockpit: cockpit, projects: all, from: from, launcherReady: launcherReady,
+                              onClose: { self.overlay = nil },
+                              onCreated: { self.overlay = nil; setTower(true) },
+                              onOpenSettings: { openSettings() })
+                .frame(width: w, height: h)
+        case let .delete(id):
+            if let tile = tiles.first(where: { $0.id == id }) {
+                DeleteSheet(cockpit: cockpit, tile: tile, onClose: { self.overlay = nil }).frame(width: w, height: h)
+            }
+        case let .pick(race):
+            PickSheet(cockpit: cockpit, group: tiles.filter { $0.race == race }, onClose: { self.overlay = nil })
+                .frame(width: w, height: h)
+        default:
+            Modals(cockpit: cockpit, overlay: overlay, snapshot: snap,
+                   onClose: { self.overlay = nil },
+                   onLaunched: { self.overlay = nil; storedTab = .talk; setTower(false) },
+                   onOpenSettings: { openSettings() })
+                .frame(width: w, height: h)
+        }
     }
 
     /// 白い面の中身。タブごとに1枚
@@ -323,7 +353,7 @@ struct CockpitView: View {
                        height: h - 72, width: contentW, modalOpen: overlay != nil,
                        onChoose: { choose($0) },
                        onRewrite: { issueRewrite() },
-                       onNew: { overlay = .newSession })
+                       onNew: { overlay = .newWorkspace(from: isTower ? nil : currentWorkspace) })
                 .offset(x: 220, y: 72)
         case .files:
             StructureScreen(cockpit: cockpit, filter: structFilter, width: contentW, height: h - 84 - 60,
@@ -529,10 +559,11 @@ struct CockpitView: View {
 
     private func towerAct(_ action: TileAction, _ tile: WsTile) {
         switch action {
-        case .branch: overlay = .newSession
+        case .branch: overlay = .newWorkspace(from: tile.id)
         case .terminal: if let lead = tile.lead { _ = cockpit.openInTerminal(lead.id) }
         case .forget: cockpit.removeProject(tile.id)
-        case .pick, .delete: break
+        case .delete: overlay = .delete(tile.id)
+        case .pick: if let race = tile.race { overlay = .pick(race) }
         }
     }
 
@@ -680,7 +711,7 @@ struct CockpitView: View {
         case .return: if order.indices.contains(towerFocus) { enter(order[towerFocus]) }
         default:
             guard press.characters == "n" else { return .ignored }
-            overlay = .newSession
+            overlay = .newWorkspace(from: nil)
         }
         return .handled
     }
@@ -695,12 +726,26 @@ struct CockpitView: View {
 
     // MARK: メニュー
 
+    /// 連携が入っていて、起こせる CLI が1つでも見つかっている
+    private var launcherReady: Bool { launcherEnabled && !cockpit.found.isEmpty }
+
     /// いま開いているワークスペース（worktree のパス）と、それを持つプロジェクト
     private var currentWorkspace: String? { cockpit.selectedSession.flatMap { cockpit.workspacePath(of: $0) } }
 
     private func project(of workspace: String?, in projects: [TowerProject]) -> TowerProject? {
         guard let workspace else { return nil }
         return projects.first { $0.tiles.contains { $0.id == workspace } }
+    }
+
+    private func shotOverlay(_ projects: [TowerProject]) -> Overlay? {
+        guard shot != nil, let shotSheet else { return nil }
+        let tiles = (projects.isEmpty ? TowerData.projects(cockpit) : projects).flatMap(\.tiles)
+        switch shotSheet {
+        case "new": return .newWorkspace(from: tiles.first { !$0.isMain }?.id)
+        case "delete": return tiles.first { !$0.isMain && $0.failed == nil }.map { .delete($0.id) }
+        case "pick": return tiles.compactMap(\.race).first.map { .pick($0) }
+        default: return nil
+        }
     }
 
     /// `--shot --menu` の時だけ。開ききった所を1枚焼く

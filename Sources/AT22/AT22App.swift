@@ -23,7 +23,7 @@ struct AT22App: App {
                            gate: CommandLine.arguments.contains("--gate"),
                            approval: CommandLine.arguments.contains("--approval"),
                            workspaces: CommandLine.arguments.contains("--workspaces"),
-                           menu: Self.argument("--menu"))
+                           menu: Self.argument("--menu"), sheet: Self.argument("--sheet"))
             exit(0)
         }
         // swift build が吐く素の実行ファイルは既定で accessory 扱いになり、Dock にも前面にも出ない。
