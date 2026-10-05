@@ -2106,6 +2106,9 @@ struct P0SelfCheck {
         assert(!Gate.Level.allCases.contains { $0.permissionMode == "manual" },
                "訊く相手が居ない段で manual を渡している")
 
+        // Bash は必ず AT22 に訊かせる（claude が自分で作ったファイルの rm を訊かずに通した）。壁打ちは読むだけなので付けない
+        assert(Gate.Level.ladder.allSatisfy { args($0).contains(Gate.askSettings) } && !args(.plan).contains("--settings"),
+               "Bash を訊かせる設定が段に付いていない")
         // --bg は使わない（留守番でも AT22 が承認を見て要判断に積む）
         for level in Gate.Level.allCases {
             assert(!args(level).contains("--bg"), "\(level.title) に --bg が付いた")

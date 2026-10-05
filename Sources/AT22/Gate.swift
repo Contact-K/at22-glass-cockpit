@@ -86,6 +86,9 @@ enum Gate {
     enum Risk: String, Sendable { case low, high }
     enum Decision: Equatable, Sendable { case ask, graceAllow(TimeInterval), allow, queue }
 
+    /// claude に足す設定。Bash は claude が自分で通さず、必ず AT22 に訊かせる
+    static let askSettings = #"{"permissions":{"ask":["Bash"]}}"#
+
     /// 気にかけてる（Lv.2）で低リスクの道具を通すまでの猶予。調整の口
     static let grace: TimeInterval = 10
     /// 人にしか答えられない問い。どの段でも自動で答えない
