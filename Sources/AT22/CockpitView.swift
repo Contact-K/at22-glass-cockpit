@@ -790,6 +790,8 @@ struct CockpitView: View {
         gate.shake += 1
         let option = stop.options[i]
         if option == 1 {
+            // 書き換えている間に猶予で通ってしまわないよう止める
+            if case let .approval(a) = stop.source { cockpit.holdGrace(a.id) }
             after(0.11) { gate.rewriting = true }
             return
         }
@@ -1183,6 +1185,8 @@ struct Stop {
     let seed: String
     /// 動いている worktree の名前（Bash の cwd に出す）
     var place = "."
+    /// 猶予の期限（気にかけてる）。過ぎると AT22 が許可する
+    var autoAt: Date? = nil
     /// 道具の入力を1回だけ解いたもの。読むたびに解くと、カード1枚の描画で20回以上解いていた
     var json: [String: Any] = [:]
 
@@ -1200,6 +1204,7 @@ struct Stop {
     static func all(_ cockpit: Cockpit, chips: @autoclosure () -> [AgentChip]) -> [TowerStop] {
         let gateChips = cockpit.gates.isEmpty ? [] : chips()
         let stops = cockpit.approvals.map { make($0, cockpit: cockpit) } + cockpit.gates.map { make($0, chips: gateChips) }
+            + cockpit.deferred.map { make($0, cockpit: cockpit, deferred: true) }
         return stops.sorted { $0.since < $1.since }.map { stop in
             let session: String
             switch stop.source {
@@ -1275,12 +1280,15 @@ struct Stop {
     }
 
     @MainActor
-    private static func make(_ a: Approval, cockpit: Cockpit) -> Stop {
-        Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
-             title: "Run \(a.tool)?", body: a.detail,
+    private static func make(_ a: Approval, cockpit: Cockpit, deferred: Bool = false) -> Stop {
+        // 要判断（留守番で断って積んだもの）は 許可して伝える／捨てる の2つ。相手はもう待っていない
+        Stop(source: .approval(a), id: a.id, bar: deferred ? "C0 // 要判断" : "C0 // APPROVAL", barJP: deferred ? "要判断" : "承認",
+             target: a.tool,
+             title: deferred ? "要判断 · \(a.tool)" : "Run \(a.tool)?", body: a.detail,
              meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
-             since: a.at, canRevise: a.canRevise, seed: a.input,
+             since: a.at, canRevise: deferred ? false : a.canRevise, seed: a.input,
              place: cockpit.workspacePath(of: a.session).map { ".worktrees/" + ($0 as NSString).lastPathComponent } ?? ".",
+             autoAt: a.autoAt,
              json: (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:])
     }
 

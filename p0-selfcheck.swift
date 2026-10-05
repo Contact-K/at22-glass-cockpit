@@ -90,6 +90,7 @@ struct P0SelfCheck {
         sparringReadsProposals()
         sentMessageIsNotDoubled()
         messageIDsStayUniquePastTheCap()
+        toolRiskFollowsTheLadder()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -235,8 +236,9 @@ struct P0SelfCheck {
     /// ACP の相手ごとの起動引数と、ログインの状態の読み方
     static func providersAndLogins() {
         assert(Cockpit.acpArguments(.grok, model: "grok-4.6", level: .normal) == ["agent", "-m", "grok-4.6", "stdio"])
-        assert(Cockpit.acpArguments(.grok, model: "", level: .auto) == ["agent", "--always-approve", "stdio"],
-               "Lv.4 で全部通していない")
+        // 任せてる・留守番でも grok に全部通させない（承認は AT22 が段で決める）
+        assert(Cockpit.acpArguments(.grok, model: "", level: .auto) == ["agent", "stdio"],
+               "任せてるで grok が承認を素通しにする")
         assert(Cockpit.acpArguments(.hermes, model: "x", level: .auto) == ["acp"], "Hermes に知らない引数を渡した")
         assert(Backend.allCases.filter(\.isACP) == [.grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw])
         // Hermes はトークン数を usage に入れて返す（実測）
@@ -2092,22 +2094,19 @@ struct P0SelfCheck {
             return a[a.firstIndex(of: "--permission-mode")! + 1]
         }
         assert(mode(.plan) == "plan", "壁打ちが編集できる段に落ちた")
-        // 訊く相手（AT22 の承認パネル）が居るので、Lv.2 は道具ごとに訊き、Lv.3 は編集だけ任せる
-        assert(mode(.each) == "default" && mode(.normal) == "acceptEdits",
-               "Lv.2 / Lv.3 の権限モードが違う: \(mode(.each)) / \(mode(.normal))")
+        // 段の違いは AT22 が持つ。どの段も全部 AT22 に訊かせる（acceptEdits は rm まで黙って通した）
+        assert(Gate.Level.ladder.allSatisfy { mode($0) == "default" },
+               "承認を AT22 に通さない段がある: \(Gate.Level.ladder.map { mode($0) })")
         let asked = args(.normal)
         assert(asked[asked.firstIndex(of: "--permission-prompt-tool")! + 1] == "stdio",
                "承認を AT22 に訊かせていない（-p の claude は黙って断る）")
-        assert(mode(.auto) == "bypassPermissions" && mode(.unattended) == "bypassPermissions",
-               "任せてる／留守番が確認を求める段に落ちた")
         // manual は使わない（訊くのは default で足りる）
         assert(!Gate.Level.allCases.contains { $0.permissionMode == "manual" },
                "訊く相手が居ない段で manual を渡している")
 
-        // 無人で走るのは留守番だけ
+        // --bg は使わない（留守番でも AT22 が承認を見て要判断に積む）
         for level in Gate.Level.allCases {
-            assert(args(level).contains("--bg") == (level == .unattended),
-                   "\(level.title) の --bg が違う")
+            assert(!args(level).contains("--bg"), "\(level.title) に --bg が付いた")
         }
 
         // 白名簿は渡した時だけ出す（空で渡すと claude 側が全部禁止と解釈しうる）
@@ -2210,7 +2209,7 @@ struct P0SelfCheck {
         assert(CodexServerConnection.policy(.plan) == ("on-request", "read-only"))
         assert(CodexServerConnection.policy(.each) == ("untrusted", "workspace-write"))
         assert(CodexServerConnection.policy(.normal) == ("on-request", "workspace-write"))
-        assert(CodexServerConnection.policy(.unattended) == ("never", "danger-full-access"))
+        assert(CodexServerConnection.policy(.unattended) == ("on-request", "workspace-write"), "留守番で codex に全部通させた")
         // jsonrpc は付けない
         let line = String(data: CodexServerConnection.line(["id": 1, "method": "initialize"])!, encoding: .utf8)!
         assert(!line.contains("jsonrpc") && line.hasSuffix("\n"))
@@ -2244,7 +2243,7 @@ struct P0SelfCheck {
         assert(!args.contains("続けて"), "指示が argv に載っている（1往復で終わってしまう）")
 
         // 承認の段とモデルは起こす時と同じ規則で乗ること
-        assert(args[args.firstIndex(of: "--permission-mode")! + 1] == "acceptEdits")
+        assert(args[args.firstIndex(of: "--permission-mode")! + 1] == "default")
         let plain = Launcher.resumeArguments(sessionID: "s1", config: config)
         assert(!plain.contains("--model"), "モデル未指定なのに --model を渡した（元の設定を潰す）")
         let picked = Launcher.resumeArguments(
@@ -4039,6 +4038,37 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 道具の危険度と、段ごとの扱い（訊く／猶予の後に通す／すぐ通す／要判断に積む）
+    static func toolRiskFollowsTheLadder() {
+        let c = "/w/repo"
+        func r(_ t: String, _ j: String) -> Gate.Risk { Gate.risk(tool: t, input: j, cwd: c) }
+        assert(r("Bash", #"{"command":"git status && ls -la | wc -l"}"#) == .low)
+        assert(r("Bash", #"{"command":"swift build 2>&1 | tail -5"}"#) == .low)
+        assert(r("Bash", #"{"command":"ls; rm -rf ~"}"#) == .high)
+        assert(r("Bash", #"{"command":"grep 'x;rm -rf /' f"}"#) == .high, "引用符の中の ; で高が低になった")
+        assert(r("Bash", #"{"command":"find . -name a -delete"}"#) == .high)
+        assert(r("Bash", #"{"command":"echo hi > /etc/x"}"#) == .high)
+        assert(r("Bash", #"{"command":"cat ~/.ssh/id_rsa"}"#) == .high)
+        assert(r("Bash", #"{"command":"git push"}"#) == .high && r("Bash", #"{"command":"rm probe.txt"}"#) == .high)
+        assert(r("Bash", #"{"command":"echo $(rm x)"}"#) == .high && r("Bash", #"{"command":"sleep 9 &"}"#) == .high)
+        assert(r("execute", #"{"command":"ls"}"#) == .low, "ACP の execute を Bash と同じ表で見ていない")
+        assert(r("Edit", #"{"file_path":"/w/repo/a.swift"}"#) == .low && r("Write", #"{"file_path":"b/c.md"}"#) == .low)
+        assert(r("Edit", #"{"file_path":"/w/repo/../x"}"#) == .high && r("Edit", #"{"file_path":"/w/repox/a"}"#) == .high)
+        assert(r("Edit", #"{"file_path":"/w/repo/.git/hooks/pre-commit"}"#) == .high)
+        assert(Gate.risk(tool: "Edit", input: #"{"file_path":"/r/.claude/worktrees/w/a.swift"}"#, cwd: "/r/.claude/worktrees/w") == .low,
+               "worktree の中の編集を .claude の中と見なした")
+        assert(Gate.risk(tool: "Write", input: #"{"file_path":"/private/tmp/r/a.txt"}"#, cwd: "/tmp/r") == .low,
+               "/tmp と /private/tmp を別の場所と見なした")
+        assert(r("Read", #"{"file_path":"/w/repo/a"}"#) == .low && r("Read", #"{"file_path":"/u/.aws/credentials"}"#) == .high)
+        assert(r("mcp__x__y", "{}") == .high && r("Mystery", "{}") == .high && r("Edit", "{}") == .high)
+        assert(Gate.Level.each.decide(.low) == .ask)
+        assert(Gate.Level.normal.decide(.low) == .graceAllow(Gate.grace) && Gate.Level.normal.decide(.high) == .ask)
+        assert(Gate.Level.auto.decide(.low) == .allow && Gate.Level.auto.decide(.high) == .ask)
+        assert(Gate.Level.unattended.decide(.low) == .allow && Gate.Level.unattended.decide(.high) == .queue)
+        assert(Gate.Level.plan.decide(.low) == .ask)
+        assert(Gate.Level.allCases.map(\.rawValue) == ["plan", "each", "normal", "auto", "unattended"], "rawValue が変わった")
     }
 
     /// 上限を超えても発言の id が重ならない（`messages.count` で振っていた頃は全部 4000 になり、会話が固まった）

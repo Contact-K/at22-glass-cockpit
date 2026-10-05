@@ -29,7 +29,7 @@ AT22 は初期状態では **読み取るだけ** で、
 
 - **競走** … 新規の板でエージェントを2体以上選ぶと、同じ基点のコミットから1本ずつ worktree を作って同じ指示を送る。管制塔で1組に束ね、⋯ の **採る** で勝ちを残す。負けは未コミットの変更の数を見せてから変更ごと消す（枝は `-d` なので、コミットを積んだものは残る）
 - **采配** … 司令塔が門に `dispatch: grok` などを書くと、許可した時だけ AT22 がワークスペースを作ってそのエージェントを起こし、最初のターンの結果を `<id>.result` に書き戻す（書式は [docs/orchestrator-gate.md](docs/orchestrator-gate.md)）
-- **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.4 / Lv.5 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
+- **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.3 / Lv.4 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
 - **レビューと出荷** … 07 REVIEW と 08 GIT。ハンクのステージ・コミット・push・PR は**押した時だけ**（PR は `gh` が自分の認証で作る）
 
 **入力欄の左はモデルとエフォート**（会話・壁打ち）。モデルの一覧は CLI から取る（claude は `list_models` の問い合わせで API のターンは起きない、grok は `grok models`）。「最新（別名）」と「固定の版」を選べ、エフォートはそのモデルが対応する段だけのスライダー。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`、grok は `--reasoning-effort`）。その右の「／」で入っているスキル（`~/.claude/skills`・`~/.agents/skills`・有効なプラグイン・リポジトリの `.claude/skills`）を `/名前`（codex は `$名前`）として差し込む。設定の 06 Skill の「共有」は `~/.agents/skills` と `~/.grok/skills` にリンクを張り、codex / grok からも見えるようにする（押した時だけ書く）。
@@ -45,7 +45,7 @@ AT22 は初期状態では **読み取るだけ** で、
 - Claude Code を起こす時のセッションIDは AT22 が採番する（`--session-id`）。transcript の在り処が確定するので、起こした先をそのまま画面で追える。Codex / Grok は相手が返したIDを台帳（UserDefaults）に残し、アプリを閉じても続きに繋げる
 - CLI の場所はログインシェルに訊いて突き止める。見つからなければそのエージェントの起動UI自体が出ない
 - AT22 から起こした Claude Code は、道具の承認を AT22 に訊く（`--permission-prompt-tool stdio`）。Lv.2 は道具ごとに全部、Lv.3 は編集以外を、会話の末尾のカードで許可・書換・却下する。書き換えて許可すると、**書き換えた入力の方が実行される**。サブエージェントの起動（Agent ツール）はどの段でも訊かれないので、そこは今まで通り門が止める
-- 人間の承認なしにファイルを書き換える段（Lv.4 / Lv.5）を選ぶ時は、一度だけ確認が入る。Grok は Lv.4 / Lv.5 の時だけ `--always-approve` で起こし、それ以外はあなた自身の既定の権限モードに従う（`grok agent` に段を細かく渡す口が無いため）
+- **道具の承認は AT22 が段で決める**（claude はどの段も `--permission-mode default`、grok は `--always-approve` を付けない、codex は `on-request`）。Lv.1 は全部訊く／Lv.2 は低リスク（読むだけのコマンド・worktree の中の編集）を10秒の猶予の後に通し、高リスクは訊く／Lv.3 は低リスクをすぐ通し、高リスクは訊く／Lv.4 は高リスクを「要判断」に積んで断り、相手には先へ進ませる。要判断は管制塔の右列に並び、許可すると相手に「やり直してよい」と伝える。判定は `Gate.risk`（分からないものは高）。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る
 
 git と gh は `Foundation.Process` で叩く。外部のパッケージは端末の SwiftTerm だけ。
 
@@ -104,7 +104,7 @@ AT22 :  門を見せる → 人間が答える → memory/gate/<id>.verdict を�
 | 4 | 任せてる | 止めない | `bypassPermissions` |
 | 5 | 留守番 | 止めない（無人） | `bypassPermissions` ＋ `--bg` |
 
-値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.4 / Lv.5 を選ぶ時は一度だけ確認が入る。壁打ちのセッションは起こしてもこのファイルを書き換えない。
+値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る。壁打ちのセッションは起こしてもこのファイルを書き換えない。
 
 **文脈（CTX）** … `message.usage` の実測（`input` ＋ `cache_read` ＋ `cache_creation`）で 20 升を埋める。85% を超えると赤くなる。切れ目は `Sources/AT22/Snowman.swift`。**これはハルシネーションそのものの検知ではない。**
 

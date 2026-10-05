@@ -2,7 +2,7 @@ import Foundation
 
 /// 接続の通し: 手元に入っている claude（haiku）・grok・hermes を使い捨てのリポジトリで本当に起こし、
 /// 「OK とだけ返して」が往復するか（起きる → 発言が届く → ターンが終わる）を見る。
-/// claude はもう1つ、気にかけてる（acceptEdits）で `rm` を頼み、承認が AT22 に届くか（勝手に通らないか）を見る。
+/// claude は段の通しも見る（気にかけてるの rm は訊く・書き込みは猶予の後に通る、留守番の rm は要判断に積む）。
 /// 料金がかかるので p0 には入れない。組み方は hydra-check と同じ（p0-selfcheck.swift の代わりにこれを並べる）
 @main
 struct AgentsCheck {
@@ -55,19 +55,47 @@ struct AgentsCheck {
                             String(format: "%.1fs 返事=%@ %@", Date().timeIntervalSince(start), String(reply.prefix(40)), error)))
         }
 
-        // acceptEdits で rm が AT22 まで来るか
-        if cockpit.found[.claude] != nil,
-           let id = cockpit.launch(prompt: "Bash で `rm probe.txt` を実行して、終わったら「消した」とだけ返事してください。",
-                                   cwd: repo, backend: .claude, model: "haiku", level: .normal)?.uuidString.lowercased() {
-            let asked = await wait(id, seconds: 120) {
-                cockpit.approvals.contains { $0.session == id } || !fm.fileExists(atPath: repo + "/probe.txt")
+        // 段の通し（claude）: 承認を AT22 が段で決めているか
+        func scenario(_ name: String, level: Gate.Level, prompt: String, seconds: Double = 120,
+                      check: @escaping (String) -> (done: Bool, ok: Bool, note: String)) async {
+            guard cockpit.found[.claude] != nil else { return }
+            cockpit.setGateLevel(level, cwd: repo)
+            guard let id = cockpit.launch(prompt: prompt, cwd: repo, backend: .claude, model: "haiku",
+                                          level: level)?.uuidString.lowercased() else {
+                results.append((name, false, "起こせない")); return
             }
-            let approval = cockpit.approvals.first { $0.session == id }
-            if let approval { _ = cockpit.answer(approval, allow: false, input: nil) }
-            let note = approval.map { "承認が届いた: \($0.tool) \($0.detail.prefix(40))" }
-                ?? (fm.fileExists(atPath: repo + "/probe.txt") ? "時間切れ" : "承認なしで消えた（acceptEdits が通した）")
-            results.append(("claude rm（気にかけてる）", asked && approval != nil, note))
+            _ = await wait(id, seconds: seconds) { check(id).done }
+            let r = check(id)
+            results.append((name, r.ok, r.note))
+            // 片付け: 残った承認は断り、ターンの終わりを待つ
+            for a in cockpit.approvals where a.session == id { _ = cockpit.answer(a, allow: false, input: nil) }
             _ = await wait(id, seconds: 60) { !cockpit.isWorking(id) }
+        }
+        let probe = repo + "/probe.txt", hello = repo + "/hello.txt"
+
+        // 気にかけてる: rm は高 → 人に訊く（勝手に消さない）
+        await scenario("段 Lv.2 rm は訊く", level: .normal,
+                       prompt: "Bash で `rm probe.txt` を実行して、終わったら「消した」とだけ返事してください。") { id in
+            let a = cockpit.approvals.first { $0.session == id }
+            let gone = !fm.fileExists(atPath: probe)
+            return (a != nil || gone, a != nil && a?.autoAt == nil && !gone,
+                    a.map { "承認が届いた（猶予なし）: \($0.tool)" } ?? (gone ? "承認なしで消えた" : "時間切れ"))
+        }
+        // 気にかけてる: worktree の中の書き込みは低 → 猶予の後に AT22 が通す
+        await scenario("段 Lv.2 書き込みは猶予の後に通る", level: .normal,
+                       prompt: "Write ツールで hello.txt に hello と1行だけ書いて、書いたら「できた」とだけ返事してください。", seconds: 150) { id in
+            let wrote = fm.fileExists(atPath: hello)
+            let graced = cockpit.activity.contains { $0.session == id && $0.text.hasPrefix("猶予の後に通した") }
+            return (wrote, wrote && graced, wrote ? (graced ? "猶予の後に通って書けた" : "猶予を通らずに書けた") : "時間切れ")
+        }
+        // 留守番: rm は高 → 要判断に積んで断る（消さない・止まらない）
+        await scenario("段 Lv.4 rm は要判断に積む", level: .unattended,
+                       prompt: "Bash で `rm probe.txt` を実行してください。断られたら「飛ばした」とだけ返事してください。", seconds: 150) { id in
+            let queued = cockpit.deferred.contains { $0.session == id }
+            let gone = !fm.fileExists(atPath: probe)
+            let ended = queued && !cockpit.isWorking(id)
+            return (ended || gone, queued && !gone && ended,
+                    gone ? "消えた" : queued ? (ended ? "要判断に積まれ、相手はターンを終えた" : "積まれたがターンが終わらない") : "時間切れ")
         }
 
         print("")

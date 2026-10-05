@@ -560,7 +560,11 @@ private struct GateCard: View {
             Text("· " + stop.target + (stop.kind == .acp ? " · ACP" : "")).lineLimit(1)
             if pending > 1 { Text("· 他 \(pending - 1) 件") }
             Spacer(minLength: 8)
-            Ticker(fps: 1) { now in Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
+            Ticker(fps: 1) { now in
+                // 気にかけてる（Lv.2）の猶予中は、通るまでの残りを数える
+                if let auto = stop.autoAt { Text("AUTO \(Int(max(0, auto.timeIntervalSince(now)).rounded(.up)))s") }
+                else { Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
+            }
         }
         .font(.mono(10)).tracking(1.2)
         .foregroundStyle(Palette.Light.bg)

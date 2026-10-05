@@ -749,6 +749,7 @@ final class Cockpit {
         watchHandoffs()
         sleepIdleSessions()
         runSchedules(now: Date())
+        releaseGraceApprovals(now: Date())
         // Hydra の報告の送り待ち。司令塔の「次のターンの終わり」だけを待っていると、報告が届いた時に
         // 司令塔がもうターンを終えていた場合、二度と送られなかった（2026-10-04 に本物の claude で通して見つけた）
         for lead in hydraOutbox.keys where !isWorking(lead) && canSend(to: lead) { flushHydra(lead) }
@@ -1053,6 +1054,11 @@ final class Cockpit {
         }
         let found = Gate.pending(memoryRoot: dir)
         if found.map(\.id) != gates.map(\.id) { gates = found }
+        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）
+        for request in found where request.dispatch != nil && !request.by.isEmpty
+            && [.auto, .unattended].contains(level(of: request.by)) {
+            answer(request, .allow)
+        }
         let level = Gate.level(memoryRoot: dir)
         if level != gateLevel { gateLevel = level }
     }
@@ -1084,7 +1090,8 @@ final class Cockpit {
         let gate = request.id
         // 頼んだ司令塔の作業場所から（Hydra は門に by: で会話が書いてある）。分からなければ選択中の会話
         let cwd = cwd(of: request.by) ?? selectedSession.flatMap(cwd(of:)) ?? ""
-        let level = gateLevel
+        // 頼んだ司令塔の段で起こす（選択中の会話の段ではない）
+        let level = request.by.isEmpty || self.cwd(of: request.by) == nil ? gateLevel : self.level(of: request.by)
         Task {
             let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
             guard let repo else {
@@ -1139,7 +1146,7 @@ final class Cockpit {
     private var hydraRounds: [String: Int] = [:]
 
     /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
-    /// Lv.4 / Lv.5 のプロジェクトなら人に訊かずに許可する
+    /// Lv.3 / Lv.4 のプロジェクトなら人に訊かずに許可する
     private func adoptHydra(_ text: String, session: String, at: Date) {
         guard text.contains("```hydra"), !sparSessions.contains(session),
               Date().timeIntervalSince(at) < 120, let cwd = cwd(of: session) else { return }
@@ -1650,8 +1657,7 @@ final class Cockpit {
             apply(events)
 
         case let .approval(approval):
-            approvals.append(approval)
-            noteAttention(session, "承認を待っている — \(approval.detail)")
+            decideApproval(approval, session: session)
 
         case let .turnEnded(tokens):
             // codex・ACP は止めても turnEnded（stopReason: cancelled）で終わる。止めたのを「終わった」と報告しない
@@ -1705,6 +1711,15 @@ final class Cockpit {
     /// 黙って消すと、相手は答えを待ったまま止まり続ける
     @discardableResult
     func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        // 要判断（留守番で断って積んだもの）。相手はもう待っていないので、許可なら「やり直してよい」と伝える
+        if let i = deferred.firstIndex(where: { $0.id == approval.id }) {
+            deferred.remove(at: i)
+            if allow {
+                preapproved.insert(Self.approvalKey(approval))
+                deliverHydra("[AT22] 要判断に積んだ「\(approval.detail)」は人が許可した。必要なら今やり直してよい。", to: approval.session)
+            }
+            return true
+        }
         guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input) == true else {
             return false
         }
@@ -1712,8 +1727,58 @@ final class Cockpit {
         return true
     }
 
-    /// 人の番で止まっているものの数（門＋道具の承認）。タブとステータスバーの件数
-    var stoppedCount: Int { gates.count + approvals.count }
+    /// 留守番で断って積んだ高リスクの道具（要判断）。相手は先へ進んでいる。人が見て許可か捨てるを選ぶ
+    private(set) var deferred: [Approval] = []
+    /// 要判断から人が許可した呼び出し。同じ呼び出しが来たら1回だけ通す
+    @ObservationIgnored private var preapproved: Set<String> = []
+
+    nonisolated static func approvalKey(_ a: Approval) -> String { a.session + "\u{0}" + a.tool + "\u{0}" + a.input }
+
+    /// 道具の承認を段で決める（3つの相手が合流する1か所）。
+    /// 隣で見てる→訊く／気にかけてる→低は猶予の後に通す／任せてる→低はすぐ通す／留守番→低はすぐ・高は積んで断る
+    private func decideApproval(_ approval: Approval, session: String) {
+        var approval = approval
+        var decision = Gate.humanOnly.contains(approval.tool) ? .ask
+            : level(of: session).decide(Gate.risk(tool: approval.tool, input: approval.input, cwd: cwd(of: session) ?? ""))
+        if preapproved.remove(Self.approvalKey(approval)) != nil { decision = .allow }
+        switch decision {
+        case .allow:
+            if runs[session]?.connection.answer(approval, allow: true, input: nil) == true {
+                log(session, "自動で通した — \(approval.tool) \(approval.detail)")
+            } else {
+                approvals.append(approval)
+                noteAttention(session, "承認を待っている — \(approval.detail)")
+            }
+        case .queue:
+            approval.denyNote = Gate.queuedMessage
+            _ = runs[session]?.connection.answer(approval, allow: false, input: nil)
+            if !deferred.contains(where: { Self.approvalKey($0) == Self.approvalKey(approval) }) { deferred.append(approval) }
+            noteAttention(session, "要判断に積んだ — \(approval.detail)")
+        case let .graceAllow(seconds):
+            approval.autoAt = Date().addingTimeInterval(seconds)
+            approvals.append(approval)
+            log(session, "\(Int(seconds))秒後に通す — \(approval.tool) \(approval.detail)")
+        case .ask:
+            approvals.append(approval)
+            noteAttention(session, "承認を待っている — \(approval.detail)")
+        }
+    }
+
+    /// 猶予が切れた承認を通す（毎秒の見回りから）
+    private func releaseGraceApprovals(now: Date) {
+        for approval in approvals where approval.autoAt.map({ $0 <= now }) == true {
+            if answer(approval, allow: true) { log(approval.session, "猶予の後に通した — \(approval.tool) \(approval.detail)") }
+        }
+    }
+
+    /// 猶予を止めて人の答えを待つ（書き換えを始めた時）
+    func holdGrace(_ id: String) {
+        guard let i = approvals.firstIndex(where: { $0.id == id }), approvals[i].autoAt != nil else { return }
+        approvals[i].autoAt = nil
+    }
+
+    /// 人の番で止まっているものの数（門＋道具の承認＋要判断）。タブとステータスバーの件数
+    var stoppedCount: Int { gates.count + approvals.count + deferred.count }
 
     /// 検査・画像焼きから承認の依頼を直接流し込む口
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
@@ -1730,11 +1795,16 @@ final class Cockpit {
     private(set) var activity: [Activity] = []
 
     private func noteAttention(_ session: String, _ what: String) {
-        activity.insert(Activity(at: Date(), session: session, title: title(for: session) ?? String(session.prefix(8)), text: what), at: 0)
-        if activity.count > 200 { activity.removeLast(activity.count - 200) }
+        log(session, what)
         guard session != selectedSession else { return }
         unread.insert(session)
         onAttention?(session, title(for: session) ?? String(session.prefix(8)), what)
+    }
+
+    /// 活動フィードにだけ残す（未読にも通知にもしない。自動で通した道具など）
+    private func log(_ session: String, _ what: String) {
+        activity.insert(Activity(at: Date(), session: session, title: title(for: session) ?? String(session.prefix(8)), text: what), at: 0)
+        if activity.count > 200 { activity.removeLast(activity.count - 200) }
     }
 
     /// 人の番で止まっている・見ていない間に何か起きたセッションの数（Dock のバッジ）
@@ -2078,7 +2148,7 @@ final class Cockpit {
     }
 
     /// ACP の相手ごとの起動引数。
-    /// grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
+    /// grok agent には権限モードの指定が無い。どの段も訊かせて、AT22 が段で決める（--always-approve は使わない）。
     /// それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する。
     /// Hermes はモデルも承認も自身の設定（hermes model / hermes setup）に従う
     nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level,
@@ -2088,7 +2158,6 @@ final class Cockpit {
             var arguments = ["agent"]
             if !model.isEmpty { arguments += ["-m", model] }
             if !effort.isEmpty { arguments += ["--reasoning-effort", effort] }
-            if level.needsConfirmation { arguments.append("--always-approve") }
             return arguments + ["stdio"]
         case .hermes, .goose, .opencode, .kimi, .openclaw:
             return ["acp"]

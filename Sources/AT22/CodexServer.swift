@@ -76,7 +76,8 @@ final class CodexServerConnection: AgentConnection {
         case .plan: ("on-request", "read-only")
         case .each: ("untrusted", "workspace-write")
         case .normal: ("on-request", "workspace-write")
-        case .auto, .unattended: ("never", "danger-full-access")
+        // 任せてる・留守番も訊かせる。worktree の中はサンドボックスが黙って通し、外へ出る時だけ AT22 が段で決める
+        case .auto, .unattended: ("on-request", "workspace-write")
         }
     }
 

@@ -1,9 +1,9 @@
 ---
 name: at22-gate
-description: AT22 Glass Cockpit の5段階の承認（門）。サブエージェント（Agent ツール）を起こす前、または別のエージェント（codex / grok / hermes）に仕事を回す前に必ず使う。指示を AT22 の承認カードに出し、人の許可・却下・書き換えを受け取ってから出す。
+description: AT22 Glass Cockpit の門（4段の承認＋壁打ち）。サブエージェント（Agent ツール）を起こす前、または別のエージェント（codex / grok / hermes）に仕事を回す前に必ず使う。指示を AT22 の承認カードに出し、人の許可・却下・書き換えを受け取ってから出す。
 ---
 
-# AT22 の門（5段階の承認）
+# AT22 の門（4段の承認＋壁打ち）
 
 AT22 から見られているセッションで、**ワーカーを起こす直前に人が指示へ口を挟む**ための手順。
 止めるのは AT22 ではなくあなた自身で、AT22 は答えのファイルを置くだけ。道具（Bash・Edit など）の承認は
@@ -52,7 +52,7 @@ bash ~/.claude/skills/at22-gate/gate.sh <call> <to> high grok <worktree名> <基
 EOF
 ```
 
-- 4つ目は `claude` / `codex` / `grok` / `hermes`。采配は段にかかわらず必ず人に訊く
+- 4つ目は `claude` / `codex` / `grok` / `hermes`。采配は Lv.1/2 では人に訊き、Lv.3/4 では AT22 が自動で許可する
 - 許可されると、続けて `=== result` の後にワーカーの最初の返事（`status` / `workspace` / `branch` / `session` と本文）が出る
 - 変更はワーカーの worktree（`<リポジトリ>/.claude/worktrees/<名前>`・枝 `at22/<名前>`）に残る。
   マージ・push・PR は人が AT22 の 07 REVIEW / 08 GIT で決める。あなたからは頼まない
@@ -62,3 +62,4 @@ EOF
 - 門を通さずに Agent ツールを呼ぶ（Lv.3/4 でも `gate.sh` は呼ぶ。止まらずにすぐ `allow` が返る）
 - `pending` のまま先へ進む、答えを推測する
 - `gate/` のファイルを自分で書き換える・消す
+- 道具が「要判断に積んだ」と断られた時に、同じことを言い換えて繰り返す（飛ばして先へ進む。やり直してよい時は人から伝わる）
