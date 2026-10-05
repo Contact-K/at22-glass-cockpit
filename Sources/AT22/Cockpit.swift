@@ -1389,17 +1389,52 @@ final class Cockpit {
         // 連携が「切」の間は何も起こさない（設定 03 Launch の約束）。起こす経路は全部ここを通る
         guard launcherOn else { launchError = Self.launcherOffMessage; return nil }
         let level = level ?? gateLevel
+        let id: UUID?
         switch backend {
         case .claude:
-            let id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
-                                  level: level, effort: effort)
+            id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
+                              level: level, effort: effort)
             if let id, !effort.isEmpty { sessionEffort[id.uuidString.lowercased()] = effort }
-            return id
         case .codex:
-            return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
+            id = launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
         case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
-            return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
+            id = launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
+        if let id { markAT22(id.uuidString.lowercased()) }
+        return id
+    }
+
+    // MARK: 会話の出どころ（AT22 で起こした／外部）
+
+    /// AT22 が起こした会話（端末や別のアプリで始めたものは入らない）。UserDefaults に残す
+    private(set) var at22Sessions: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "at22Sessions") ?? [])
+
+    private func markAT22(_ session: String) {
+        guard !at22Sessions.contains(session) else { return }
+        at22Sessions.insert(session)
+        // ponytail: 並びを持たない集合なので、500 を越えたら丸ごと捨てずに残す（数百本で困ったら日付つきにする）
+        UserDefaults.standard.set(Array(at22Sessions), forKey: "at22Sessions")
+    }
+
+    /// AT22 で起こした会話か。codex・ACP の台帳にあるものも AT22 が起こしたもの
+    func isAT22(_ session: String) -> Bool {
+        at22Sessions.contains(session) || runRecords.contains { $0.id == session }
+    }
+
+    /// 会話の一覧の切り替え（全部｜AT22｜外部）
+    enum SessionOrigin: String, CaseIterable, Sendable {
+        case all, at22, external
+        static let key = "sessionOrigin"
+        var label: String { ["全部", "AT22", "外部"][Self.allCases.firstIndex(of: self)!] }
+        func shows(at22: Bool) -> Bool { self == .all || (self == .at22) == at22 }
+    }
+
+    /// 会話の中で動いているサブエージェント（Task で起こしたもの）。管制塔で会話の札の右に生やす
+    func subagents(of session: String, now: Date = Date()) -> [(id: String, role: String, act: String)] {
+        agents.filter { $0.key != session && $0.value.session == session && $0.value.doneAt == nil
+            && Self.isWorking($0.value, now: now) }
+            .sorted { $0.value.lastAt > $1.value.lastAt }
+            .map { (id: $0.key, role: $0.value.role ?? "agent", act: Self.inkStatus($0.value, touching: nil)) }
     }
 
     /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。

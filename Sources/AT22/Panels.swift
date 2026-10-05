@@ -38,14 +38,18 @@ private struct HistoryPanel: View {
     /// 並びを固定する。管制塔の並び（動いているもの順）のままだと、裏で状態が変わるたびに行が入れ替わり、
     /// 選んでいる青が動いて見えた。初めて見えた順に固定し、新しい会話だけ上に足す
     @State private var order: [String] = []
+    @AppStorage(Cockpit.SessionOrigin.key) private var origin = Cockpit.SessionOrigin.all
 
     var body: some View {
-        // 中身は管制塔のタイルと同じ（動いているもの＋過去5本）。並びだけ固定する
-        let found = cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? []
+        // 中身は管制塔のタイルと同じ（動いているもの＋過去5本）。並びだけ固定する。出どころ（AT22｜外部）で絞れる
+        let found = (cockpit.workspaceTree().flatMap(\.workspaces).first { $0.id == workspace }?.agents ?? [])
+            .filter { origin.shows(at22: cockpit.isAT22($0.id)) }
         let ids = found.map(\.id)
         let rows = found.sorted { (order.firstIndex(of: $0.id) ?? -1) < (order.firstIndex(of: $1.id) ?? -1) }
         SumiPanel(number: "01", title: "HISTORY", jp: "履歴", right: "\(rows.count)") {
-            ForEach(rows.prefix(6)) { row in
+            OriginSwitch(origin: $origin).padding(.horizontal, 14).padding(.vertical, 6)
+                .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
+            ForEach(rows.prefix(5)) { row in
                 let on = row.id == cockpit.selectedSession
                 HStack(spacing: 8) {
                     Text(on ? "■" : "□").font(.mono(11))
@@ -61,7 +65,7 @@ private struct HistoryPanel: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
             }
             if rows.isEmpty {
-                Text("この worktree の会話はまだない").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3)
+                Text(origin == .all ? "この worktree の会話はまだない" : "この worktree の\(origin.label)の会話はない").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3)
                     .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
             }
         } footer: {
@@ -673,5 +677,20 @@ struct FlowLayout: Layout {
         }
         if !line.items.isEmpty { lines.append(line) }
         return lines
+    }
+}
+
+
+/// 会話の出どころの切り替え（全部｜AT22｜外部）。右列の履歴と会話の一覧で同じ値を使う
+struct OriginSwitch: View {
+    @Binding var origin: Cockpit.SessionOrigin
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Cockpit.SessionOrigin.allCases, id: \.self) { o in
+                Button(o.label) { origin = o }.buttonStyle(SumiButtonStyle(primary: origin == o, size: 10))
+            }
+            Spacer(minLength: 0)
+        }
+        .help("AT22 で起こした会話か、端末など外で始めた会話かで絞る")
     }
 }

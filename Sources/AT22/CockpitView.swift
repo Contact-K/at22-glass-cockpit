@@ -273,7 +273,14 @@ struct CockpitView: View {
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
                                     onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
-                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) })
+                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) },
+                                    cockpit: cockpit,
+                                    onSession: { _, row in
+                                        // 生えた会話の札から: その会話を開いて会話画面へ
+                                        Task { await cockpit.open(row) }
+                                        storedTab = .talk
+                                        setTower(false)
+                                    })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))

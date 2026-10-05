@@ -898,6 +898,9 @@ struct SessionPicker: View {
     var workspace: String? = nil
     var onFresh: () -> Void = {}
     let onNew: () -> Void
+    @AppStorage(Cockpit.SessionOrigin.key) private var origin = Cockpit.SessionOrigin.all
+
+    private func shows(_ id: String) -> Bool { origin.shows(at22: cockpit.isAT22(id)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -913,17 +916,20 @@ struct SessionPicker: View {
                 Button("＋ 新しいワークスペース", action: onNew).buttonStyle(SumiButtonStyle(primary: workspace == nil))
                     .help("worktree を作ってエージェントを起こす")
             }
+            OriginSwitch(origin: $origin)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !cockpit.liveSessions.isEmpty {
+                    let live = cockpit.liveSessions.filter { shows($0.id) }
+                    if !live.isEmpty {
                         group("実行中")
-                        ForEach(cockpit.liveSessions) { session in
+                        ForEach(live) { session in
                             line(title: cockpit.title(for: session.id) ?? session.name,
                                  sub: (session.cwd as NSString).lastPathComponent,
                                  live: session.busy) { cockpit.selectedSession = session.id }
                         }
                     }
-                    let byProject = Dictionary(grouping: cockpit.recentSessions) { $0.project }
+                    let recent = cockpit.recentSessions.filter { shows($0.id) }
+                    let byProject = Dictionary(grouping: recent) { $0.project }
                         .sorted { ($0.value.first?.modifiedAt ?? .distantPast) > ($1.value.first?.modifiedAt ?? .distantPast) }
                     ForEach(byProject, id: \.key) { project, sessions in
                         group(project)
@@ -937,7 +943,7 @@ struct SessionPicker: View {
                         }
                     }
                     let liveIDs = Set(cockpit.liveSessions.map(\.id))
-                    let codex = cockpit.runRecords.filter { !liveIDs.contains($0.id) }
+                    let codex = cockpit.runRecords.filter { !liveIDs.contains($0.id) && shows($0.id) }
                     if !codex.isEmpty {
                         group("CODEX · GROK")
                         ForEach(codex.sorted { $0.lastUsed > $1.lastUsed }) { record in
@@ -948,8 +954,8 @@ struct SessionPicker: View {
                             }
                         }
                     }
-                    if cockpit.liveSessions.isEmpty && cockpit.recentSessions.isEmpty && codex.isEmpty {
-                        Text("履歴はまだない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg3).padding(.top, 12)
+                    if live.isEmpty && recent.isEmpty && codex.isEmpty {
+                        Text(origin == .all ? "履歴はまだない" : "\(origin.label)の会話はない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg3).padding(.top, 12)
                     }
                 }
             }

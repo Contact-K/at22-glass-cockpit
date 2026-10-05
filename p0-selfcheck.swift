@@ -92,6 +92,7 @@ struct P0SelfCheck {
         messageIDsStayUniquePastTheCap()
         toolRiskFollowsTheLadder()
         flowStepFollowsTheState()
+        sessionOriginFilters()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -4039,6 +4040,14 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 会話の出どころの切り替え: 全部は両方、AT22 は AT22 で起こしたものだけ、外部はそれ以外だけ
+    static func sessionOriginFilters() {
+        typealias O = Cockpit.SessionOrigin
+        assert(O.all.shows(at22: true) && O.all.shows(at22: false))
+        assert(O.at22.shows(at22: true) && !O.at22.shows(at22: false))
+        assert(!O.external.shows(at22: true) && O.external.shows(at22: false))
     }
 
     /// 使い方の流れ: 足りないものから順にいまの一手を返す。全部そろって変更も無ければ出さない
