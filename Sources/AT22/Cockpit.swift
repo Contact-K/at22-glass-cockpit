@@ -369,6 +369,17 @@ final class Cockpit {
     /// 実測1セッションで text 256件 / thinking 297件。数セッションぶん抱えても軽いが、
     /// 上限は置く（1件が数千字になることがある）
     static let maxMessages = 4000
+    /// 発言の id。`messages.count` で振ると上限に届いた後は全部同じ id になり、会話の LazyVStack が固まった
+    private var nextMessageID = 0
+
+    /// 発言を足すのはここだけ（id を振る・上限で落とす）
+    private func appendMessage(session: String, agent: String, text: String, thinking: Bool, speaker: Speaker, at: Date) {
+        messages.append(Message(id: nextMessageID, session: session, agent: agent,
+                                text: text, thinking: thinking, speaker: speaker, at: at))
+        nextMessageID += 1
+        // ponytail: 余裕を持たせてまとめて落とす。1件ごとだと開き直しの流し込みで 件数×4000 ずらしていた
+        if messages.count > Self.maxMessages + 500 { messages.removeFirst(messages.count - Self.maxMessages) }
+    }
 
     /// 司令塔がサブエージェントを呼んだ記録。**会話の流れに1行として混ぜるためだけ**に持つ。
     /// 作業そのものは盤面のエージェント帯が語るので、ここは「呼んだ」ことしか語らない
@@ -496,14 +507,9 @@ final class Cockpit {
         backends[record.id] = record.backend
 
         // 案内メッセージを追加
-        messages.append(Message(
-            id: messages.count,
-            session: record.id,
-            agent: record.id,
-            text: "以前のやり取りはこの画面には出ません（今回の分から表示）",
-            thinking: false,
-            speaker: .model,
-            at: Date()))
+        appendMessage(session: record.id, agent: record.id,
+                      text: "以前のやり取りはこの画面には出ません（今回の分から表示）",
+                      thinking: false, speaker: .model, at: Date())
 
         selectedSession = record.id
         refreshLiveSessions()
@@ -640,9 +646,7 @@ final class Cockpit {
                     echoes[session]?.remove(at: i)
                     break
                 }
-                messages.append(Message(id: messages.count, session: session, agent: agent,
-                                        text: text, thinking: thinking, speaker: speaker, at: at))
-                if messages.count > Self.maxMessages { messages.removeFirst(messages.count - Self.maxMessages) }
+                appendMessage(session: session, agent: agent, text: text, thinking: thinking, speaker: speaker, at: at)
                 // 考えた印。モデルが考えた時だけ thoughtAt を進める。人間の発言で思考中になってはいけない
                 // ツールを呼ばずに考えている間、`latest` は前の作業のまま止まる
                 var record = agents[agent] ?? AgentRecord(session: session, lastAt: at)
@@ -996,7 +1000,8 @@ final class Cockpit {
     func memoryDirectory(cwd: String) -> String {
         // リモートの相手は手元の記憶DB を書けない
         guard !Remote.isRemote(cwd) else { return "" }
-        let base = (try? Worktree.root(of: cwd)) ?? cwd
+        // 裏の走査が埋めた本体を先に見る（"" はリポジトリでない）。1秒ごとの見回りからメインで git を叩かない
+        let base = repoOf[cwd].map { $0.isEmpty ? cwd : $0 } ?? (try? Worktree.root(of: cwd)) ?? cwd
         return projectsRoot.appendingPathComponent(Self.projectSlug(base)).appendingPathComponent("memory").path
     }
 
@@ -1944,11 +1949,7 @@ final class Cockpit {
     /// 二重に並ばないよう覚えておく（`apply` の `.said` が1回だけ読み飛ばす）
     func appendHuman(_ text: String, session: String) {
         if backend(of: session) == .claude, !Remote.isRemote(cwd(of: session) ?? "") { echoes[session, default: []].append(text) }
-        messages.append(Message(id: messages.count, session: session, agent: session,
-                                text: text, thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
+        appendMessage(session: session, agent: session, text: text, thinking: false, speaker: .human, at: Date())
     }
 
     private func launchCodex(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {

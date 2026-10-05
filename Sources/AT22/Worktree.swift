@@ -25,6 +25,9 @@ enum Worktree {
         var description: String { message }
     }
 
+    /// `run` で裏読みした stderr の受け皿。書くのは裏の1回だけで、読むのは `wait()` の後
+    private final class ErrBox: @unchecked Sendable { var data = Data() }
+
     /// 置き場の相対パス。ここを無視させないと、本体の `git status` に作業場所が丸ごと出てしまう
     static let directory = ".claude/worktrees"
 
@@ -105,8 +108,13 @@ enum Worktree {
         task.standardError = errors
         task.standardInput = FileHandle.nullDevice
         do { try task.run() } catch { throw Failure(message: "\((executable as NSString).lastPathComponent) を起こせない: \(error)") }
+        // stderr は裏で同時に読む。stdout を読み切ってからだと、stderr が 64KB を超えた時に互いに待って止まる
+        let errBox = ErrBox()
+        let errRead = DispatchWorkItem { errBox.data = errors.fileHandleForReading.readDataToEndOfFile() }
+        DispatchQueue.global().async(execute: errRead)
         let out = output.fileHandleForReading.readDataToEndOfFile()
-        let err = errors.fileHandleForReading.readDataToEndOfFile()
+        errRead.wait()
+        let err = errBox.data
         task.waitUntilExit()
         guard task.terminationStatus == 0 else {
             let reason = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

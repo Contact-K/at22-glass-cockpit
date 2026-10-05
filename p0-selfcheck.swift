@@ -87,6 +87,7 @@ struct P0SelfCheck {
         hunkPatchAndGitReaders()
         sparringReadsProposals()
         sentMessageIsNotDoubled()
+        messageIDsStayUniquePastTheCap()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -4021,6 +4022,16 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 上限を超えても発言の id が重ならない（`messages.count` で振っていた頃は全部 4000 になり、会話が固まった）
+    @MainActor static func messageIDsStayUniquePastTheCap() {
+        let cockpit = Cockpit()
+        for i in 0..<(Cockpit.maxMessages + 600) { cockpit.appendHuman("m\(i)", session: "s") }
+        let ids = cockpit.messages.map(\.id)
+        assert(Set(ids).count == ids.count, "上限を超えた後の発言の id が重なった")
+        assert(ids.count <= Cockpit.maxMessages + 500, "上限で落としていない (実際: \(ids.count))")
+        assert(cockpit.messages.last?.text == "m\(Cockpit.maxMessages + 599)", "最新の発言が残っていない")
     }
 
     /// 壁打ちの返事の末尾の決まった形の行を、手順・決定（理由つき）・問い（選択肢つき）に分ける。
