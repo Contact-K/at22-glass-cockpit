@@ -272,7 +272,8 @@ struct CockpitView: View {
                             .offset(y: 56)
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
-                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) })
+                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
+                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))
@@ -632,10 +633,23 @@ struct CockpitView: View {
         if ctxAlarm {
             return CraneStatus(busy: "overload", pose: .idle, state: "MENU", sub: "文脈があふれそうです")
         }
-        return CraneStatus(busy: nil, pose: .idle, state: "MENU", sub: "C0 司令塔")
+        // 静かな時は、いまの一手（連携 → プロジェクト → ワークスペース → 会話 → REVIEW）を出す
+        return CraneStatus(busy: nil, pose: .idle, state: "MENU",
+                           sub: cockpit.currentFlowStep(workspace: currentWorkspace)?.hint ?? "C0 司令塔")
     }
 
     // MARK: 遷移
+
+    /// 流れの段へ（管制塔の空の状態の段の並びから）
+    private func goFlow(_ step: Cockpit.FlowStep) {
+        switch step {
+        case .link: openSettings()
+        case .project, .workspace: overlay = .newWorkspace(from: nil)
+        case .talk: storedTab = .talk; setTower(false)
+        case .review: go(.review)
+        case .git: go(.git)
+        }
+    }
 
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
     /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ

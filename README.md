@@ -53,6 +53,19 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 
 端末で起こしたセッションが承認ダイアログで止まると、司令塔の箱が琥珀色の枠になり「承認待ち · 直前の作業」と出る。フックは使わない（Claude Code がセッション状態に書く値を読むだけ）ので、どのサブエージェントが待っているかまでは出ない。
 
+## 流れ
+
+使い方は6段。いまどこにいるかは、静かな時の鶴の札（「いまの一手」）と、ワークスペースがまだ無い管制塔の段の並びに出る（どちらも状態から決める。初回の印は持たない）。
+
+| 段 | やること | どこで |
+|---|---|---|
+| 01 Link 連携 | CLI（claude / grok / hermes / codex …）を入れ、03 Launch を「動かす」にする | 10 SETTINGS の 02 Link・03 Launch |
+| 02 Project プロジェクト | リポジトリをクローン／ローカルで新しく／既存のフォルダから | 上帯の ＋ → 01 Repository の「＋ 新しいプロジェクト」 |
+| 03 Workspace ワークスペース | worktree を作り、エージェント・最初の指示・承認の段を決める | 上帯の ＋（6段の板） |
+| 04 Talk 会話 | 司令塔と話す。承認と門は会話のカードで答える。並列は Hydra | 01 TALK |
+| 05 Review 見る | 差分を読み、指摘を1通で送り、ハンクごとにステージ | 07 REVIEW |
+| 06 Git 送る | 記帳 → 送出 → PR。マージは人 | 08 GIT |
+
 ## 見えるもの
 
 画面は **Sumi v11**（claude.ai/design の `ui_kits/at22-v11`、段取りは `docs/design/v11/PLAN.md`）。青 `#1212EE` × 白の2色に、差し色のピンク `#FF3DCC` を小さく1色だけ。角丸も影も無い。
@@ -77,7 +90,7 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 
 依存は `import` では引けない（Swift の単一モジュールにはファイル間の import が無い）ので、**どのファイルが宣言した名前を、どのファイルが使っているか**で引いている。
 
-**03 SPARRING 壁打ち** … 書き始める前に計画を練る場所。**読むだけのセッション**（claude の `--permission-mode plan`）をその worktree に起こし、話す（送る文には「案を出して」の型と、決めたことを前提として添える）。返事の末尾の `STEP:` / `DECIDE: … // 理由` / `ASK: …？ [a | b]` を「採れる案」と「問い」として拾う。手順を採ると右の暫定プランに積まれ、■ 合意したものだけ **05 PLAN に送る**（司令塔に `TaskCreate` で積んでもらう1通）。決めたことは次の壁打ちに前提として渡り、**HANDOFF に書く**で記憶DBのノートに足す。
+**壁打ち（01 TALK の「□ 壁打ち」）** … 書き始める前に計画を練る。入れるとその会話の worktree が plan の段（claude の `--permission-mode plan`・読むだけ）になり、送る文に型（案を出して／反論して／分解して／決めて）と、決めたことを前提として添える。返事の末尾の `STEP:` / `DECIDE: … // 理由` / `ASK: …？ [a | b]` は返事の下の札になり（「採る ▸」・問いの選択肢・問いが無ければ「次に」）、右列は暫定プランと決定事項に替わる。■ 合意した手順だけ **05 PLAN に送る**（司令塔に積んでもらう1通）、決めたことは **HANDOFF に書く**で記憶DBのノートに足す。
 
 **07 REVIEW 差分** … 基点からの差分を1ファイルずつ。行を押して指摘を溜め、**1通にまとめて**エージェントへ送る。ハンクごとに **STAGE / 外す**（`git apply --cached`）。右列は変わったファイル（見た・ステージ数・指摘数）とコミット。
 
@@ -85,7 +98,7 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 
 **09 TERMINAL 端末** … チャットが主・端末は脱出口。下帯の `09 // TERM` か ⌃` で下から引き出す。worktree ごとにログインシェルを起こし、切り替えても生かしたまま持つ（アプリが閉じるまで）。2本以上は左右に並ぶ。管制塔のタイルの「端末」は AT22 の接続を閉じてから、中の端末で `claude --resume` する。
 
-**10 SETTINGS 設定** … 新しいワークスペースの既定（承認の段・エージェント）、思考の表示、止まったエージェントを畳む・まっさらに。CLI の場所とログインは ⌘, の窓。**06 Skill** で門の手順（`Resources/Skills/at22-gate`：`SKILL.md` と `gate.sh`）を `~/.claude/skills/at22-gate/` に入れる。入れた後の司令塔は、サブエージェントや別のエージェントを起こす前に `gate.sh` を1回呼ぶだけで、段の判定・門の書き出し・答え待ちはスクリプトが受け持つ（Bash 道具の 10 分を超える待ちは `gate.sh --wait <id>` で続ける）。AT22 がここに書くのは押した時だけ。
+**10 SETTINGS 設定** … 01 Approval / 02 Link / 03 Launch / 04 Display / 05 Worktrees / 06 Skills / 07 Sessions（眠らせる・Hydra の上限）/ 08 Remote / 09 Schedule。⌘, はこのタブを開く。**06 Skills** で同梱のスキル（`Resources/Skills` の `at22-gate`＝門・`at22-handoff`＝記憶DB の節目と引き継ぎの書き方・`at22-hydra`＝並列で任せる書式）を `~/.claude/skills/` に入れる。入れた後の司令塔は、サブエージェントや別のエージェントを起こす前に `gate.sh` を1回呼ぶだけで、段の判定・門の書き出し・答え待ちはスクリプトが受け持つ（Bash 道具の 10 分を超える待ちは `gate.sh --wait <id>` で続ける）。AT22 がここに書くのは押した時だけ。
 
 **止まった指示（門）**
 
@@ -96,15 +109,17 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 AT22 :  門を見せる → 人間が答える → memory/gate/<id>.verdict を書く
 ```
 
-| Lv | 名前 | 止める指示 | 起こす時の `--permission-mode` |
+| 段 | 値 | 門（サブエージェント・采配） | 道具の承認（AT22 が決める） |
 |---|---|---|---|
-| 1 | 壁打ち | —（指示を出さない） | `plan` |
-| 2 | 隣で見てる | 全部 | `default`（道具ごとに承認を訊く） |
-| 3 | 気にかけてる | 高リスクだけ | `acceptEdits` |
-| 4 | 任せてる | 止めない | `bypassPermissions` |
-| 5 | 留守番 | 止めない（無人） | `bypassPermissions` ＋ `--bg` |
+| 壁打ち（トグル） | `plan` | 指示を出さない | 訊く（claude は `plan`） |
+| Lv.1 隣で見てる | `each` | 全部止める | 全部訊く |
+| Lv.2 気にかけてる | `normal` | 高リスクだけ止める | 低リスクは10秒の猶予の後に通す・高リスクは訊く |
+| Lv.3 任せてる | `auto` | 止めない（采配も自動で許可） | 低リスクはすぐ通す・高リスクは訊く |
+| Lv.4 留守番 | `unattended` | 止めない（采配も自動で許可） | 低リスクはすぐ通す・高リスクは「要判断」に積んで断る |
 
-値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る。壁打ちのセッションは起こしてもこのファイルを書き換えない。
+claude はどの段も `--permission-mode default`（壁打ちだけ `plan`）で起こし、承認は全部 AT22 に来る。
+
+値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る。壁打ちのトグルはこのファイルを `plan` にし、切ると元の段に戻す。
 
 **文脈（CTX）** … `message.usage` の実測（`input` ＋ `cache_read` ＋ `cache_creation`）で 20 升を埋める。85% を超えると赤くなる。切れ目は `Sources/AT22/Snowman.swift`。**これはハルシネーションそのものの検知ではない。**
 
@@ -148,6 +163,7 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
 ```
 
 Hydra の通し（本物の claude を haiku で2本起こす・料金がかかる）は `hydra-check.swift` を同じ Sources と組んで走らせる。
+接続と段の通し（手元の claude・grok・hermes で往復、claude で Lv.2 の rm は訊く・書き込みは猶予の後に通る・Lv.4 の rm は要判断に積む）は `agents-check.swift` を同じように組む。
 使い捨てのリポジトリで ```hydra → 門（Lv.3 で自動許可）→ worktree → head → 報告が司令塔に届く、までを確かめ、後片付けもする。
 
 Foundation だけで組んであるので Linux でも通る（`FileManager.replaceItemAt` が Linux で常に失敗するので、
@@ -161,7 +177,7 @@ Foundation だけで組んであるので Linux でも通る（`FileManager.repl
 swift run AT22 --shot /tmp/x.png 1440 900                             # 01 TALK
 swift run AT22 --shot /tmp/x.png --tower --workspaces                 # 00 管制塔（見本のワークスペース）
 swift run AT22 --shot /tmp/x.png --transcript <path.jsonl> --gate     # 実データ＋門を1つ立てた状態
-swift run AT22 --shot /tmp/x.png --mode review --review <worktree>    # 07 REVIEW（files / git / spar も）
+swift run AT22 --shot /tmp/x.png --mode review --review <worktree>    # 07 REVIEW（files / git / settings も）
 swift run AT22 --shot /tmp/x.png --mode talk --term                   # 端末の引き出し
 swift run AT22 --shot /tmp/x.png --menu root|jump  /  --sheet new|delete|pick
 swift run AT22 --shot /tmp/x.png --ripple back:9                   # 管制塔⇄会話の波紋の途中のコマ（fwd:n・side:n も）

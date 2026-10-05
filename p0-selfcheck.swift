@@ -91,6 +91,7 @@ struct P0SelfCheck {
         sentMessageIsNotDoubled()
         messageIDsStayUniquePastTheCap()
         toolRiskFollowsTheLadder()
+        flowStepFollowsTheState()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -4038,6 +4039,16 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 使い方の流れ: 足りないものから順にいまの一手を返す。全部そろって変更も無ければ出さない
+    static func flowStepFollowsTheState() {
+        func f(_ cli: Bool = true, _ on: Bool = true, _ p: Bool = true, _ w: Bool = true, _ s: Bool = true, _ c: Bool = false) -> Cockpit.FlowStep? {
+            Cockpit.flowStep(cli: cli, launcher: on, projects: p, worktrees: w, sessions: s, changes: c)
+        }
+        assert(f(false, true, false, false, false) == .link && f(true, false) == .link, "連携が先に来ない")
+        assert(f(true, true, false, false, false) == .project && f(true, true, true, false) == .workspace)
+        assert(f(true, true, true, true, false) == .talk && f(true, true, true, true, true, true) == .review && f() == nil, "\(String(describing: f()))")
     }
 
     /// 道具の危険度と、段ごとの扱い（訊く／猶予の後に通す／すぐ通す／要判断に積む）

@@ -1143,6 +1143,40 @@ final class Cockpit {
         }
     }
 
+    // MARK: 使い方の流れ（チュートリアルと「いまの一手」）
+
+    /// AT22 の流れ。連携 → プロジェクト → ワークスペース → 会話 → REVIEW → GIT
+    enum FlowStep: Int, CaseIterable, Sendable {
+        case link, project, workspace, talk, review, git
+        var no: String { String(format: "%02d", rawValue + 1) }
+        var en: String { ["Link", "Project", "Workspace", "Talk", "Review", "Git"][rawValue] }
+        var jp: String { ["連携", "プロジェクト", "ワークスペース", "会話", "見る", "送る"][rawValue] }
+        /// 「いまの一手」の1行（鶴の札・管制塔の空の状態）
+        var hint: String {
+            ["10 SETTINGS で CLI を入れて連携を「動かす」に", "＋ で新しいプロジェクトを立ち上げる",
+             "＋ でワークスペース（worktree）を作る", "会話を開いて最初の1通を送る",
+             "変更あり · 07 REVIEW で見てステージする", "08 GIT で記帳して送る"][rawValue]
+        }
+    }
+
+    /// 状態から、いまやる一手。全部済んでいて変更も無ければ nil（出さない）
+    nonisolated static func flowStep(cli: Bool, launcher: Bool, projects: Bool, worktrees: Bool,
+                                     sessions: Bool, changes: Bool) -> FlowStep? {
+        if !cli || !launcher { return .link }
+        if !projects { return .project }
+        if !worktrees { return .workspace }
+        if !sessions { return .talk }
+        return changes ? .review : nil
+    }
+
+    /// いまの状態で `flowStep` を引く（画面から）
+    func currentFlowStep(workspace: String?) -> FlowStep? {
+        Self.flowStep(cli: !found.isEmpty, launcher: launcherOn, projects: !projects.isEmpty,
+                      worktrees: worktrees.values.contains { $0.contains { !$0.isMain } },
+                      sessions: !liveSessions.isEmpty || !recentSessions.isEmpty,
+                      changes: workspace.flatMap { diffStats[$0] }.map { $0.files > 0 } ?? false)
+    }
+
     // MARK: Hydra
 
     /// 起こした head の重複を防ぐ（会話 → 名前）。transcript を読み直しても二度起こさない
