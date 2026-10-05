@@ -709,6 +709,7 @@ final class Cockpit {
         refreshStructureIfNeeded()
         refreshMemory()
         refreshGates()
+        expireVetoes()
         refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
     }
@@ -812,10 +813,14 @@ final class Cockpit {
             if !gates.isEmpty { gates = [] }
             return
         }
-        let found = Gate.pending(memoryRoot: dir)
-        if found.map(\.id) != gates.map(\.id) { gates = found }
+        // 段を先に読む。選択を別のプロジェクトへ移した直後に、前のプロジェクトの段で門を裁かない
         let level = Gate.level(memoryRoot: dir)
         if level != gateLevel { gateLevel = level }
+        let found = Gate.pending(memoryRoot: dir)
+        if found.map(\.id) != gates.map(\.id) {
+            gates = found
+            judgeGates()
+        }
     }
 
     /// 門に答える。**書けなかったら必ず呼び出し元に返す**——
@@ -825,9 +830,9 @@ final class Cockpit {
     /// 作成を待つ間に門が板に残って二度押されないため
     @discardableResult
     func answer(_ request: Gate.Request, _ verdict: Gate.Verdict,
-                revised: String = "", at: Date = Date()) -> NoteSaveResult {
+                revised: String = "", at: Date = Date(), reason: String = "") -> NoteSaveResult {
         let result = saveNote(path: Gate.verdictPath(for: request),
-                              text: Gate.verdictText(verdict, at: at, revised: revised),
+                              text: Gate.verdictText(verdict, at: at, revised: revised, reason: reason),
                               creating: true)
         guard result == .saved else { return result }
         refreshGates()
@@ -854,6 +859,8 @@ final class Cockpit {
                 guard let self else { return }
                 if let session, error == nil {
                     self.dispatched[session] = gate
+                    // ワーカーを起こしている間に、人が veto 窓で止めていた
+                    if self.stoppedDispatches.remove(gate) != nil { self.stopWorker(session) }
                 } else {
                     self.writeResult(gate, status: "failed", fields: [("workspace", path), ("error", error ?? "起こせなかった")])
                 }
@@ -1127,8 +1134,7 @@ final class Cockpit {
             apply(events)
 
         case let .approval(approval):
-            approvals.append(approval)
-            noteAttention(session, "承認を待っている — \(approval.detail)")
+            judge(approval)
 
         case let .turnEnded(tokens):
             reportDispatched(session, status: "done", reply: streaming[session])
@@ -1175,23 +1181,148 @@ final class Cockpit {
         }
     }
 
-    /// 承認に答える。**呼ぶのは人のクリックだけ**。`input` を渡すと書き換えた入力で許可する。
+    /// 承認に答える。呼ぶのは人のクリックか、人が選んだ段の規則（`Harness`）だけ。
+    /// `input` を渡すと書き換えた入力で許可する。
     /// 送れなかった時（書き換えた入力が JSON として読めない等）は依頼を残して false——
     /// 黙って消すと、相手は答えを待ったまま止まり続ける
     @discardableResult
-    func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
-        guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input) == true else {
+    func answer(_ approval: Approval, allow: Bool, input: String? = nil, message: String? = nil) -> Bool {
+        guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input, message: message) == true else {
             return false
         }
         approvals.removeAll { $0.id == approval.id }
         return true
     }
 
+    // MARK: 5段の許可制
+
+    /// veto 窓で通した門（Lv.2 の低リスクの指示）。**もう発行されている**——窓が閉じるまでは人が止められる
+    private(set) var vetoed: [Gate.Request] = []
+    /// 門のパス → 窓が閉じる時刻
+    private(set) var vetoUntil: [String: Date] = [:]
+    /// 止めた時にまだワーカーが起きていなかった采配。起きたらその場で止める
+    private var stoppedDispatches: Set<String> = []
+
+    /// 留守番中に飛ばしたもの。戻った人が見て、要るなら会話から頼み直す
+    struct Postponed: Identifiable, Equatable {
+        let id = UUID()
+        let session: String
+        let what: String
+        let reason: String
+        var at = Date()
+    }
+    private(set) var postponed: [Postponed] = []
+    private var judgedGates: Set<String> = []
+
+    /// そのセッションの段。**ファイルが正**（そのプロジェクトの `memory/gate/LEVEL`）——
+    /// 途中で段を変えても次の1件から効く
+    func level(of session: String) -> Gate.Level {
+        guard let cwd = cwd(of: session) else { return gateLevel }
+        return Gate.level(memoryRoot: projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+            .appendingPathComponent("memory"))
+    }
+
+    /// 届いた承認の依頼を段とリスクで裁く。人の前に出すのは「訊く」だけ
+    /// （veto 窓は指示にだけ掛かるので、道具の実行には来ない）
+    private func judge(_ approval: Approval) {
+        let found = Harness.assess(tool: approval.tool, input: approval.input, cwd: cwd(of: approval.session) ?? "")
+        switch Harness.decide(level(of: approval.session), found) {
+        case .allow, .veto:
+            answer(approval, allow: true)
+        case .ask:
+            approvals.append(approval)
+            noteAttention(approval.session, "承認を待っている — \(approval.detail)")
+        case let .deny(reason):
+            answer(approval, allow: false, message: reason)
+        case let .postpone(reason):
+            answer(approval, allow: false, message: reason)
+            postpone(approval.session, what: approval.detail, reason: found.reason)
+        }
+    }
+
+    /// 新しく届いた門を段とリスクで裁く。答えは人の答えと同じ口（`answer`）を通るので、采配もそのまま動く
+    private func judgeGates() {
+        let level = gateLevel
+        let fresh = gates.filter { !judgedGates.contains($0.id) }
+        judgedGates.formUnion(fresh.map(\.id))
+        for gate in fresh {
+            let found = Harness.assess(gateRisk: gate.risk)
+            switch Harness.decide(level, found, instruction: true) {
+            case .allow:                answer(gate, .allow, reason: "\(level.title) の規則で通した")
+            case let .veto(seconds):
+                // すぐ発行する。止められたら `<id>.stop` が現れる（司令塔は結果を使う前にそれを見る）
+                guard answer(gate, .allow, reason: "veto 窓: \(Int(seconds)) 秒は人が止められる（止めたら \((gate.id as NSString).deletingPathExtension).stop が現れる）") == .saved
+                else { continue }
+                vetoed.append(gate)
+                vetoUntil[gate.id] = Date().addingTimeInterval(seconds)
+            case .ask:                  break
+            case let .deny(reason):     answer(gate, .deny, reason: reason)
+            case let .postpone(reason):
+                answer(gate, .deny, reason: reason)
+                postpone(selectedSession ?? "", what: "門 \(gate.to): " + CockpitLayout.plainLine(gate.instruction),
+                         reason: found.reason)
+            }
+        }
+    }
+
+    private func postpone(_ session: String, what: String, reason: String) {
+        postponed.append(Postponed(session: session, what: what, reason: reason))
+        noteAttention(session, "要判断に積んだ — \(what)")
+    }
+
+    /// 窓が閉じた門を板から下ろす（もう止められない）。毎秒の周回から呼ぶ
+    func expireVetoes(now: Date = Date()) {
+        for (id, _) in vetoUntil.filter({ $0.value <= now }) { releaseVeto(id) }
+    }
+
+    /// 窓を待たずに下ろす（「このまま」・✕）
+    func releaseVeto(_ id: String) {
+        vetoUntil[id] = nil
+        vetoed.removeAll { $0.id == id }
+    }
+
+    /// veto 窓のうちに人が止めた。采配のワーカーは AT22 が起こしたのでここで止め、
+    /// 司令塔が自分で起こしたものには `<id>.stop` を置く（司令塔は結果を使う前にそれを見る）
+    @discardableResult
+    func stopVetoed(_ gate: Gate.Request) -> NoteSaveResult {
+        releaseVeto(gate.id)
+        if let worker = dispatched.first(where: { $0.value == gate.id })?.key {
+            stopWorker(worker)
+        } else if gate.dispatch != nil {
+            stoppedDispatches.insert(gate.id)
+        }
+        return saveNote(path: Gate.stopPath(for: gate.id),
+                        text: Gate.verdictText(.deny, at: Date(), reason: "人が veto 窓のうちに止めた。この指示の結果は使わないで"),
+                        creating: true)
+    }
+
+    /// 采配したワーカーを止めて畳み、結果に「止めた」と書く
+    private func stopWorker(_ session: String) {
+        _ = interrupt(session)
+        runs[session]?.connection.close()
+        reportDispatched(session, status: "stopped", reply: "人が veto 窓のうちに止めた")
+    }
+
+    /// 要判断を片付ける（見た・頼み直した）
+    func dismissPostponed(_ id: UUID) { postponed.removeAll { $0.id == id } }
+
     /// 人の番で止まっているものの数（門＋道具の承認）。タブとステータスバーの件数
     var stoppedCount: Int { gates.count + approvals.count }
 
     /// 検査・画像焼きから承認の依頼を直接流し込む口
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
+
+    /// 検査から接続を差し込む口。答えが相手に届いたか（通した・拒んだ・理由）を見る
+    func connectForProbe(_ connection: any AgentConnection, session: String) {
+        runs[session] = Run(connection: connection, token: UUID())
+    }
+
+    /// 画像焼きから veto 窓・要判断を差し込む口
+    func loadHarnessForProbe(vetoed: [Gate.Request], until: Date, postponed: [Postponed]) {
+        self.vetoed = vetoed
+        vetoUntil = Dictionary(uniqueKeysWithValues: vetoed.map { ($0.id, until) })
+        self.postponed = postponed
+    }
 
     /// 人の注意を引く出来事。見ていないセッションなら未読にし、画面の外（通知）にも渡す
     private func noteAttention(_ session: String, _ what: String) {

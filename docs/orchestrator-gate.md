@@ -59,21 +59,32 @@ fi
 | レベル | リスク値で止まるか |
 |---|---|
 | `plan` | 止めない（そもそも指示を出さない） |
-| `each` | **すべての指示で止まる** |
+| `each` | **すべての指示で止まる**（`risk: low` は AT22 がすぐ `allow` を返す＝veto 窓。下の「veto 窓」） |
 | `normal` | `risk` が `high` の場合だけ |
 | `auto` | 止めない |
-| `unattended` | 止めない |
+| `unattended` | `risk` が `low` **以外**（AT22 が「要判断」に積み、`verdict: deny` と `reason:` を返す） |
+
+**`risk:` は必ず書く。** 書いていない門を AT22 は「高」として扱う（申告漏れで自動に通らないように）。付け方の目安：
+
+- `low` … 末端の孤立したファイルだけに触る（他から使われていない・消しても誰も困らない）
+- `high` … コアや共有のモジュールに触る（多くのファイルから使われている）、消す・動かす、外に出る（push・デプロイ・外部 API）
+- `critical` … 取り返しがつかない、作業場所の外に出る、秘密に触る
+
+**veto 窓（`each` の `risk: low`）。** AT22 はすぐ `verdict: allow` を返し（`reason:` に「veto 窓」とある）、人は猶予（10秒）のうちなら止められる。止められると `<id>.stop` が現れる。**その指示の結果を使う前・次の段階へ進む前に `<id>.stop` が無いか見て、あれば結果を捨ててその指示は無かったことにする。** 采配（`dispatch:`）のワーカーは AT22 が止め、`<id>.result` に `status: stopped` を書く。
+
+AT22 は段とリスクで門に自動で答えることがある（5段の許可制、README の「門」の節）。その時の `.verdict` には `reason:` が付く。`verdict: deny` で `reason:` に「要判断」とあれば、**その指示は飛ばして残りを続け、最後の報告に要判断として書く**（全体を止めない）。
 
 ```bash
 stops_gate() {
   local level="$1"
-  local risk="$2"
-  
+  local risk="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+
   case "$level" in
     plan)       return 1 ;;  # false
     each)       return 0 ;;  # true
-    normal)     [ "$(echo "$risk" | tr '[:upper:]' '[:lower:]')" = "high" ] ;;
-    auto|unattended) return 1 ;;
+    normal)     [ "$risk" = "high" ] ;;
+    auto)       return 1 ;;
+    unattended) [ "$risk" != "low" ] ;;
     *)          return 1 ;;
   esac
 }

@@ -163,7 +163,8 @@ final class ACPConnection: AgentConnection {
         return ""       // ACP の割り込みは知らせなので、照合する受領確認は無い
     }
 
-    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool {
+    /// ACP の却下は選択肢を選ぶだけで、理由を載せる口が無い（`message` は届かない）
+    func answer(_ approval: Approval, allow: Bool, input: String?, message: String?) -> Bool {
         guard let ask = asks.removeValue(forKey: approval.id) else { return false }
         // 選択肢の種類は allow_once / allow_always / reject_once / reject_always。
         // **一度きりの方を選ぶ**——「以後ずっと」を AT22 が勝手に選ぶと、人が知らないまま次から通る

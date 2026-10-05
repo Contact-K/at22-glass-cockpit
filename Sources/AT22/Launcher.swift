@@ -193,8 +193,9 @@ enum Launcher {
 
     /// 起こす時と繋ぐ時で共通の並び。片方だけ直して食い違うのを避けるため1箇所にまとめる
     private nonisolated static func common(_ config: Config) -> [String] {
+        // `--bg` は付けない。付けると claude は背景のセッションを立てて**すぐ戻り**、stream-json が AT22 に来ない
+        // （承認も要判断も裁けず、ターンの終わりも見えない。2.1.282 で実測）。留守番の「人が居ない」は Harness が持つ
         var out = ["--permission-mode", config.level.permissionMode]
-        if config.level.background { out.append("--bg") }
         if !config.model.isEmpty {
             out.append("--model")
             out.append(config.model)
@@ -245,14 +246,16 @@ enum Launcher {
     /// 道具の問い合わせへの答え1行。許可なら `input`（書き換えていればその中身）で実行させる。
     /// 実測で `updatedInput` の書き換えは効く——実行されるのは書き換えた方。
     /// 入力が JSON として読めなければ何も返さない（壊れた入力で許可すると、何が走るか分からない）
-    nonisolated static func permissionLine(requestID: String, allow: Bool, input: String) -> Data? {
+    /// - Parameter message: 却下の理由。相手（モデル）はこれを読んで次の手を決める
+    nonisolated static func permissionLine(requestID: String, allow: Bool, input: String,
+                                           message: String = "AT22 で人が却下した") -> Data? {
         let body: [String: Any]
         if allow {
             guard let data = input.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
             body = ["behavior": "allow", "updatedInput": object]
         } else {
-            body = ["behavior": "deny", "message": "AT22 で人が却下した"]
+            body = ["behavior": "deny", "message": message]
         }
         let payload: [String: Any] = [
             "type": "control_response",

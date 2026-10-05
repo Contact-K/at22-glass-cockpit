@@ -653,6 +653,9 @@ struct GatePanel: View {
     var canRevise = true
     let onAnswer: (Gate.Verdict, String) -> Void
     let onClose: () -> Void
+    /// veto 窓（Lv.2 の低リスクの指示）。**もう発行した**指示で、この時刻までは止められる。
+    /// この間の答えは「このまま」（allow）と「止める」（deny）の2つだけ——発行済みなので書き換えは無い
+    var vetoUntil: Date? = nil
 
     @State private var rewriting = false
     @State private var revised = ""
@@ -714,12 +717,19 @@ struct GatePanel: View {
                 let on = Int(timeline.date.timeIntervalSince1970 / 0.7) % 2 == 0
                 Circle().fill(Palette.dotRed).frame(width: 9, height: 9).opacity(on ? 1 : 0.3)
             }
-            Text(approval ? "承認 — 道具の実行" : "門 — 止まった指示").etched(Palette.FontSize.label, light: true)
+            Text(vetoUntil != nil ? "保留中 — 発行済み" : approval ? "承認 — 道具の実行" : "門 — 止まった指示")
+                .etched(Palette.FontSize.label, light: true)
             Spacer(minLength: Palette.Space.s1)
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                Text("待機 " + CockpitCanvas.waited(request.waited(now: timeline.date)))
-                    .font(.system(size: Palette.FontSize.readout, design: .monospaced))
-                    .foregroundStyle(Palette.paperInkDim)
+                if let vetoUntil {
+                    Text("あと \(max(0, Int(vetoUntil.timeIntervalSince(timeline.date).rounded(.up))))秒は止められる")
+                        .font(.system(size: Palette.FontSize.readout, design: .monospaced))
+                        .foregroundStyle(Palette.danger)
+                } else {
+                    Text("待機 " + CockpitCanvas.waited(request.waited(now: timeline.date)))
+                        .font(.system(size: Palette.FontSize.readout, design: .monospaced))
+                        .foregroundStyle(Palette.paperInkDim)
+                }
             }
             Button(action: onClose) {
                 Text("✕")
@@ -779,13 +789,13 @@ struct GatePanel: View {
         HStack(spacing: Palette.Space.tiny) {
             // ⌘Return はサイドバーの「送る」が持っている。門が出ている間は両方が画面にあるので、
             // 同じ鍵にすると**門に答えたつもりで割り込みが飛ぶ**。門側は ⇧⌘G に逃がす
-            Button("許可") { onAnswer(.allow, "") }
+            Button(vetoUntil != nil ? "このまま" : "許可") { onAnswer(.allow, "") }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .buttonStyle(.borderedProminent)
                 // 既定の青はシステムの色で、DS の「赤ひとつ」の規律の外にある
                 .tint(Palette.accent)
-            if canRevise { Button("書換") { rewriting = true }.buttonStyle(.bordered) }
-            Button("却下") { onAnswer(.deny, "") }.buttonStyle(.bordered)
+            if canRevise && vetoUntil == nil { Button("書換") { rewriting = true }.buttonStyle(.bordered) }
+            Button(vetoUntil != nil ? "止める" : "却下") { onAnswer(.deny, "") }.buttonStyle(.bordered)
         }
         .font(.system(size: Palette.FontSize.body, design: .monospaced))
     }
@@ -820,6 +830,7 @@ struct GatePanel: View {
 /// どちらも目を上げずに確かめたいもの
 struct StatusBar: View {
     let cockpit: Cockpit
+    @State private var showingPostponed = false
 
     static let height: CGFloat = 28
 
@@ -830,6 +841,16 @@ struct StatusBar: View {
             Text(gateText)
                 .etched(Palette.FontSize.label)
                 .foregroundStyle(cockpit.gates.isEmpty ? Palette.inkTertiary : Palette.accentText)
+            if !cockpit.postponed.isEmpty {
+                // 留守番中に飛ばしたもの。戻った人が押して一覧を見る
+                Button { showingPostponed.toggle() } label: {
+                    Text(String(format: "要判断 %02d", cockpit.postponed.count))
+                        .etched(Palette.FontSize.label)
+                        .foregroundStyle(Palette.warning)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingPostponed, arrowEdge: .top) { PostponedList(cockpit: cockpit) }
+            }
             Spacer(minLength: Palette.Space.s2)
             Text(tail)
                 .etched(Palette.FontSize.label)
@@ -850,5 +871,39 @@ struct StatusBar: View {
     private var tail: String {
         guard let id = cockpit.selectedSession else { return "AT22" }
         return String(id.prefix(8)).uppercased()
+    }
+}
+
+/// 留守番中（Lv.5）に飛ばしたものの一覧。エージェントには「飛ばして続け、最後の報告に書いて」と返してある。
+/// 要るものは会話を開いて頼み直す
+struct PostponedList: View {
+    let cockpit: Cockpit
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("要判断 — 留守番中に飛ばしたもの")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            ForEach(cockpit.postponed) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(cockpit.title(for: item.session) ?? String(item.session.prefix(8)))
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(item.at.formatted(date: .omitted, time: .shortened))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("会話を開く") { cockpit.selectedSession = item.session }
+                            .disabled(item.session.isEmpty)
+                        Button("片付けた") { cockpit.dismissPostponed(item.id) }
+                    }
+                    Text(item.what).font(.system(size: 11, design: .monospaced)).lineLimit(3)
+                    Text(item.reason).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                .font(.system(size: 11))
+                Divider()
+            }
+        }
+        .padding(14)
+        .frame(width: 420)
     }
 }

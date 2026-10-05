@@ -16,12 +16,22 @@ enum Snapshot {
 
     @MainActor
     static func write(to path: String, size: CGSize, transcript: String? = nil, gate: Bool = false,
-                      approval: Bool = false) {
+                      approval: Bool = false, veto: Bool = false) {
         let cockpit = Cockpit()
         // 空のまま焼くと外枠しか写らない。実 transcript を1本流し込むと、
         // エージェントの行・ファイルの格子・門まで入った本物の1コマになる
         if let transcript { feed(cockpit, from: transcript) }
         if gate { stopOneGate(cockpit) }
+        // 5段の許可制の見え方。Lv.2 の veto 窓（発行済みで、あと数秒は止められる）と、留守番中に積んだ要判断
+        if veto {
+            cockpit.loadHarnessForProbe(
+                vetoed: [Gate.Request(id: "/probe/gate/v1.md", call: "v1", by: "", to: "凡例の検査", risk: "low",
+                                      issued: Date(timeIntervalSinceNow: -3),
+                                      instruction: "W4 を起こす：凡例の文言だけ直す（末端のファイル1つ）")],
+                until: Date(timeIntervalSinceNow: 7),
+                postponed: [.init(session: "", what: "Bash: touch build/stamp", reason: "touch は許可リストに無い"),
+                            .init(session: "", what: "門 deploy: 本番へ出す", reason: "司令塔の申告: high")])
+        }
         // 承認の板の見え方。実機の can_use_tool の形そのまま（実行されるのは書き換えた方）
         if approval {
             cockpit.loadApprovalsForProbe([Approval(

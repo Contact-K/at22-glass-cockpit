@@ -57,7 +57,8 @@ protocol AgentConnection: AnyObject {
     func interrupt() -> String?
     /// 承認に答える。`input` を渡すと書き換えた入力で許可する。
     /// **送れなかったら false**——黙って消すと、相手は答えを待ったまま止まり続ける
-    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool
+    /// - Parameter message: 却下の理由。渡せる相手（Claude）にだけ届く
+    func answer(_ approval: Approval, allow: Bool, input: String?, message: String?) -> Bool
     /// 閉じる。以後は送れない（走っているターンは相手に任せる）
     func close()
 }
@@ -93,10 +94,12 @@ final class ClaudeConnection: AgentConnection {
     func send(_ text: String) -> Bool { Launcher.send(text, to: input) }
     func interrupt() -> String? { Launcher.interrupt(input) }
 
-    func answer(_ approval: Approval, allow: Bool, input edited: String?) -> Bool {
+    func answer(_ approval: Approval, allow: Bool, input edited: String?, message: String?) -> Bool {
         // 書き換えた入力が JSON として読めなければ送らない（何が走るか分からないまま許可しない）
-        guard let line = Launcher.permissionLine(requestID: approval.id, allow: allow,
-                                                 input: edited ?? approval.input) else { return false }
+        guard let line = message.map({ Launcher.permissionLine(requestID: approval.id, allow: allow,
+                                                               input: edited ?? approval.input, message: $0) })
+                ?? Launcher.permissionLine(requestID: approval.id, allow: allow, input: edited ?? approval.input)
+        else { return false }
         return (try? input.write(contentsOf: line)) != nil
     }
 
@@ -204,7 +207,7 @@ final class CodexConnection: AgentConnection {
         }
     }
 
-    func answer(_ approval: Approval, allow: Bool, input: String?) -> Bool { false }
+    func answer(_ approval: Approval, allow: Bool, input: String?, message: String?) -> Bool { false }
     func close() {}
 
     /// codex の JSONL イベントを共通の形へ。ファイル変更は1件ずつ触りとして出す

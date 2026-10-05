@@ -287,6 +287,22 @@ struct CockpitView: View {
                     .padding(.top, Palette.Space.small)
                     .padding(.trailing, Palette.Space.s3)
                     .transition(.opacity)
+            } else if let request = cockpit.vetoed.first {
+                // Lv.2 の低リスクの指示。もう発行してあり、窓が閉じるまでは止められる（何もしなければそのまま進む）
+                GatePanel(request: request,
+                          failed: gateFailed == request.id,
+                          onAnswer: { verdict, _ in
+                              if verdict == .deny {
+                                  gateFailed = cockpit.stopVetoed(request) == .saved ? nil : request.id
+                              } else {
+                                  cockpit.releaseVeto(request.id)
+                              }
+                          },
+                          onClose: { cockpit.releaseVeto(request.id) },
+                          vetoUntil: cockpit.vetoUntil[request.id])
+                    .padding(.top, Palette.Space.small)
+                    .padding(.trailing, Palette.Space.s3)
+                    .transition(.opacity)
             }
         }
     }

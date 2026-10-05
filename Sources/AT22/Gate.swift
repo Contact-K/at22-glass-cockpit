@@ -27,10 +27,10 @@ enum Gate {
     /// 名前を変えると既に置かれたファイルが黙って既定に落ちる
     enum Level: String, CaseIterable, Sendable {
         case plan        // 壁打ち：司令塔だけ。ファイルに触らないので門も立たない
-        case each        // 隣で見てる：サブエージェント到達前に全部止める
+        case each        // 隣で見てる：指示を全部門に通す。低リスクはすぐ発行して猶予のうちは止められ（veto 窓）、高リスクは人を待つ
         case normal      // 気にかけてる：高リスクだけ止める
-        case auto        // 任せてる：全部通す
-        case unattended  // 留守番：全部通す（無人）
+        case auto        // 任せてる：人に訊かない。致命的なものだけ静的な安全網で拒む
+        case unattended  // 留守番：無人。高リスクは飛ばして「要判断」に積む（`Harness`）
 
         var title: String {
             switch self {
@@ -42,33 +42,27 @@ enum Gate {
             }
         }
 
-        /// この強さで、そのリスクの指示を止めるか
+        /// この強さで、そのリスクの指示に門を立てるか（司令塔が判断する側）。
+        /// 留守番は低リスク以外に門を立てる——AT22 がそれを「要判断」に積んで飛ばさせるため。
+        /// 立てないと、人の居ない間に高リスクの指示が素通りする
         func stops(risk: String) -> Bool {
             switch self {
-            case .plan:              false      // そもそも指示を発行しない
-            case .each:              true
-            case .normal:            risk.lowercased() == "high"
-            case .auto, .unattended: false
+            case .plan:       false      // そもそも指示を発行しない
+            case .each:       true
+            case .normal:     risk.lowercased() == "high"
+            case .auto:       false
+            case .unattended: risk.lowercased() != "low"
             }
         }
 
         /// `claude --permission-mode` のどれで起こすか。
         ///
-        /// 訊く相手は AT22 の承認パネル（`--permission-prompt-tool stdio`）。
-        /// Lv.2 は道具ごとに全部訊く（`default`）、Lv.3 は編集だけ任せてそれ以外を訊く（`acceptEdits`）。
-        /// 以前は訊く相手が居なかったので Lv.2 も `acceptEdits` に寄せ、段の違いを門だけが持っていた。
+        /// 壁打ち以外は**全部 `default`**——道具の実行が1件ずつ AT22 に訊きに来る（`--permission-prompt-tool stdio`）ので、
+        /// 通すか・待つか・拒むかは段とリスクを見て `Harness` が決める。claude 側のモードに段を預けていた頃は
+        /// Lv.4/5 が bypass で何も訊かれず、致命的なものも「要判断」も AT22 には見えなかった。
+        /// 段を途中で変えても次の1件から効く（起こし直さなくていい）。
         /// サブエージェントを起こす Agent ツールはどの段でも訊かれない（実測）ので、そこは今も門が持つ
-        var permissionMode: String {
-            switch self {
-            case .plan:                   "plan"
-            case .each:                   "default"
-            case .normal:                 "acceptEdits"
-            case .auto, .unattended:      "bypassPermissions"
-            }
-        }
-
-        /// 人間が居ない前提で走らせるか（`--bg`）
-        var background: Bool { self == .unattended }
+        var permissionMode: String { self == .plan ? "plan" : "default" }
 
         /// 人間の承認なしにファイルを書き換える段。**入れた人の環境で効く**ので、
         /// 選ぶ時に一度だけ断りを入れる
@@ -160,10 +154,13 @@ enum Gate {
 
     /// 答えの中身。書き込み自体は `Cockpit.saveNote` に通す（アトミック書き込みと
     /// 置き場のガードが1箇所に集まっている方が、壊れた状態を残す経路が減る）
-    nonisolated static func verdictText(_ verdict: Verdict, at: Date, revised: String = "") -> String {
+    /// - Parameter reason: 人ではなく段の規則（`Harness`）が答えた時の理由。司令塔はこれを見て、
+    ///   却下を「飛ばして続ける」のか「やめる」のかを判断する
+    nonisolated static func verdictText(_ verdict: Verdict, at: Date, revised: String = "", reason: String = "") -> String {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
-        var out = "---\nverdict: \(verdict.rawValue)\nat: \(iso.string(from: at))\n---\n"
+        let because = reason.isEmpty ? "" : "reason: \(reason.replacingOccurrences(of: "\n", with: " "))\n"
+        var out = "---\nverdict: \(verdict.rawValue)\nat: \(iso.string(from: at))\n\(because)---\n"
         // revise の時だけ本文を持つ。司令塔は元の指示ではなくこちらを使う
         if verdict == .revise { out += revised.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" }
         return out
@@ -172,6 +169,11 @@ enum Gate {
     /// `gate/<id>.md` に対する答えの置き場
     nonisolated static func verdictPath(for request: Request) -> String {
         (request.id as NSString).deletingPathExtension + ".verdict"
+    }
+
+    /// veto 窓で通した指示を、窓のうちに人が止めた印。司令塔はその指示の結果を使う前にこれを見る
+    nonisolated static func stopPath(for gatePath: String) -> String {
+        (gatePath as NSString).deletingPathExtension + ".stop"
     }
 
     /// 采配したワーカーの結果の置き場。司令塔は .verdict の後にこれを待つ
