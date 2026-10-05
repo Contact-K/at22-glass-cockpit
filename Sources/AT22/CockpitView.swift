@@ -1183,6 +1183,12 @@ extension View {
             }
         }
     }
+
+    /// 要る時だけ矩形を報告する。スクロールの中の全行に付けると、1点動くたびに全行が報告し直す
+    @ViewBuilder
+    func reportRect(when on: Bool, _ key: String) -> some View {
+        if on { reportRect(key) } else { self }
+    }
 }
 
 /// 墨流しの水槽は1つだけ。窓を組み直しても溜まった墨を捨てない

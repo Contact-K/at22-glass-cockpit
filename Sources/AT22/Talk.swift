@@ -116,7 +116,10 @@ struct TalkScreen: View {
                     .padding(.bottom, 20)
                 }
                 .scrollIndicators(.never)
-                .defaultScrollAnchor(.bottom)
+                // defaultScrollAnchor(.bottom) は使わない。高さの違う行の LazyVStack で遡ると、行が組まれるたびに
+                // 下端へ合わせ直して並べ直しが終わらず固まった（2026-10-05 に sample で確認）。開いた時に下へ送る
+                .onAppear { scrollDown(proxy) }
+                .onChange(of: cockpit.selectedSession) { scrollDown(proxy) }
                 // 一番下が見えているか。遡っている間は、新しい発言や流れ込みで引き戻さない
                 .onScrollGeometryChange(for: Bool.self) { g in
                     g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
@@ -315,7 +318,8 @@ struct TalkScreen: View {
                     .background { Chevron(point: 18).fill(Palette.Light.fg) }
                     .frame(maxWidth: 560, alignment: .trailing)
             }
-            .reportRect(message.id == lastHuman ? "melast" : "me:\(message.id)")
+            // 行ごとの矩形は誰も読まない（読むのは最後の返事の c0last だけ）。全行に付けるとスクロールで固まった
+            .reportRect(when: message.id == lastHuman, "melast")
         case let .model(message, label, refs):
             // 壁打ち中は返事の末尾の STEP / DECIDE / ASK を札に分け、本文はそれ以外
             let sparred = planOn && !message.thinking && spar != nil && workspace != nil ? Sparring.parse(message.text) : nil
@@ -364,7 +368,7 @@ struct TalkScreen: View {
             .frame(maxWidth: 680, alignment: .leading)
             .overlay(Rectangle().strokeBorder(Palette.Light.fg,
                                               style: StrokeStyle(lineWidth: 2, dash: message.thinking ? [4, 3] : [])))
-            .reportRect(message.id == lastReply ? "c0last" : "c0:\(message.id)")
+            .reportRect(when: message.id == lastReply, "c0last")
         case let .call(call):
             let finished = cockpit.callFinished(call.id)
             rule("CALL // \(call.type.isEmpty ? "AGENT" : call.type.uppercased()) → \(call.title)",
