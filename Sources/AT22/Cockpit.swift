@@ -194,6 +194,8 @@ final class Cockpit {
     /// 起動機能の有効化フラグ。View や Settings から @AppStorage で参照される。
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let launcherEnabledKey = "launcherEnabled"
+    static let launcherOffMessage = "連携が「切」なので起こさない。10 SETTINGS の 03 Launch で「動かす」にする"
+    private var launcherOn: Bool { UserDefaults.standard.bool(forKey: Self.launcherEnabledKey) }
     /// Claude Code のパス指定。View や Settings から @AppStorage で参照される。
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let claudePathKey = "claudePath"
@@ -1287,6 +1289,8 @@ final class Cockpit {
     @discardableResult
     func launch(prompt: String, cwd: String, backend: Backend = .claude, model: String = "",
                 allowedTools: [String] = [], level: Gate.Level? = nil, effort: String = "") -> UUID? {
+        // 連携が「切」の間は何も起こさない（設定 03 Launch の約束）。起こす経路は全部ここを通る
+        guard launcherOn else { launchError = Self.launcherOffMessage; return nil }
         let level = level ?? gateLevel
         switch backend {
         case .claude:
@@ -1383,6 +1387,7 @@ final class Cockpit {
     @discardableResult
     func attach(to session: String) -> Bool {
         if runs[session] != nil { return true }
+        guard launcherOn else { launchError = Self.launcherOffMessage; return false }
         guard backend(of: session) == .claude else { return false }
         guard let claude else {
             launchError = "claude が見つからない。設定で場所を指定する"
@@ -1649,7 +1654,8 @@ final class Cockpit {
             noteAttention(session, "承認を待っている — \(approval.detail)")
 
         case let .turnEnded(tokens):
-            reportDispatched(session, status: "done", reply: streaming[session])
+            // codex・ACP は止めても turnEnded（stopReason: cancelled）で終わる。止めたのを「終わった」と報告しない
+            reportDispatched(session, status: stopping.contains(session) ? "stopped" : "done", reply: streaming[session])
             defer { flushHydra(session) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             clearStreaming(session)

@@ -37,7 +37,7 @@ enum Backend: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// ACP で話す相手。Gemini CLI（`--experimental-acp`）や OpenCode（`acp`）も同じ口なので、
+    /// ACP で話す相手。Gemini CLI（`--acp`）や OpenCode（`acp`）も同じ口なので、
     /// 入れたらここと `Cockpit.acpArguments` に1行ずつ足せば繋がる
     var isACP: Bool { self != .claude && self != .codex }
 

@@ -11,6 +11,8 @@ import Foundation
 struct P0SelfCheck {
 
     static func main() async {
+        // 起こす検査は連携が「入」の前提（自分専用の defaults なので本人の設定には触らない）
+        UserDefaults.standard.set(true, forKey: Cockpit.launcherEnabledKey)
         parseRead()
         parseEditStart()
         parseEditFinish()

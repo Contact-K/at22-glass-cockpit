@@ -13,6 +13,7 @@ struct HydraCheck {
         sh("git init -q -b main && git config user.email t@t && git config user.name t && echo '# hydra test' > README.md && git add -A && git commit -qm init")
         print("repo:", repo)
 
+        UserDefaults.standard.set(true, forKey: Cockpit.launcherEnabledKey)
         let cockpit = Cockpit()
         cockpit.findCLIs(force: false)
         for _ in 0..<40 where cockpit.claude == nil { try? await Task.sleep(for: .milliseconds(500)) }
@@ -78,6 +79,7 @@ struct HydraCheck {
             try? fm.removeItem(at: projects.appendingPathComponent(name))
         }
         try? fm.removeItem(at: base)
+        UserDefaults.standard.removePersistentDomain(forName: ProcessInfo.processInfo.processName)
         exit(ok ? 0 : 1)
     }
 }
