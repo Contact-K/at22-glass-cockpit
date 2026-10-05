@@ -75,7 +75,7 @@ struct CockpitView: View {
     /// 送出の間は鶴が畳んで送る（upload）、終わると片足で立つ
     @State private var craneFx: String?
 
-    // 壁打ち
+    // 壁打ち（会話画面の「□ 壁打ち」）
     /// worktree ごとの壁打ち（採った・決めた印）と、暫定プランの ⑂ から新規の板に渡す最初の指示
     @State private var spar = SparModel()
     @State private var newPrompt = ""
@@ -323,6 +323,12 @@ struct CockpitView: View {
                         } else {
                             FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
                         }
+                    } else if tab == .talk, !isTower, cockpit.selectedSession != nil, cockpit.gateLevel == .plan {
+                        // 壁打ち中は右列を暫定プラン・決定事項に（05 PLAN に送る・HANDOFF に書く）
+                        SparPanels(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
+                                   height: h,
+                                   onLaunch: { step in newPrompt = step; overlay = .newWorkspace(from: currentWorkspace) },
+                                   fly: { fly(from: $0, to: $1) }, rects: book.rects)
                     } else if tab == .talk {
                         RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
                                     snapshot: snap, tasks: tasks, height: h,
@@ -468,7 +474,8 @@ struct CockpitView: View {
                        workspace: isTower ? nil : currentWorkspace,
                        composing: $talkComposing,
                        onRiskyLevel: { riskyLevel = $0 },
-                       onBrowse: { overlay = .browser($0) })
+                       onBrowse: { overlay = .browser($0) },
+                       spar: spar, fly: { fly(from: $0, to: $1) }, rects: book.rects)
                 .offset(x: 220, y: 72)
         case .files:
             ZStack(alignment: .topTrailing) {

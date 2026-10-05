@@ -1,8 +1,8 @@
 import SwiftUI
 
-// MARK: - 03 SPARRING の状態
+// MARK: - 壁打ちの状態と部品（会話画面の「□ 壁打ち」で使う）
 
-/// worktree ごとの壁打ち。会話そのものは読むだけのセッション（plan モード）の transcript から読み、
+/// worktree ごとの壁打ち。会話そのものは壁打ち中（plan の段）の会話の transcript から読み、
 /// ここが持つのは「どの会話か・採った・決めた・答えた」の印だけ。**UserDefaults に残す**——
 /// 以前はメモリだけで、アプリを閉じるたびに壁打ちが消えていた。開き直したら会話は transcript から読み直す
 @MainActor @Observable
@@ -107,111 +107,24 @@ final class SparModel {
     }
 }
 
-/// 計画を練る場所。案を採ると右の暫定プランに積まれ、合意したものだけ 05 PLAN（司令塔の TaskCreate）へ送る。書込はしない
-struct SparScreen: View {
-    let cockpit: Cockpit
+/// 壁打ち中の会話の返事の下に付ける札。手順・決定は「採る ▸」で右列（暫定プラン・決定事項）へ、
+/// 問いは選択肢の札で答え、問いが無ければ最新の返事にだけ「次に」の型を出す。
+/// 以前は 03 SPARRING の画面にあった（2026-10-05 に会話画面へ移した）
+struct SparReplyStrip: View {
     let model: SparModel
-    let workspace: String?
-    let lead: String?
-    let width: CGFloat
-    let height: CGFloat
+    let workspace: String
+    let reply: Sparring.Reply
+    /// いちばん新しい返事で、手が空いている（「次に」を出す）
+    let offerNext: Bool
+    let onNext: (Sparring.Mode) -> Void
     let fly: (CGRect?, CGRect?) -> Void
     let rects: [String: CGRect]
 
-    @State private var draft = ""
-    @State private var problem: String?
-    @Environment(\.frozenTime) private var frozen
-
-    private var ws: String { workspace ?? "" }
-    private var board: SparModel.Board { model.board(ws) }
+    private var board: SparModel.Board { model.board(workspace) }
 
     var body: some View {
-        let entries = log
-        let lastReply = entries.last { if case .reply = $0.kind { return true } else { return false } }?.id
         VStack(alignment: .leading, spacing: 0) {
-            ScrollViewReader { proxy in
-                LiveScroll {
-                    VStack(alignment: .leading, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            SectionMark(number: "03", title: "SPARRING", jp: "壁打ち")
-                            Text("Shape the plan before anyone writes.").font(.display(52)).lineLimit(2)
-                                .minimumScaleFactor(0.6)
-                            Text("Claude と計画を練る場所です。案を採ると右の暫定プランに積まれ、合意したものだけ 05 PLAN に送ります。書込はしません。")
-                                .font(.bodyJP(15)).foregroundStyle(Palette.Light.fg2)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if workspace != nil { shelfBar }
-                        }
-                        .padding(.vertical, 8)
-                        if workspace == nil {
-                            Text("管制塔で worktree を選ぶと、そこで壁打ちできます。").font(.bodyJP(14))
-                        }
-                        ForEach(entries) { entry in
-                            switch entry.kind {
-                            case let .me(text): MeBubble(text: text)
-                            case let .reply(reply): replyCard(entry.id, reply, last: entry.id == lastReply)
-                            }
-                        }
-                        if let s = board.session, cockpit.isWorking(s) {
-                            HStack(spacing: 12) {
-                                InkLoader(status: "think", pitch: 2)
-                                Text("考えています").font(.bodyJP(14))
-                                Text(board.mode.en).font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg3)
-                            }
-                            .padding(.horizontal, 16).padding(.vertical, 12)
-                            .overlay(Rectangle().strokeBorder(Palette.Light.fg, style: StrokeStyle(lineWidth: 2, dash: [6, 4])))
-                        }
-                        if let problem { Text(problem).font(.bodyJP(13)).foregroundStyle(Palette.Light.danger) }
-                        Color.clear.frame(height: 1).id("end")
-                    }
-                    .padding(EdgeInsets(top: 12, leading: 0, bottom: 20, trailing: 16))
-                    .frame(width: width, alignment: .leading)
-                }
-                .onChange(of: entries.count) { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            // 会話の箱は 72〜702（900 の時）、その下に型と入力
-            .frame(height: height - 270)
-            input.padding(.top, 10)
-        }
-        .foregroundStyle(Palette.Light.fg)
-        .frame(width: width, alignment: .topLeading)
-        // 開き直した後・棚から出した後: 覚えておいた壁打ちの会話を transcript から読み直す（選択中の会話は動かさない）
-        .task(id: (workspace ?? "") + "|" + (board.session ?? "")) {
-            guard frozen == nil, let ws = workspace, let s = model.board(ws).session else { return }
-            await cockpit.adoptSparring(s, cwd: ws)
-        }
-    }
-
-    // MARK: 会話
-
-    struct Entry: Identifiable {
-        enum Kind { case me(String), reply(Sparring.Reply) }
-        let id: Int
-        let kind: Kind
-    }
-
-    /// 壁打ちのセッションの発言。人の側は送った約束事を外して、打った言葉だけ見せる
-    private var log: [Entry] {
-        guard let s = board.session else { return [] }
-        return cockpit.messages.filter { $0.session == s && !$0.thinking }.map { m in
-            if m.speaker == .human {
-                var t = m.text
-                if t.hasPrefix("[壁打ち"), let close = t.firstIndex(of: "]") { t = String(t[t.index(after: close)...]) }
-                if let cut = t.range(of: "\n\n") { t = String(t[..<cut.lowerBound]) }
-                return Entry(id: m.id, kind: .me(t.trimmingCharacters(in: .whitespaces)))
-            }
-            return Entry(id: m.id, kind: .reply(Sparring.parse(m.text)))
-        }
-    }
-
-    /// - Parameter last: いちばん新しい返事。訊きたいことが無ければ、ここに「次に」の札を出す
-    private func replyCard(_ id: Int, _ reply: Sparring.Reply, last: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("SPAR // THINK → REPLY").font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
-                Text(reply.body).font(.bodyJP(15)).lineSpacing(6).fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(EdgeInsets(top: 12, leading: 16, bottom: 10, trailing: 16))
-            ForEach(Array(reply.proposals.enumerated()), id: \.offset) { i, p in
+            ForEach(Array(reply.proposals.enumerated()), id: \.offset) { _, p in
                 // 案の文で覚える（返事の通し番号はアプリを開くたびに変わる）
                 let key = (p.kind == .step ? "S:" : "D:") + p.text
                 let taken = board.taken.contains(key)
@@ -231,11 +144,10 @@ struct SparScreen: View {
                             .reportRect("prop:\(key)")
                     }
                 }
-                .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 8))
+                .padding(.vertical, 8)
                 .opacity(taken ? 0.45 : 1)
                 .overlay(alignment: .top) { Rectangle().fill(Palette.Light.line).frame(height: 1) }
             }
-            // 簡易な質問の札。訊きたいことがあればその選択肢、無ければ（最新の返事にだけ）次の型
             if let q = reply.question {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -249,126 +161,22 @@ struct SparScreen: View {
                     }
                 }
                 .modifier(AskStrip())
-            } else if last, !busy {
+            } else if offerNext {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("▸ 次に").font(.mono(10)).tracking(1.2)
-                    SparModeChips(mode: nil, onPick: { next($0) })
+                    SparModeChips(mode: nil, onPick: onNext)
                 }
                 .modifier(AskStrip())
             }
         }
-        .frame(maxWidth: 680, alignment: .leading)
-        .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
-    }
-
-    private var input: some View {
-        // 型の札（SparModeChips）は本人の指示（2026-10-03）で外した。部品は後で使うので下に残してある
-        VStack(alignment: .trailing, spacing: 8) {
-            Text("読むだけ · 書込なし").font(.mono(9)).tracking(1).foregroundStyle(Palette.Light.fg3)
-            HStack(spacing: 0) {
-                sparPicker.padding(.leading, 14).padding(.trailing, 4)
-                SkillPicker(backend: .claude, skills: cockpit.skills, onPick: { draft = $0 + draft }).padding(.trailing, 6)
-                Group {
-                    if frozen != nil {
-                        Text("相談したいこと — 空のまま送ると案を出します").foregroundStyle(Palette.Light.fg3)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        TextField("相談したいこと — 空のまま送ると案を出します", text: $draft)
-                            .textFieldStyle(.plain).lineLimit(1).onSubmit(send)
-                    }
-                }
-                .font(.bodyJP(16))
-                Button(action: send) {
-                    Text("送る ↵").font(.mono(11)).tracking(0.9).foregroundStyle(Palette.Light.bg)
-                        .padding(.horizontal, 22).frame(maxHeight: .infinity).background(Palette.Light.fg)
-                }
-                .buttonStyle(PressStyle())
-                .disabled(workspace == nil)
-            }
-            .frame(height: 48)
-            .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
-        }
-    }
-
-    // MARK: 棚
-
-    /// 「新しい壁打ち」と「過去の壁打ち」。過去は今の板と入れ替える
-    private var shelfBar: some View {
-        let past = model.shelf[ws] ?? []
-        return HStack(spacing: 8) {
-            Button("＋ 新しい壁打ち") { model.startOver(ws, title: boardTitle(board)); draft = ""; problem = nil }
-                .buttonStyle(SumiButtonStyle(primary: false, size: 11))
-                .disabled(board.isEmpty || busy)
-            SumiPicker(sections: [.init(title: "過去の壁打ち", items: past.enumerated().map { i, b in
-                .init(id: String(i), text: (b.title ?? "無題") + "  ·  "
-                      + (b.at?.formatted(.dateTime.month().day().hour().minute()) ?? ""), on: false)
-            })], onPick: { _, id in
-                guard let i = Int(id) else { return }
-                model.takeOut(ws, at: i, title: boardTitle(board))
-                problem = nil
-            }) {
-                Text("過去の壁打ち \(past.count) ▾").font(.mono(11)).tracking(0.9)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .overlay(Rectangle().strokeBorder(Palette.Light.line, lineWidth: 1))
-            }
-            .disabled(past.isEmpty || busy)
-        }
-    }
-
-    /// 棚に出す題。最初に決めたこと → 会話の題 → 最初の手順
-    private func boardTitle(_ b: SparModel.Board) -> String {
-        b.decisions.first?.text ?? b.session.flatMap { cockpit.title(for: $0) } ?? b.steps.first?.text ?? "無題"
-    }
-
-    // MARK: 操作
-
-    private var busy: Bool { board.session.map { cockpit.isWorking($0) } ?? false }
-
-    /// 壁打ちのモデルとエフォート。起こした後はそのセッションに、起こす前は板に覚えておく
-    private var sparPicker: some View {
-        let b = board
-        if let s = b.session, cockpit.liveSessions.contains(where: { $0.id == s }) {
-            return ModelPicker(backend: .claude, models: cockpit.models(.claude),
-                               model: cockpit.model(of: s) ?? "", effort: cockpit.effort(of: s) ?? "",
-                               onModel: { cockpit.setModel($0, for: s) }, onEffort: { cockpit.setEffort($0, for: s) })
-        }
-        return ModelPicker(backend: .claude, models: cockpit.models(.claude), model: b.model, effort: b.effort,
-                           onModel: { model.boards[ws, default: .init()].model = $0 },
-                           onEffort: { model.boards[ws, default: .init()].effort = $0 })
-    }
-
-    /// 「次に」の札から: 文は空のまま、その型で送る
-    private func next(_ mode: Sparring.Mode) {
-        model.boards[ws, default: .init()].mode = mode
-        draft = ""
-        send()
-    }
-
-    private func send() {
-        guard let workspace else { return }
-        let b = board
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prompt = Sparring.prompt(text, mode: b.mode, decided: b.decisions.map(\.text))
-        problem = nil
-        if let s = b.session, cockpit.liveSessions.contains(where: { $0.id == s }) {
-            guard cockpit.send(prompt, to: s) else { problem = "いまは送れません（前の返事を待っています）"; return }
-        } else {
-            guard let s = cockpit.launchSparring(prompt: prompt, cwd: workspace, model: b.model, effort: b.effort) else {
-                problem = cockpit.launchError ?? "壁打ちのセッションを起こせませんでした"
-                return
-            }
-            model.boards[workspace, default: .init()].session = s
-        }
-        draft = ""
     }
 
     private func take(_ key: String, _ p: Sparring.Proposal) {
         let from = rects["prop:\(key)"]
-        model.boards[ws, default: .init()].taken.insert(key)
+        model.boards[workspace, default: .init()].taken.insert(key)
         switch p.kind {
         case .step:
-            model.boards[ws, default: .init()].steps.append(.init(text: p.text, ok: false))
+            model.boards[workspace, default: .init()].steps.append(.init(text: p.text, ok: false))
             let n = board.steps.count - 1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { fly(from, rects["draft:\(n)"]) }
         case .decide:
@@ -377,17 +185,26 @@ struct SparScreen: View {
     }
 
     private func answer(_ q: Sparring.Question, _ option: String) {
-        model.boards[ws, default: .init()].answered.insert(q.text)
+        model.boards[workspace, default: .init()].answered.insert(q.text)
         let t = q.text.trimmingCharacters(in: CharacterSet(charactersIn: "？? ")) + " → " + option
         decide(.init(text: t, why: "あなたが選択", source: "YOU", at: Date(), question: q.text), from: nil)
     }
 
     private func decide(_ d: SparModel.Decision, from: CGRect?) {
-        model.boards[ws, default: .init()].decisions.append(d)
+        model.boards[workspace, default: .init()].decisions.append(d)
         let n = board.decisions.count - 1
         model.fresh = n
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { fly(from, rects["dec:\(n)"]) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { if model.fresh == n { model.fresh = nil } }
+    }
+
+    /// 送った文から壁打ちの約束（頭の `[壁打ち…]` と末尾の書式の説明）を外し、打った言葉だけにする
+    static func typed(_ text: String) -> String {
+        guard text.hasPrefix("[壁打ち") else { return text }
+        var t = text
+        if let close = t.firstIndex(of: "]") { t = String(t[t.index(after: close)...]) }
+        if let cut = t.range(of: "\n\n") { t = String(t[..<cut.lowerBound]) }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
