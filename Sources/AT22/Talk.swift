@@ -62,7 +62,8 @@ struct TalkScreen: View {
     ]
 
     /// 画面に流す件数の上限。ponytail: 実測で1セッション数百件。数千に届いたら窓で切る
-    static let maxEntries = 200
+    /// ponytail: 行を全部その場で組む（VStack）ので、流すのは新しい方から150件まで
+    static let maxEntries = 150
 
     var body: some View {
         if cockpit.selectedSession == nil && !composing {
@@ -71,12 +72,19 @@ struct TalkScreen: View {
                 .frame(width: width, height: height, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                log.frame(width: width, height: max(120, height - 164 - (handoffShown ? 44 : 0)))
+                log.frame(width: width, height: max(120, height - 164 - 34 - (handoffShown ? 44 : 0)))
                 if handoffShown { handoffBar }
                 if failed, let reason = cockpit.launchError {
                     Text(reason).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
                         .lineLimit(2)
                 }
+                // 段と壁打ちは入力欄のすぐ上（会話の先頭に置くと、遡らないと切り替えられなかった）
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    levelSwitch
+                    planToggle
+                }
+                .frame(height: 24)
                 input
             }
             .frame(width: width, alignment: .topLeading)
@@ -100,12 +108,14 @@ struct TalkScreen: View {
                 tail
             }
             .padding(.trailing, 16)
-            .frame(width: width, height: max(120, height - 164), alignment: .bottomLeading)
+            .frame(width: width, height: max(120, height - 164 - 34), alignment: .bottomLeading)
             .clipped()
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    // LazyVStack は使わない。高さの違う行を遡る・下へ送る（scrollTo）たびに、組んでいない行の高さを
+                    // 見積もり直して並べ直しが終わらず固まった（2026-10-05、sample で LazySubviewPlacements が回り続けていた）
+                    VStack(alignment: .leading, spacing: 14) {
                         header
                         ForEach(items) { entry in row(entry, lastHuman: lastHuman, lastReply: lastReply).id(entry.id) }
                         tail
@@ -161,8 +171,6 @@ struct TalkScreen: View {
                 Text(cockpit.selectedSession.flatMap { cockpit.title(for: $0) } ?? (composing ? "新しい会話" : ""))
                     .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
                 Spacer(minLength: 8)
-                levelSwitch
-                planToggle
             }
             Text(composing && cockpit.selectedSession == nil ? "New talk." : headline)
                 .font(.display(52)).lineSpacing(0).fixedSize(horizontal: false, vertical: true)
