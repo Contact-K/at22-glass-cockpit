@@ -317,12 +317,11 @@ struct InkLoader: View {
     var accent: Color = Palette.pink
 
     @State private var start = Date()
-    /// `done` は1回きり。描き終わったら時計を止める（PLAN の済みの行に並ぶので、回し続けると無駄に食う）
-    @State private var finished = false
     @Environment(\.frozenTime) private var frozen
 
     var body: some View {
-        Ticker(fps: 24, paused: finished) { now in
+        // ponytail: `done` も繰り返す（本人の指示。1回きりだと見落とした）。済みの行が数十を越えて重ければ、見えている分だけ回す
+        Ticker(fps: 24) { now in
             // 焼く時は周期の真ん中（絵がいちばん立っている所）を写す
             let t = frozen != nil ? (Self.period[status] ?? 2.6) * 0.5 : now.timeIntervalSince(start)
             Canvas { ctx, _ in
@@ -330,13 +329,11 @@ struct InkLoader: View {
             }
         }
         .frame(width: 10 * pitch, height: 10 * pitch)
-        .onChange(of: status) { start = Date(); finished = false }
-        .task(id: status) {
-            guard status == "done" else { return }
-            try? await Task.sleep(for: .seconds((Self.period["done"] ?? 2.2) + 0.1))
-            finished = true
-        }
+        .onChange(of: status) { start = Date() }
     }
+
+    /// `done` は描き終えた絵をこの秒数だけ見せてから、また描き始める
+    nonisolated static let doneHold = 1.2
 
     nonisolated static let period: [String: Double] = [
         "think": 2.6, "search": 2.8, "write": 2.8, "reply": 2.8, "transfer": 3.2,
@@ -350,7 +347,8 @@ struct InkLoader: View {
         let period = Self.period[status] ?? 2.6
         let tq = floor(t * 24) / 24
         let once = status == "done", nomorph = status == "idle"
-        var p = once ? cl(tq / period) : fr(tq / period)
+        // done は描き切って少し止まり、また頭から（1周 = 描く時間 + 止まる時間）
+        var p = once ? cl(fr(tq / (period + doneHold)) * (period + doneHold) / period) : fr(tq / period)
 
         func cell(_ x: Int, _ y: Int, _ c: Color) {
             ctx.fill(Path(CGRect(x: CGFloat(x) * pitch, y: CGFloat(y) * pitch, width: pitch, height: pitch)),

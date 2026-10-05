@@ -37,6 +37,7 @@ struct SettingsScreen: View {
     /// SSH の接続先（08 Remote）。書き換えたら保存する
     @State private var hosts: [Remote.Host] = Remote.hosts
     @AppStorage(Cockpit.sleepAfterKey) private var sleepAfter = 15
+    @AppStorage(Cockpit.autoAfterPlanKey) private var autoAfterPlan = false
     @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 8
     @AppStorage(Hydra.maxRoundsKey) private var hydraRounds = 3
     @AppStorage(Hydra.maxToolsKey) private var hydraTools = 160
@@ -94,6 +95,10 @@ struct SettingsScreen: View {
                 }
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
                 if let levelNote { Text(levelNote).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                settingLine("計画の後", "壁打ちで計画を確定したら（計画の窓で「この計画で進める」・05 PLAN に積まれた）、その会話の段を Lv.3 任せてるにする") {
+                    Button(autoAfterPlan ? "■ 任せてるへ" : "□ 任せてるへ") { autoAfterPlan.toggle() }
+                        .buttonStyle(SumiButtonStyle(primary: autoAfterPlan, size: 11))
+                }
             }
             row("02", "Link", "連携 · プロバイダを選び、足し、ログインする") {
                 SumiPicker(sections: enabled.map { backend in

@@ -1299,6 +1299,21 @@ final class Cockpit {
     /// 壁打ちを入れる前の段（worktree ごと）。切った時にそこへ戻す
     private var levelBeforePlan: [String: Gate.Level] = [:]
 
+    static let autoAfterPlanKey = "autoAfterPlan"
+
+    /// 壁打ちで計画が確定した（計画の窓で進めると答えた・05 PLAN に積まれた）。設定が入なら、その会話の段を任せてるにする
+    /// 段のファイルだけ書き換える（AT22 の承認の判定はすぐ効く）。計画の窓で進めた claude は自分で plan を抜けるので、
+    /// 書き始めた最中のプロセスは閉じない。手が空いていれば閉じて、次に送った時に新しい段で繋ぎ直す
+    func planConfirmed(_ session: String?) {
+        guard UserDefaults.standard.bool(forKey: Self.autoAfterPlanKey), let session, let cwd = cwd(of: session),
+              level(of: session) != .auto, setGateLevel(.auto, cwd: cwd) == .saved else { return }
+        if !isWorking(session), let run = runs[session], run.connection.acceptsInput {
+            run.connection.close()
+            forget(session)
+        }
+        log(session, "計画が確定したので Lv.3 任せてるにした")
+    }
+
     /// 壁打ち（plan＝読むだけ）を入れる・切る。段とは別のトグル。段は worktree ごとなので、その worktree の会話すべてに効く
     @discardableResult
     func setPlanMode(_ on: Bool, session: String?) -> NoteSaveResult {
@@ -1838,6 +1853,7 @@ final class Cockpit {
     /// 黙って消すと、相手は答えを待ったまま止まり続ける
     @discardableResult
     func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        defer { if allow, approval.tool == "ExitPlanMode" { planConfirmed(approval.session) } }
         // 要判断（留守番で断って積んだもの）。相手はもう待っていないので、許可なら「やり直してよい」と伝える
         if let i = deferred.firstIndex(where: { $0.id == approval.id }) {
             deferred.remove(at: i)

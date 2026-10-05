@@ -413,23 +413,31 @@ struct TalkScreen: View {
         guard let head = draft.first, head == "/" || head == "$", !draft.contains(where: \.isWhitespace) else { return [] }
         let backend = cockpit.selectedSession.map(cockpit.backend(of:)) ?? .claude
         let names = Skills.visible(cockpit.skills, to: backend).map { Skills.invocation($0, for: backend) }
-        return Array(Set(names)).filter { $0.lowercased().hasPrefix(draft.lowercased()) }.sorted().prefix(8).map { $0 }
+        return Array(Set(names)).filter { $0.lowercased().hasPrefix(draft.lowercased()) }.sorted()
     }
 
+    private static let slashRowH: CGFloat = 28
+    /// 候補の板の高さ。8行まで見せ、それより多ければ板の中でスクロールする
+    private var slashListHeight: CGFloat { CGFloat(min(slashMatches.count, 8)) * Self.slashRowH + 2 }
+
     private var slashList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(slashMatches, id: \.self) { name in
-                Button { draft = name + " " } label: {
-                    Text(name).font(.mono(12)).frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(slashMatches, id: \.self) { name in
+                    Button { draft = name + " " } label: {
+                        Text(name).font(.mono(12)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).frame(height: Self.slashRowH).contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
                 }
-                .buttonStyle(PressStyle())
             }
         }
+        .scrollIndicators(slashMatches.count > 8 ? .visible : .never)
+        .padding(1)
+        .frame(width: 320, height: slashListHeight)
         .foregroundStyle(Palette.Light.fg)
         .background(Palette.Light.bg)
         .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-        .frame(width: 320)
     }
 
     private var input: some View {
@@ -491,7 +499,8 @@ struct TalkScreen: View {
         .overlay(Rectangle().strokeBorder(ctxAlarm ? Palette.Light.danger : Palette.Light.fg, lineWidth: 2))
         // 「/」の候補は入力欄の真上に
         .overlay(alignment: .topLeading) {
-            if !slashMatches.isEmpty { slashList.alignmentGuide(.top) { $0[.bottom] + 4 }.padding(.leading, 14) }
+            // 入力欄の真上に、高さぶん上へずらして出す（並べ方の指定に任せると下へ伸びて見切れた）
+            if !slashMatches.isEmpty { slashList.offset(x: 14, y: -(slashListHeight + 4)) }
         }
     }
 
