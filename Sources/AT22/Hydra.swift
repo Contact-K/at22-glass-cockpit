@@ -39,7 +39,8 @@ enum Hydra {
     ```
     agent は claude / codex / grok / hermes。AT22 が人の許可を取ってから head ごとに worktree を作って起こし、
     それぞれの最初の報告を次のメッセージで返します。報告を待つためにループを回す必要はありません。
-    変更は各 worktree に残り、マージするかは人が決めます。
+    段が Lv.3/4 なら、全員の報告が揃った時に AT22 が各 head の枝をあなたの worktree に取り込み、結果を知らせます
+    （ぶつかった枝は取り込まずに残します）。Lv.1/2 では、マージするかは人が決めます。push と PR はいつも人です。
     """ }
 
     /// 返事から ```` ```hydra ```` の囲みを拾う。壊れた JSON・知らないエージェント・空の指示は捨てる
@@ -65,6 +66,17 @@ enum Hydra {
         return Array(out.prefix(maxHeads))
     }
 
+    /// 取り込みの結果を司令塔へ返す1通
+    static func landReport(merged: [String], conflicted: [String], failed: [(name: String, reason: String)]) -> String {
+        var lines = ["[Hydra] 全員の報告が揃ったので、AT22 が head の枝をあなたの worktree に取り込みました。"]
+        if !merged.isEmpty { lines.append("取り込んだ: " + merged.joined(separator: ", ")) }
+        if !conflicted.isEmpty { lines.append("ぶつかったので取り込んでいない（枝は残っている・人に相談）: " + conflicted.joined(separator: ", ")) }
+        for f in failed { lines.append("取り込めなかった: \(f.name) — \(String(f.reason.prefix(200)))") }
+        lines.append(merged.isEmpty ? "取り込めたものはありません。どう進めるか人に相談してください。"
+                     : "取り込んだ変更を読み、ビルドとテストを走らせて結果を報告してください。push と PR は人が決めます。")
+        return lines.joined(separator: "\n")
+    }
+
     /// worktree の名前に使える形（英数字とハイフン、32字まで）
     static func slug(_ raw: String) -> String {
         let mapped = raw.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" }
@@ -84,14 +96,14 @@ enum Hydra {
 
     /// 司令塔へ返す報告の1通
     static func report(name: String, agent: String, status: String, workspace: String, branch: String,
-                       reply: String) -> String {
+                       reply: String, landing: Bool = false) -> String {
         let state = ["done": "終わりました", "failed": "起こせませんでした", "stopped": "人が止めました",
                      "limit": "上限で止めました"][status] ?? status
         return """
         [Hydra] head「\(name)」（\(agent)）の報告です。\(state)。
         workspace: \(workspace)
         branch: \(branch)
-        変更はこの worktree に残っています（`git -C \(workspace) diff` で読めます）。マージは人が決めます。
+        変更はこの worktree に残っています（`git -C \(workspace) diff` で読めます）。\(landing ? "全員の報告が揃ったら AT22 があなたの worktree に取り込みます。" : "マージは人が決めます。")
 
         \(reply.isEmpty ? "（返事はありません）" : String(reply.suffix(4000)))
         """

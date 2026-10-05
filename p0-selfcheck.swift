@@ -93,6 +93,7 @@ struct P0SelfCheck {
         toolRiskFollowsTheLadder()
         flowStepFollowsTheState()
         sessionOriginFilters()
+        hydraLandsHeadsIntoTheLead()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -4043,6 +4044,32 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// Hydra の取り込み: 未コミットの頭は先に記帳して取り込み、司令塔とぶつかる頭は戻して残す
+    static func hydraLandsHeadsIntoTheLead() {
+        let fm = FileManager.default
+        let repo = NSTemporaryDirectory() + "at22-land-\(UUID().uuidString.prefix(6))"
+        try? fm.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: repo) }
+        func git(_ args: [String], _ dir: String = repo) { _ = try? Worktree.git(args, in: dir) }
+        git(["init", "-q", "-b", "main"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "t"])
+        try? "a\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        git(["add", "-A"]); git(["commit", "-qm", "init"])
+        guard let one = try? Worktree.add(repo: repo, name: "one", base: "main"),
+              let two = try? Worktree.add(repo: repo, name: "two", base: "main") else { assert(false, "worktree を作れない"); return }
+        for dir in [one.path, two.path] { git(["config", "user.email", "t@t"], dir); git(["config", "user.name", "t"], dir) }
+        // one は新しいファイル（未コミットのまま）、two は司令塔と同じ行を書き換える
+        try? "one\n".write(toFile: one.path + "/one.txt", atomically: true, encoding: .utf8)
+        try? "two\n".write(toFile: two.path + "/a.txt", atomically: true, encoding: .utf8)
+        try? "lead\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        git(["commit", "-qam", "lead"])
+        let r = Worktree.land(into: repo, heads: [("one", one.path, one.branch), ("two", two.path, two.branch)])
+        assert(r.merged == ["one"] && r.conflicted == ["two"] && r.failed.isEmpty, "\(r)")
+        assert(fm.fileExists(atPath: repo + "/one.txt"), "取り込んだ頭のファイルが無い")
+        assert((try? Worktree.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], in: repo)) == nil, "ぶつかったマージが半端に残った")
+        assert((try? String(contentsOfFile: repo + "/a.txt", encoding: .utf8)) == "lead\n", "ぶつかった頭の変更が混ざった")
+        assert(Hydra.landReport(merged: ["one"], conflicted: ["two"], failed: []).contains("two"))
     }
 
     /// 会話の出どころの切り替え: 全部は両方、AT22 は AT22 で起こしたものだけ、外部はそれ以外だけ

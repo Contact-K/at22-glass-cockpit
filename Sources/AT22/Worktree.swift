@@ -156,6 +156,39 @@ enum Worktree {
         return (path, branch, sha)
     }
 
+    /// Hydra の頭の枝を司令塔の worktree に取り込む（Droppy の「1つのマージにまとめる」）。
+    /// 頭に未コミットの変更があれば、先にその枝で記帳する。取り込みは1本ずつ `--no-ff`。
+    /// ぶつかった枝は `merge --abort` で戻して先へ進む（司令塔の worktree を半端なマージのまま残さない）
+    nonisolated static func land(into lead: String, heads: [(name: String, workspace: String, branch: String)])
+        -> (merged: [String], conflicted: [String], failed: [(name: String, reason: String)]) {
+        var merged: [String] = [], conflicted: [String] = [], failed: [(String, String)] = []
+        for head in heads {
+            do {
+                if FileManager.default.fileExists(atPath: head.workspace),
+                   !(try git(["status", "--porcelain"], in: head.workspace)).isEmpty {
+                    _ = try git(["add", "-A"], in: head.workspace)
+                    _ = try git(["commit", "-q", "-m", "Hydra: \(head.name)"], in: head.workspace)
+                }
+            } catch {
+                failed.append((head.name, "頭の枝で記帳できない: \(error)"))
+                continue
+            }
+            do {
+                _ = try git(["merge", "--no-ff", "--no-edit", "-m", "Hydra: \(head.name) を取り込む", head.branch], in: lead)
+                merged.append(head.name)
+            } catch {
+                // ぶつかった（MERGE_HEAD がある）なら戻す。それ以外（手元の変更が上書きされる等）は git が始めていない
+                if (try? git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], in: lead)) != nil {
+                    _ = try? git(["merge", "--abort"], in: lead)
+                    conflicted.append(head.name)
+                } else {
+                    failed.append((head.name, "\(error)"))
+                }
+            }
+        }
+        return (merged, conflicted, failed)
+    }
+
     /// 未コミットの変更（追跡していないファイルを含む）。消す前に人に見せる
     nonisolated static func dirtyFiles(_ path: String) throws -> [String] {
         changedFiles(try git(["status", "--porcelain"], in: path))

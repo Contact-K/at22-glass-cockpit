@@ -17,7 +17,8 @@ description: AT22 Glass Cockpit で、ほかのエージェント（claude / cod
 - `agent` は `claude` / `codex` / `grok` / `hermes`。`model` は空なら相手の既定
 - `prompt` はそれだけで仕事が始められる全文にする（相手はこの会話を読めない）。触ってよい範囲・終わりの条件を書く
 - 段が Lv.1/2 なら人が head ごとに許可する。Lv.3/4 なら AT22 が自動で起こす
-- 変更は各 head の worktree（枝 `at22/<名前>`）に残る。**マージ・push・PR は人**が 07 REVIEW / 08 GIT で決める。頼まない
+- 変更は各 head の worktree（枝 `at22/<名前>`）に残る。段が Lv.3/4 なら、全員の報告が揃った時に **AT22 が各枝をあなたの worktree に取り込み**（ぶつかった枝は取り込まずに残す）、結果を `[Hydra]` で知らせてくる。届いたら取り込んだ変更を読み、ビルドとテストを走らせて報告する
+- Lv.1/2 ではマージは人が 07 REVIEW / 08 GIT で決める。**push と PR はいつも人**。頼まない
 
 ## 上限（AT22 の設定 07 Sessions。既定）
 

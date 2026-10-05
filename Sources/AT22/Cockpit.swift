@@ -1131,6 +1131,7 @@ final class Cockpit {
                               text: Gate.resultText(status: status, fields: fields, summary: summary, at: Date()),
                               creating: true, project: URL(fileURLWithPath: project))
         if result != .saved { appendLaunchError("采配の結果を書けない: \(Gate.resultPath(for: gate))") }
+        noteHydraResult(gate, status: status, fields: fields)
     }
 
     /// 采配したワーカーの最初のターンが終わった。本文はそのターンの返事（書きかけが無い相手は最後の発言）
@@ -1147,7 +1148,8 @@ final class Cockpit {
         let front = Memory.frontMatter((try? String(contentsOfFile: gate, encoding: .utf8)) ?? "")
         if let call = front["call"], call.hasPrefix("hydra-"), let lead = front["by"], !lead.isEmpty {
             deliverHydra(Hydra.report(name: front["name"] ?? call, agent: backend(of: session).rawValue, status: status,
-                                      workspace: path, branch: branch, reply: text), to: lead)
+                                      workspace: path, branch: branch, reply: text,
+                                      landing: [.auto, .unattended].contains(level(of: lead))), to: lead)
         }
     }
 
@@ -1186,6 +1188,40 @@ final class Cockpit {
     }
 
     // MARK: Hydra
+
+    /// Hydra の1回分の頭（司令塔 → 門のパス → 頭）。全員の結果が揃ったら Lv.3/4 は取り込む
+    struct HydraHead { var name: String; var status: String?; var workspace = ""; var branch: String }
+    @ObservationIgnored private var hydraBatch: [String: [String: HydraHead]] = [:]
+
+    /// 采配の結果を書いた時に呼ぶ。Hydra の頭なら記録し、その司令塔の頭が全員終わったら取り込む
+    private func noteHydraResult(_ gate: String, status: String, fields: [(String, String)]) {
+        guard let lead = hydraBatch.first(where: { $0.value[gate] != nil })?.key else { return }
+        let field = { (key: String) in fields.first { $0.0 == key }?.1 ?? "" }
+        hydraBatch[lead]?[gate]?.status = status
+        if !field("workspace").isEmpty { hydraBatch[lead]?[gate]?.workspace = field("workspace") }
+        if !field("branch").isEmpty { hydraBatch[lead]?[gate]?.branch = field("branch") }
+        guard let batch = hydraBatch[lead], batch.values.allSatisfy({ $0.status != nil }) else { return }
+        hydraBatch[lead] = nil
+        landHydra(lead: lead, heads: batch.values.filter { $0.status == "done" && !$0.workspace.isEmpty })
+    }
+
+    /// 任せてる・留守番の司令塔なら、頭の枝を司令塔の worktree に取り込み、結果を司令塔へ返す（Droppy の1つのマージ）
+    private func landHydra(lead: String, heads: [HydraHead]) {
+        guard !heads.isEmpty, [.auto, .unattended].contains(level(of: lead)), let into = cwd(of: lead),
+              !Remote.isRemote(into) else { return }
+        let list = heads.map { (name: $0.name, workspace: $0.workspace, branch: $0.branch) }
+        log(lead, "Hydra の頭 \(heads.count) 本を取り込んでいる")
+        Task {
+            let result = await Task.detached { Worktree.land(into: into, heads: list) }.value
+            deliverHydra(Hydra.landReport(merged: result.merged, conflicted: result.conflicted, failed: result.failed), to: lead)
+            refreshWorktreesIfNeeded(force: true)
+            if !result.conflicted.isEmpty || !result.failed.isEmpty {
+                noteAttention(lead, "Hydra の取り込みで止めた枝がある — " + (result.conflicted + result.failed.map(\.name)).joined(separator: ", "))
+            } else {
+                log(lead, "Hydra の頭を取り込んだ — " + result.merged.joined(separator: ", "))
+            }
+        }
+    }
 
     /// 起こした head の重複を防ぐ（会話 → 名前）。transcript を読み直しても二度起こさない
     private var hydraSeen: Set<String> = []
@@ -1267,6 +1303,7 @@ final class Cockpit {
                 appendLaunchError("Hydra の門を書けない: \(head.name)")
                 continue
             }
+            hydraBatch[session, default: [:]][path] = HydraHead(name: head.name, status: nil, branch: Worktree.branch(for: head.name))
             if level == .auto || level == .unattended, let request = Gate.parse(path: path, text: text) {
                 answer(request, .allow)
             }
