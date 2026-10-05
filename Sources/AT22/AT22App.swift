@@ -12,7 +12,7 @@ struct AT22App: App {
 
         // 見え方を画像に焼いて確かめる口。**画面を開かずに** PNG を1枚吐いて終わる。
         //
-        //     swift run AT22 --shot /tmp/cockpit.png [幅 高さ] [--mode talk|files|spar|review|git|settings] [--tower]
+        //     swift run AT22 --shot /tmp/cockpit.png [幅 高さ] [--mode talk|files|review|git|settings] [--tower]
         //                    [--transcript <path.jsonl>] [--gate] [--approval]
         //
         // 動き（墨流し・ドット・InkLoader）は時刻を固定した1コマしか写らない
