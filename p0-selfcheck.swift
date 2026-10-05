@@ -94,6 +94,7 @@ struct P0SelfCheck {
         flowStepFollowsTheState()
         sessionOriginFilters()
         hydraLandsHeadsIntoTheLead()
+        finishedSubagentsLinger()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -4044,6 +4045,17 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 数秒で終わるサブエージェントも、終わってからしばらく「終わった」で管制塔に残る
+    @MainActor static func finishedSubagentsLinger() {
+        let c = Cockpit()
+        let t = Date()
+        c.apply([.agentAction(id: "1", agent: "sub", session: "s", kind: .edit, detail: "", at: t),
+                 .agentEnded(agent: "sub", at: t.addingTimeInterval(4))])
+        let soon = c.subagents(of: "s", now: t.addingTimeInterval(10))
+        assert(soon.map(\.id) == ["sub"] && soon.first?.act == "done", "終わったばかりのサブエージェントが消えた: \(soon)")
+        assert(c.subagents(of: "s", now: t.addingTimeInterval(4 + Cockpit.subagentLinger + 1)).isEmpty, "いつまでも残る")
     }
 
     /// Hydra の取り込み: 未コミットの頭は先に記帳して取り込み、司令塔とぶつかる頭は戻して残す

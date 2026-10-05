@@ -1511,11 +1511,17 @@ final class Cockpit {
     }
 
     /// 会話の中で動いているサブエージェント（Task で起こしたもの）。管制塔で会話の札の右に生やす
+    /// 終わったサブエージェントも、この秒数は「終わった」で残す。門のあとの Explore は数秒で終わり、
+    /// 動いている間だけ出すと管制塔にほぼ生えなかった（2026-10-06、実測4秒）
+    static let subagentLinger: TimeInterval = 90
+
     func subagents(of session: String, now: Date = Date()) -> [(id: String, role: String, act: String)] {
-        agents.filter { $0.key != session && $0.value.session == session && $0.value.doneAt == nil
-            && Self.isWorking($0.value, now: now) }
+        agents.filter { $0.key != session && $0.value.session == session
+            && (Self.isWorking($0.value, now: now)
+                || now.timeIntervalSince($0.value.doneAt ?? $0.value.lastAt) < Self.subagentLinger) }
             .sorted { $0.value.lastAt > $1.value.lastAt }
-            .map { (id: $0.key, role: $0.value.role ?? "agent", act: Self.inkStatus($0.value, touching: nil)) }
+            .map { (id: $0.key, role: $0.value.role ?? "agent",
+                    act: Self.isWorking($0.value, now: now) ? Self.inkStatus($0.value, touching: nil) : "done") }
     }
 
     /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。
