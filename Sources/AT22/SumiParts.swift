@@ -977,14 +977,14 @@ struct SkillPicker: View {
 struct EffortAura: ViewModifier {
     let rank: Double
     @Environment(\.accessibilityReduceMotion) private var still
-    @Environment(\.frozenTime) private var frozen
 
     func body(content: Content) -> some View {
         if rank < 0.5 {
             content
         } else {
-            TimelineView(.animation(minimumInterval: 1 / 40, paused: still || frozen != nil)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
+            // Ticker を通す: 窓が隠れた・メニューが覆った時（motionPaused）にも止まる
+            Ticker(fps: 24, paused: still) { now in
+                let t = now.timeIntervalSinceReferenceDate
                 let tier = rank >= 0.99 ? 3 : rank >= 0.75 ? 2 : 1
                 let speed = [0, 120.0, 220, 360][tier]
                 content

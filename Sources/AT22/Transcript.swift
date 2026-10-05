@@ -588,8 +588,9 @@ enum TranscriptParser {
 
 /// `~/.claude/projects/**/*.jsonl` を追いかけて `TranscriptEvent` に変換する。
 /// transcript は厳密に append-only なので、ファイルごとのオフセットを覚えて末尾差分だけ読む。
-@MainActor
-final class TranscriptWatcher {
+/// 走査・読み・解釈は裏の1本のループだけが回す（0.4秒ごとに projects を全部歩くのをメインでやっていた）。
+/// 状態に触るのはそのループ（と、ループを回さない自己チェックの `poll`）だけ。`startOffsets` だけ鍵で守る
+final class TranscriptWatcher: @unchecked Sendable {
 
     nonisolated static let defaultTailBytes: UInt64 = 16_000_000
     nonisolated static let defaultTotalBudget: UInt64 = 48_000_000
@@ -608,14 +609,16 @@ final class TranscriptWatcher {
     private var offsets: [String: UInt64] = [:]
     /// ファイルごとに、どこから読み始めたか。会話を開き直す時は、ここより前だけを読み直す
     /// （ここから先はもう流し込んである。丸ごと読み直すと発言が二重になった）
-    private(set) var startOffsets: [String: UInt64] = [:]
+    var startOffsets: [String: UInt64] { startLock.withLock { starts } }
+    private var starts: [String: UInt64] = [:]
+    private let startLock = NSLock()
     private var carry: [String: Data] = [:]       // 改行で切れなかった端数
     private var skipPartial: Set<String> = []     // 途中から読み始めた分の先頭1行は捨てる
     private var labeled: Set<String> = []         // meta.json を読み終えたサブエージェント
     private var awaitingMeta: [String: URL] = [:] // meta.json がまだ書かれていないサブエージェント
     private var loop: Task<Void, Never>?
 
-    var onEvents: (([TranscriptEvent]) -> Void)?
+    var onEvents: (@MainActor ([TranscriptEvent]) -> Void)?
 
     init(root: URL? = nil,
          tailBytes: UInt64 = TranscriptWatcher.defaultTailBytes,
@@ -625,12 +628,13 @@ final class TranscriptWatcher {
         self.initialTotalBudget = initialTotalBudget
     }
 
-    func start() {
+    @MainActor func start() {
         guard loop == nil else { return }
-        loop = Task { @MainActor in
+        loop = Task.detached(priority: .utility) { [self] in
             var first = true
             while !Task.isCancelled {
-                poll(initial: first)
+                let events = collect(initial: first)
+                if !events.isEmpty { await MainActor.run { self.onEvents?(events) } }
                 first = false
                 // ponytail: 0.4秒ポーリング。監視対象が数千ファイルを超えたら FSEvents に差し替え
                 try? await Task.sleep(for: .milliseconds(400))
@@ -638,7 +642,7 @@ final class TranscriptWatcher {
         }
     }
 
-    func stop() {
+    @MainActor func stop() {
         loop?.cancel()
         loop = nil
     }
@@ -664,8 +668,14 @@ final class TranscriptWatcher {
         return out
     }
 
-    /// 1回分の走査。ループから呼ばれるほか、セルフチェックが直接叩く
-    func poll(initial: Bool) {
+    /// 1回分の走査をその場で（セルフチェックが直接叩く）
+    @MainActor func poll(initial: Bool) {
+        let events = collect(initial: initial)
+        if !events.isEmpty { onEvents?(events) }
+    }
+
+    /// 1回分の走査。新しく完成した行の出来事を返す
+    private func collect(initial: Bool) -> [TranscriptEvent] {
         var events: [TranscriptEvent] = []
         var budget = initial ? initialTotalBudget : UInt64.max
 
@@ -691,7 +701,7 @@ final class TranscriptWatcher {
                     budget -= min(budget, size - start)
                 }
                 offsets[key] = start
-                startOffsets[key] = start
+                startLock.withLock { starts[key] = start }
                 if start > 0 { skipPartial.insert(key) }
                 if recent { events += label(for: url) }
             }
@@ -728,7 +738,7 @@ final class TranscriptWatcher {
             }
         }
 
-        if !events.isEmpty { onEvents?(events) }
+        return events
     }
 
     /// `subagents/agent-<id>.jsonl` の隣にある meta.json から役割・階層・親の呼び出しIDを拾う。

@@ -303,7 +303,6 @@ final class Cockpit {
     /// 人の注意を引く出来事。画面の外（通知）へ渡す口。Cockpit は AppKit を知らない
     var onAttention: ((_ session: String, _ title: String, _ body: String) -> Void)?
     var liveSessions: [LiveSession] = []
-    private(set) var activeSessions: Set<String> = []
     private(set) var recentSessions: [RecentSession] = []
     private let projectsRoot: URL
     private var loadedSessions: Set<String> = []
@@ -354,7 +353,15 @@ final class Cockpit {
     /// stdout から拾っている部分テキスト。確定は transcript の担当——ここは「いま書いている途中」だけ。
     /// ターン終了で消える。**セッションごとに持つ**——1本にまとめていた頃は、どれか1つが
     /// 書いている間、`isWorking` が全セッションを稼働中と答えていた
-    private(set) var streaming: [String: String] = [:]
+    /// **観測しない**——チャンクごとに根から全部描き直していた。画面は毎秒の時計で読み直すので足りる
+    @ObservationIgnored private(set) var streaming: [String: String] = [:]
+    /// いま書きかけが流れているセッション（観測する方。入る・抜ける時だけ描き直す）
+    private(set) var writing: Set<String> = []
+
+    private func clearStreaming(_ session: String) {
+        streaming[session] = nil
+        if writing.contains(session) { writing.remove(session) }
+    }
     /// セッションごとの、受領確認を待っている割り込みの request_id。
     /// ここを持つことで、投げっぱなし（応答の見落とし）と、誤報（止まり損ない）を防ぐ
     private var interruptRequests: [String: String] = [:]
@@ -733,7 +740,7 @@ final class Cockpit {
         refreshLiveSessions()
         refreshRecentSessionsIfNeeded()
         refreshStructureIfNeeded()
-        refreshMemory()
+        refreshMemoryInBackground()
         refreshGates()
         refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
@@ -1564,7 +1571,7 @@ final class Cockpit {
     /// 接続を手放す。書きかけ・割り込み待ち・答え待ちの承認も一緒に消す
     private func forget(_ session: String) {
         runs[session] = nil
-        streaming[session] = nil
+        clearStreaming(session)
         interruptRequests[session] = nil
         stopping.remove(session)
         openTurns.remove(session)
@@ -1608,6 +1615,7 @@ final class Cockpit {
         case let .partial(text):
             // 部分テキスト。ターン終了で消える
             streaming[session, default: ""] += text
+            if !text.isEmpty, !writing.contains(session) { writing.insert(session) }
 
         case let .message(text, thinking):
             // transcript を AT22 が読まない相手の確定した発言。transcript 由来と同じ入口に通すので、
@@ -1644,7 +1652,7 @@ final class Cockpit {
             reportDispatched(session, status: "done", reply: streaming[session])
             defer { flushHydra(session) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
-            streaming[session] = nil
+            clearStreaming(session)
             stopping.remove(session)
             openTurns.remove(session)
             noteAttention(session, "ターンが終わった")
@@ -1655,7 +1663,7 @@ final class Cockpit {
         case let .turnFailed(reason):
             // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
             // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
-            streaming[session] = nil
+            clearStreaming(session)
             openTurns.remove(session)
             // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
             // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
@@ -2202,7 +2210,7 @@ final class Cockpit {
             return liveSessions.contains { $0.busy }
         }
         // そのセッションの接続から部分テキストが流れてきている。「今書いている途中」の状態
-        if streaming[wanted]?.isEmpty == false { return true }
+        if writing.contains(wanted) { return true }
         // AT22 の接続がターンを回している間は稼働中（書きかけがまだ来ていない考え中も含む）
         if openTurns.contains(wanted) { return true }
         // 指定されたセッションが liveSessions に在るか、busy フラグで確認
@@ -2221,13 +2229,42 @@ final class Cockpit {
     /// transcript がまだ無いセッションだけ、cwd からスラッグを組み立てて補う。
     /// ponytail: 毎秒読む。実測5本・36行なので測るまでもなく軽い。数百本になったら間隔を空ける
     func refreshMemory() {
-        guard let root = projectRoot(of: selectedSession) else {
+        adoptMemory(root: projectRoot(of: selectedSession), loaded: nil)
+    }
+
+    @ObservationIgnored private var memoryLoading = false
+    @ObservationIgnored private var memoryLoadedAt = Date.distantPast
+    @ObservationIgnored private var memoryLoadedFor: String?
+
+    /// 毎秒の見回りから。projects の列挙と記憶の .md を全部読むのを裏へ出す（メインで毎秒読んでいた）。
+    /// ponytail: 同じ会話なら3秒に1回。会話を切り替えた時はすぐ読む
+    private func refreshMemoryInBackground() {
+        let session = selectedSession ?? liveSessions.first?.id
+        guard !memoryLoading, session != memoryLoadedFor || Date().timeIntervalSince(memoryLoadedAt) > 3 else { return }
+        memoryLoading = true
+        memoryLoadedAt = Date()
+        memoryLoadedFor = session
+        let cwd = liveSessions.first { $0.id == session }?.cwd
+        let projects = projectsRoot
+        Task.detached(priority: .utility) {
+            let root = Self.projectRoot(of: session, cwd: cwd, projectsRoot: projects)
+            let loaded = root.map { Memory.load(projectRoot: $0) } ?? []
+            await MainActor.run { [weak self] in
+                self?.memoryLoading = false
+                self?.adoptMemory(root: root, loaded: loaded)
+            }
+        }
+    }
+
+    /// `loaded` が nil なら、ここで読む（自己チェックの同期の経路）
+    private func adoptMemory(root: URL?, loaded: [Memory.Node]?) {
+        guard let root else {
             if !memory.isEmpty { memory = [] }
             memoryRoot = nil
             return
         }
         memoryRoot = root
-        let loaded = Memory.load(projectRoot: root)
+        let loaded = loaded ?? Memory.load(projectRoot: root)
         if loaded.map(\.id) != memory.map(\.id) || loaded.map(\.modified) != memory.map(\.modified) {
             memory = loaded
         }
@@ -2239,16 +2276,20 @@ final class Cockpit {
     /// まだ .jsonl を書いていない**ので、その時だけ cwd からディレクトリ名を組む。
     /// 選んでいなければ稼働中の先頭を使う
     private func projectRoot(of session: String?) -> URL? {
-        guard let wanted = session ?? liveSessions.first?.id else { return nil }
+        let wanted = session ?? liveSessions.first?.id
+        return Self.projectRoot(of: wanted, cwd: liveSessions.first { $0.id == wanted }?.cwd, projectsRoot: projectsRoot)
+    }
 
+    nonisolated private static func projectRoot(of wanted: String?, cwd: String?, projectsRoot: URL) -> URL? {
+        guard let wanted else { return nil }
         for entry in (try? FileManager.default.contentsOfDirectory(atPath: projectsRoot.path)) ?? [] {
             let dir = projectsRoot.appendingPathComponent(entry)
             if FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(wanted).jsonl").path) {
                 return dir
             }
         }
-        guard let cwd = liveSessions.first(where: { $0.id == wanted })?.cwd, !cwd.isEmpty else { return nil }
-        let dir = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        guard let cwd, !cwd.isEmpty else { return nil }
+        let dir = projectsRoot.appendingPathComponent(projectSlug(cwd))
         return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
     }
 
@@ -2293,9 +2334,13 @@ final class Cockpit {
         return roots.filter { FileManager.default.fileExists(atPath: $0) }
     }
 
+    @ObservationIgnored private var memoryRootsCache: (at: Date, roots: [String]) = (.distantPast, [])
+
     func refreshStructureIfNeeded() {
+        // ponytail: projects の列挙は10秒に1回で足りる（新しいプロジェクトの記憶DB は数秒遅れて拾う）
+        if Date().timeIntervalSince(memoryRootsCache.at) > 10 { memoryRootsCache = (Date(), Self.memoryRoots()) }
         let roots = Set(liveSessions.map(\.cwd).filter { !$0.isEmpty })
-            .union(Self.memoryRoots())
+            .union(memoryRootsCache.roots)
         let changed = roots != scanRoots
         let stale = wroteSinceScan && Date().timeIntervalSince(lastScan) > Self.rescanInterval
         guard !scanning, !roots.isEmpty, changed || stale else { return }
@@ -2502,7 +2547,8 @@ final class Cockpit {
             let (found, listed, counted) = (roots, lists, stats)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.repoOf.merge(found) { _, new in new }
+                // 空でも merge は観測を鳴らす（5秒ごとに根から描き直していた）
+                if !found.isEmpty { self.repoOf.merge(found) { _, new in new } }
                 if listed != self.worktrees { self.worktrees = listed }
                 if counted != self.diffStats { self.diffStats = counted }
                 self.scanningWorktrees = false
@@ -3668,7 +3714,6 @@ final class Cockpit {
             if session.waiting != nil, before?.waiting == nil { noteAttention(session.id, "承認を待っている") }
             else if before?.busy == true, !session.busy { noteAttention(session.id, "ターンが終わった") }
         }
-        activeSessions = Set(found.map(\.id))
         let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions,
                                loaded: Array(loadedSessionTabs.values))
         if sorted != liveSessions { liveSessions = sorted }

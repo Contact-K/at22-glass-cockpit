@@ -606,12 +606,12 @@ private struct GateCard: View {
                 .background(Palette.Light.bg2)
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
             case .diff, .acp:
+                let lines = stop.diffLines
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
                         Text(stop.diffPath).lineLimit(1).truncationMode(.middle)
                         if stop.isNewFile { Text("NEW").font(.mono(9)).padding(.horizontal, 5).overlay(Rectangle().stroke(lineWidth: 1)) }
                         Spacer(minLength: 0)
-                        let lines = stop.diffLines
                         Text("+\(lines.filter { $0.kind == "+" }.count) −\(lines.filter { $0.kind == "-" }.count)")
                             .foregroundStyle(Palette.Light.fg2)
                     }
@@ -620,7 +620,7 @@ private struct GateCard: View {
                     .background(Palette.Light.bg2)
                     .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(stop.diffLines.prefix(40).enumerated()), id: \.offset) { _, line in
+                        ForEach(Array(lines.prefix(40).enumerated()), id: \.offset) { _, line in
                             DiffRow(kind: line.kind, old: line.old, new: line.new, text: line.text, dense: true)
                         }
                     }
@@ -955,10 +955,11 @@ enum MarkdownCache {
     private static var store: [Int: (count: Int, text: AttributedString)] = [:]
 
     static func text(_ id: Int, _ raw: String) -> AttributedString {
-        if let hit = store[id], hit.count == raw.count { return hit.text }
+        // utf8.count は数えずに出る（count は全文を歩く）
+        if let hit = store[id], hit.count == raw.utf8.count { return hit.text }
         if store.count > 2000 { store.removeAll() }
         let text = TalkScreen.formatted(raw)
-        store[id] = (raw.count, text)
+        store[id] = (raw.utf8.count, text)
         return text
     }
 }
@@ -969,10 +970,10 @@ enum LinkCache {
     private static var store: [Int: (count: Int, links: [URL])] = [:]
 
     static func links(_ id: Int, _ text: String) -> [URL] {
-        if let hit = store[id], hit.count == text.count { return hit.links }
+        if let hit = store[id], hit.count == text.utf8.count { return hit.links }
         if store.count > 2000 { store.removeAll() }
         let links = BrowserSheet.links(in: text)
-        store[id] = (text.count, links)
+        store[id] = (text.utf8.count, links)
         return links
     }
 }

@@ -210,7 +210,8 @@ struct ReviewScreen: View {
             VStack(spacing: 0) {
                 fileHead(file)
                 LiveScroll {
-                    VStack(alignment: .leading, spacing: 0) {
+                    // 大きな差分（lockfile・生成物）でも見えている hunk だけ組む
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in hunkView(file, hunk) }
                         if file.isBinary { Text("バイナリなので差分は出せません").font(.bodyJP(13)).padding(12) }
                         Text("行を押すと指摘 · ハンクごとにステージ").font(.mono(9)).tracking(1.1)
@@ -248,6 +249,8 @@ struct ReviewScreen: View {
 
     private func hunkView(_ file: Worktree.DiffFile, _ hunk: Worktree.Hunk) -> some View {
         let state = model.state(file, hunk)
+        // 指摘は行ごとに全部を走らず、hunk ごとに1回だけ行で引けるようにする
+        let notes = Dictionary(grouping: model.notes.filter { $0.file == file.path }, by: \.line)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Text(hunk.header).font(.mono(11)).lineLimit(1).foregroundStyle(Palette.Light.fg2)
@@ -268,7 +271,7 @@ struct ReviewScreen: View {
             ForEach(Array(hunk.lines.enumerated()), id: \.offset) { i, line in
                 let key = file.path + "#" + hunk.header + "#\(i)"
                 let ln = line.new ?? line.old
-                let here = model.notes.filter { $0.file == file.path && $0.line == ln }
+                let here = notes[ln] ?? []
                 DiffRow(kind: line.kind == .add ? "+" : line.kind == .remove ? "-" : " ",
                         old: line.old, new: line.new, text: line.text, commented: !here.isEmpty, dim: state == .committed)
                     .contentShape(Rectangle())
