@@ -1092,20 +1092,26 @@ final class Cockpit {
 
     private func dispatch(_ request: Gate.Request, backend: Backend, instruction: String) {
         let gate = request.id
-        // 頼んだ司令塔の作業場所から（Hydra は門に by: で会話が書いてある）。分からなければ選択中の会話
-        let cwd = cwd(of: request.by) ?? selectedSession.flatMap(cwd(of:)) ?? ""
+        // 頼んだ司令塔。Hydra は門に by: がある。gate.sh は書かないので、門の置き場（worktree）でいま動いている会話とみなす
+        let lead = request.by.isEmpty ? commander(ofGate: gate) : request.by
+        // 頼んだ司令塔の作業場所から。分からなければ選択中の会話
+        let cwd = lead.flatMap(cwd(of:)) ?? selectedSession.flatMap(cwd(of:)) ?? ""
+        // 分岐元が HEAD（gate.sh の既定）なら司令塔の worktree の枝から。本体の HEAD から切ると、管制塔で本体の子に並んだ
+        let leadBranch = worktrees.values.flatMap { $0 }.first { $0.path == cwd }?.branch
+        let base = (request.base.isEmpty || request.base == "HEAD") ? (leadBranch ?? "HEAD") : request.base
         // 頼んだ司令塔の段で起こす（選択中の会話の段ではない）
-        let level = request.by.isEmpty || self.cwd(of: request.by) == nil ? gateLevel : self.level(of: request.by)
+        let level = lead.flatMap { self.cwd(of: $0) == nil ? nil : self.level(of: $0) } ?? gateLevel
         Task {
             let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
             guard let repo else {
                 return writeResult(gate, status: "failed", fields: [("error", "司令塔の作業ディレクトリがリポジトリの外")])
             }
-            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: request.model,
+            createWorkspace(repo: repo, name: request.name, base: base, backend: backend, model: request.model,
                             prompt: instruction, level: level) { [weak self] path, session, error in
                 guard let self else { return }
                 if let session, error == nil {
                     self.dispatched[session] = gate
+                    if let lead { self.setParent(session, lead) }
                     // Hydra の head は系統と上限の数えに入れる
                     if request.call.hasPrefix("hydra-"), !request.by.isEmpty {
                         self.hydraLead[session] = request.by
@@ -1419,6 +1425,27 @@ final class Cockpit {
         }
         if let id { markAT22(id.uuidString.lowercased()) }
         return id
+    }
+
+    // MARK: 会話の親子（管制塔で子の会話を親の下に字下げする）
+
+    /// 子の会話 → 親の会話。＋ で会話から起こしたもの・采配で起こしたもの。UserDefaults に残す
+    private(set) var sessionParent: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: "sessionParents") as? [String: String]) ?? [:]
+
+    func setParent(_ child: String, _ parent: String) {
+        guard child != parent, sessionParent[child] != parent else { return }
+        sessionParent[child] = parent
+        UserDefaults.standard.set(sessionParent, forKey: "sessionParents")
+    }
+
+    /// 門（gate.sh が書いたもの）を立てた司令塔。門の置き場は司令塔の worktree の記憶DB なので、
+    /// その worktree の会話のうち、動いているもの → 最後に動いたもの
+    private func commander(ofGate gate: String) -> String? {
+        guard let dir = Gate.projectDirectory(of: gate).map({ ($0 as NSString).lastPathComponent }) else { return nil }
+        let here = Set(liveSessions.map(\.id) + runs.keys).filter { cwd(of: $0).map(Self.projectSlug) == dir }
+        return here.first(where: { isWorking($0) })
+            ?? here.max { (agents[$0]?.lastAt ?? .distantPast) < (agents[$1]?.lastAt ?? .distantPast) }
     }
 
     // MARK: 会話の出どころ（AT22 で起こした／外部）

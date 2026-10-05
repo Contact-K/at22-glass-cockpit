@@ -161,19 +161,30 @@ struct TowerScreen: View {
     @AppStorage("towerFold") private var fold = true
     @State private var open: Set<String> = []
     /// ＋ を押したタイルと、そのリポジトリ、押した場所（板はその右に開く）
-    @State private var growing: (tile: WsTile, project: String, at: CGPoint)?
+    @State private var growing: (tile: WsTile, project: String, at: CGPoint, parent: Cockpit.AgentRow?)?
 
     static let space = "tower"
     /// タイルの下の札1段の高さ
     static let sproutH: CGFloat = 26
 
-    /// タイルから生やす会話（動いているもの・AT22 の台帳にあるもの。読み込む前の過去の会話は出さない）と、
-    /// その会話のサブエージェント。ponytail: 会話は3本・サブエージェントは各3体まで
+    /// タイルから生やす会話の木（動いているもの・AT22 の台帳にあるもの。読み込む前の過去の会話は出さない）。
+    /// 子の会話（＋ で会話から起こした・采配で起こした）は親の下に字下げし、各会話の下にサブエージェント。
+    /// 親が別の worktree にある会話はこのタイルでは根に並ぶ。ponytail: 会話は6本・サブエージェントは各3体・深さ5まで
     private func sprouts(_ tile: WsTile) -> [Sprout] {
         guard let cockpit else { return [] }
-        return tile.rows.filter { $0.recent == nil }.prefix(3).map { row in
-            Sprout(row: row, subs: Array(cockpit.subagents(of: row.id).prefix(3)))
+        let rows = tile.rows.filter { $0.recent == nil }
+        let ids = Set(rows.map(\.id))
+        func up(_ id: String) -> String? { cockpit.sessionParent[id].flatMap { ids.contains($0) ? $0 : nil } }
+        var out: [Sprout] = []
+        func walk(_ parent: String?, _ depth: Int) {
+            for row in rows where up(row.id) == parent {
+                guard out.count < 6, depth <= 5 else { return }
+                out.append(Sprout(row: row, depth: depth, subs: Array(cockpit.subagents(of: row.id).prefix(3))))
+                walk(row.id, depth + 1)
+            }
         }
+        walk(nil, 0)
+        return out
     }
 
     private func sproutHeight(_ tile: WsTile) -> CGFloat {
@@ -233,11 +244,11 @@ struct TowerScreen: View {
             .offset(x: 172, y: 172)
             // ＋ から開く板（V11 の BRANCH の板）。押した ＋ の右に、画面に収まるように
             if let growing, let cockpit {
-                GrowPanel(cockpit: cockpit, tile: growing.tile, project: growing.project,
+                GrowPanel(cockpit: cockpit, tile: growing.tile, project: growing.project, parent: growing.parent,
                           onClose: { self.growing = nil })
                     .offset(x: min(growing.at.x + 18, width - GrowPanel.width - 24),
                             y: max(64, min(growing.at.y - 20, height - 640)))
-                    .id(growing.tile.id)
+                    .id(growing.tile.id + (growing.parent?.id ?? ""))
             }
         }
         .foregroundStyle(Palette.white)
@@ -294,14 +305,15 @@ struct TowerScreen: View {
                                 .onHover { hover = $0 ? (tile.task.isEmpty ? "@" + tile.id : tile.task) : nil }
                                 .overlay(alignment: .trailing) {
                                     if cockpit != nil, tile.failed == nil, !tile.creating {
-                                        PlusTab { growing = (tile, project.id, $0) }.offset(x: 13)
+                                        PlusTab { growing = (tile, project.id, $0, nil) }.offset(x: 13)
                                     }
                                 }
                                 .offset(x: xOf(placed.depth), y: top(placed.row, ys: ys, lane: lane))
                             let grown = sprouts(tile)
                             if !grown.isEmpty {
                                 SproutList(sprouts: grown, at22: { cockpit?.isAT22($0) ?? true },
-                                           onSession: { onSession(tile, $0) })
+                                           onSession: { onSession(tile, $0) },
+                                           onPlus: { row, at in growing = (tile, project.id, at, row) })
                                     .opacity(dimmed(tile) ? 0.28 : 1)
                                     .offset(x: xOf(placed.depth) + 14, y: top(placed.row, ys: ys, lane: lane) + Self.h + 6)
                             }
@@ -350,7 +362,7 @@ struct TowerScreen: View {
         .onTapGesture { onEnter(main) }
         .onHover { hover = $0 ? "@" + main.id : nil }
         .overlay(alignment: .trailing) {
-            if cockpit != nil { PlusTab { growing = (main, projectID(of: main), $0) }.offset(x: 13) }
+            if cockpit != nil { PlusTab { growing = (main, projectID(of: main), $0, nil) }.offset(x: 13) }
         }
     }
 
@@ -875,15 +887,19 @@ struct LiveScroll<Content: View>: View {
 /// タイルから生えた会話1本と、その会話のサブエージェント
 struct Sprout {
     let row: Cockpit.AgentRow
+    /// 会話の木の深さ（0 が根）
+    var depth = 0
     let subs: [(id: String, role: String, act: String)]
 }
 
 /// タイルの右端の ＋（V11Plus: 24 角・白地に青の縁）。押した場所を管制塔の座標で返す
 private struct PlusTab: View {
+    /// 24 はタイル、会話の札には小さい 18
+    var size: CGFloat = 24
     let onTap: (CGPoint) -> Void
     var body: some View {
-        Text("＋").font(.mono(16)).foregroundStyle(Palette.blue)
-            .frame(width: 24, height: 24)
+        Text("＋").font(.mono(size * 2 / 3)).foregroundStyle(Palette.blue)
+            .frame(width: size, height: size)
             .background(Palette.white)
             .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
             .contentShape(Rectangle())
@@ -897,13 +913,22 @@ private struct SproutList: View {
     let sprouts: [Sprout]
     let at22: (String) -> Bool
     let onSession: (Cockpit.AgentRow) -> Void
+    /// 会話の札の ＋（その会話の子を起こす）
+    var onPlus: (Cockpit.AgentRow, CGPoint) -> Void = { _, _ in }
+
+    static let indent: CGFloat = 18
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(sprouts, id: \.row.id) { sprout in
-                stub(indent: 0) { session(sprout.row) }
+                stub(indent: CGFloat(sprout.depth) * Self.indent) {
+                    HStack(spacing: 4) {
+                        session(sprout.row)
+                        PlusTab(size: 18) { onPlus(sprout.row, $0) }.help("この会話の子を起こす")
+                    }
+                }
                 ForEach(sprout.subs, id: \.id) { sub in
-                    stub(indent: 22) {
+                    stub(indent: CGFloat(sprout.depth) * Self.indent + 22) {
                         HStack(spacing: 6) {
                             InkLoader(status: sub.act, pitch: 1.0, color: Palette.white)
                             Text("◇ " + sub.role).font(.mono(11)).tracking(0.2).lineLimit(1)
@@ -960,6 +985,8 @@ private struct GrowPanel: View {
     let tile: WsTile
     /// リポジトリ本体のパス（枝を作る先）
     let project: String
+    /// 会話の札の ＋ から開いた時、その会話（起こしたものはこの会話の子になる）
+    var parent: Cockpit.AgentRow? = nil
     let onClose: () -> Void
 
     static let width: CGFloat = 380
@@ -978,7 +1005,8 @@ private struct GrowPanel: View {
             // 頭: 青い矢羽の帯
             HStack(spacing: 10) {
                 Text(branch ? "⑂ BRANCH" : "＋ TALK").font(.mono(11)).tracking(1.3)
-                Text("← " + (tile.isMain ? "◆ " + (tile.branch ?? "HEAD") : tile.name)).font(.mono(12)).lineLimit(1)
+                Text("← " + (parent.map { "□ " + $0.title } ?? (tile.isMain ? "◆ " + (tile.branch ?? "HEAD") : tile.name)))
+                    .font(.mono(12)).lineLimit(1)
                 Spacer(minLength: 0)
                 Text("[×]").font(.mono(10)).contentShape(Rectangle()).onTapGesture(perform: onClose)
             }
@@ -1074,14 +1102,18 @@ private struct GrowPanel: View {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if branch {
             // ponytail: 1体だけ。競走（2体以上）は上帯の ＋ の板で
+            let parentID = parent?.id
             cockpit.createWorkspaces(repo: project, base: tile.branch ?? "HEAD",
                                      racers: [Cockpit.Racer(name: Worktree.slug(name), backend: backend, model: model)],
-                                     prompt: text, level: level)
+                                     prompt: text, level: level) { [cockpit] _, session, _ in
+                if let session, let parentID { cockpit.setParent(session, parentID) }
+            }
             onClose()
         } else {
             // 管制塔に留まる（選んでいる会話は動かさない）。起こした会話はタイルの下に生える
             let keep = cockpit.selectedSession
-            if cockpit.launch(prompt: text, cwd: tile.id, backend: backend, model: model, level: level) != nil {
+            if let made = cockpit.launch(prompt: text, cwd: tile.id, backend: backend, model: model, level: level) {
+                if let parent { cockpit.setParent(made.uuidString.lowercased(), parent.id) }
                 cockpit.selectedSession = keep
                 onClose()
             } else {
