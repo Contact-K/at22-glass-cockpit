@@ -196,12 +196,12 @@ struct SettingsScreen: View {
                     Text("登録したリポジトリはまだない（管制塔で足すとここに並ぶ）").font(.bodyJP(12)).foregroundStyle(Palette.Light.fg3)
                 }
             }
-            row("06", "Skills", "門の手順と、入っているスキル") {
+            row("06", "Skills", "同梱のスキル（門・記憶DB の書き方・Hydra）と、入っているスキル") {
                 HStack(spacing: 12) {
-                    Button(skill == .current ? "入れ直す" : "門の手順をインストール") { installSkill() }
+                    Button(skill == .current ? "入れ直す" : "同梱のスキルをインストール") { installSkill() }
                         .buttonStyle(SumiButtonStyle(primary: skill != .current, size: 11))
-                        .disabled(SkillInstall.source == nil)
-                    Text(skill.label + " · ~/.claude/skills/\(SkillInstall.name)")
+                        .disabled(SkillInstall.sourceRoot == nil)
+                    Text(skill.label + " · ~/.claude/skills/ に " + SkillInstall.names.joined(separator: "・"))
                         .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1).minimumScaleFactor(0.8)
                 }
                 // 入っているスキル（変換はしない）。claude 側のスキルを codex / grok にも見せる時は共有の置き場にリンクを張る
@@ -720,10 +720,14 @@ struct KeysPanel: View {
     }
 }
 
-/// 門の手順（Resources/Skills/at22-gate）を Claude Code のユーザーのスキル置き場へ入れる。
-/// **人が押した時だけ書く**。入れた後は claude が自分で読み、サブエージェントを起こす前に gate.sh を呼ぶ
+/// 同梱のスキル（Resources/Skills の at22-gate・at22-handoff・at22-hydra）を Claude Code のユーザーのスキル置き場へ入れる。
+/// **人が押した時だけ書く**。入れた後は claude が自分で読む（門・記憶DB の書き方・Hydra の頼み方）
 enum SkillInstall {
-    static let name = "at22-gate"
+    /// 同梱の全部（Resources/Skills の下のフォルダ）
+    static var names: [String] {
+        guard let root = sourceRoot else { return [] }
+        return ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
+    }
 
     enum State {
         case missing, stale, current
@@ -737,37 +741,46 @@ enum SkillInstall {
     }
 
     /// 配布物は .app の Resources/Skills、`swift run` はリポジトリの Resources/Skills
-    static var source: URL? {
+    static var sourceRoot: URL? {
         let manager = FileManager.default
-        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("Skills/\(name)"),
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("Skills"),
            manager.fileExists(atPath: bundled.path) { return bundled }
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Resources/Skills/\(name)")
+            .appendingPathComponent("Resources/Skills")
         return manager.fileExists(atPath: repo.path) ? repo : nil
     }
 
-    static var target: URL {
+    static func target(_ name: String) -> URL {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/skills/\(name)")
     }
 
+    /// 全部入っていて同じなら current、1つでも無ければ missing、違えば stale
     static func state() -> State {
-        guard let source else { return .missing }
+        guard let root = sourceRoot, !names.isEmpty else { return .missing }
         let manager = FileManager.default
-        guard manager.fileExists(atPath: target.path) else { return .missing }
-        let files = (try? manager.contentsOfDirectory(atPath: source.path)) ?? []
-        let same = files.allSatisfy { f in
-            manager.contentsEqual(atPath: source.appendingPathComponent(f).path, andPath: target.appendingPathComponent(f).path)
+        var stale = false
+        for name in names {
+            let source = root.appendingPathComponent(name), target = target(name)
+            guard manager.fileExists(atPath: target.path) else { return .missing }
+            let files = (try? manager.contentsOfDirectory(atPath: source.path)) ?? []
+            if !files.allSatisfy({ manager.contentsEqual(atPath: source.appendingPathComponent($0).path,
+                                                         andPath: target.appendingPathComponent($0).path) }) { stale = true }
         }
-        return same ? .current : .stale
+        return stale ? .stale : .current
     }
 
     static func install() throws {
-        guard let source else { throw CocoaError(.fileNoSuchFile) }
+        guard let root = sourceRoot else { throw CocoaError(.fileNoSuchFile) }
         let manager = FileManager.default
-        try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
-        try manager.copyItem(at: source, to: target)
-        try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.appendingPathComponent("gate.sh").path)
+        for name in names {
+            let target = target(name)
+            try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
+            try manager.copyItem(at: root.appendingPathComponent(name), to: target)
+            for script in (try? manager.contentsOfDirectory(atPath: target.path)) ?? [] where script.hasSuffix(".sh") {
+                try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.appendingPathComponent(script).path)
+            }
+        }
     }
 }
