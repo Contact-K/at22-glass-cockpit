@@ -1056,12 +1056,14 @@ final class Cockpit {
         }
         let found = Gate.pending(memoryRoot: dir)
         if found.map(\.id) != gates.map(\.id) { gates = found }
-        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）
-        for request in found where request.dispatch != nil && !request.by.isEmpty
-            && [.auto, .unattended].contains(level(of: request.by)) {
+        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）。
+        // 段は門と同じ置き場の LEVEL で見る——gate.sh は頼んだ会話（by:）を書かないので、by: で引くと Lv.4 でも門が残った
+        let level = Gate.level(memoryRoot: dir)
+        for request in found where request.dispatch != nil && [.auto, .unattended].contains(level)
+            && !FileManager.default.fileExists(atPath: Gate.verdictPath(for: request)) {
+            // answer は中で読み直すので、同じ門に二度答えて二重に起こさないよう答えの有無を毎回見る
             answer(request, .allow)
         }
-        let level = Gate.level(memoryRoot: dir)
         if level != gateLevel { gateLevel = level }
     }
 
