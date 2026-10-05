@@ -37,8 +37,10 @@ struct SettingsScreen: View {
     /// SSH の接続先（08 Remote）。書き換えたら保存する
     @State private var hosts: [Remote.Host] = Remote.hosts
     @AppStorage(Cockpit.sleepAfterKey) private var sleepAfter = 15
-    @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 4
+    @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 8
     @AppStorage(Hydra.maxRoundsKey) private var hydraRounds = 3
+    @AppStorage(Hydra.maxToolsKey) private var hydraTools = 160
+    @AppStorage(Hydra.maxMinutesKey) private var hydraMinutes = 35
     /// Tailscale の相手（08 Remote の「Tailscale から選ぶ」）。nil は未取得
     @State private var tsPeers: [(name: String, online: Bool, os: String)]?
     @State private var tsProblem: String?
@@ -232,11 +234,17 @@ struct SettingsScreen: View {
                 settingLine("眠らせる", "この分数動かなかった claude のプロセスを畳む。送る時に続きから起こし直す（0 で畳まない）") {
                     stepper(value: $sleepAfter, range: 0...240, step: 5, unit: "分")
                 }
-                settingLine("Hydra 同時", "司令塔が1回に並列で任せられる数") {
-                    stepper(value: $hydraHeads, range: 1...8, step: 1, unit: "体")
+                settingLine("Hydra 同時", "一系統（head が呼んだ分も含む）で同時に動かせる数") {
+                    stepper(value: $hydraHeads, range: 1...16, step: 1, unit: "体")
                 }
-                settingLine("Hydra 回数", "1つの司令塔が任せられる回数（ラウンド）。越えたら任せずに知らせる") {
+                settingLine("Hydra 回数", "一系統で任せられる回数（ラウンド）。越えたら任せずに司令塔へ知らせる") {
                     stepper(value: $hydraRounds, range: 1...10, step: 1, unit: "回")
+                }
+                settingLine("Hydra 道具", "head 1体が使える道具の回数。越えたら止めて司令塔へ知らせる") {
+                    stepper(value: $hydraTools, range: 20...1000, step: 20, unit: "回")
+                }
+                settingLine("Hydra 時間", "head 1体が動ける時間。越えたら止めて司令塔へ知らせる") {
+                    stepper(value: $hydraMinutes, range: 5...240, step: 5, unit: "分")
                 }
             }
             row("08", "Remote", "ほかのマシンで動かす · SSH か Tailscale で。VPN（WireGuard など）は繋がっていれば SSH で届く") {

@@ -561,6 +561,7 @@ final class Cockpit {
                 guard seenActions.insert("\(session)#\(agent)#\(id)").inserted else { break }
                 var record = agents[agent] ?? AgentRecord(session: session, lastAt: at)
                 record.counts[kind, default: 0] += 1
+                if hydraStarted[session] != nil { hydraTools[session, default: 0] += 1 }
                 record.latest = (kind, detail)
                 record.lastAt = max(record.lastAt, at)
                 record.actedAt = max(record.actedAt ?? at, at)
@@ -750,6 +751,7 @@ final class Cockpit {
         sleepIdleSessions()
         runSchedules(now: Date())
         releaseGraceApprovals(now: Date())
+        checkHydraLimits(now: Date())
         // Hydra の報告の送り待ち。司令塔の「次のターンの終わり」だけを待っていると、報告が届いた時に
         // 司令塔がもうターンを終えていた場合、二度と送られなかった（2026-10-04 に本物の claude で通して見つけた）
         for lead in hydraOutbox.keys where !isWorking(lead) && canSend(to: lead) { flushHydra(lead) }
@@ -1102,6 +1104,11 @@ final class Cockpit {
                 guard let self else { return }
                 if let session, error == nil {
                     self.dispatched[session] = gate
+                    // Hydra の head は系統と上限の数えに入れる
+                    if request.call.hasPrefix("hydra-"), !request.by.isEmpty {
+                        self.hydraLead[session] = request.by
+                        self.hydraStarted[session] = Date()
+                    }
                 } else {
                     self.writeResult(gate, status: "failed", fields: [("workspace", path), ("error", error ?? "起こせなかった")])
                 }
@@ -1142,8 +1149,46 @@ final class Cockpit {
     private var hydraSeen: Set<String> = []
     /// 司令塔が作業中で渡せなかった報告。手が空いたら送る
     private var hydraOutbox: [String: [String]] = [:]
-    /// 司令塔ごとの Hydra のラウンド数（上限は設定）
+    /// 根の司令塔ごとの Hydra のラウンド数（上限は設定）
     private var hydraRounds: [String: Int] = [:]
+    /// head → 頼んだ司令塔。一系統（孫まで）を根で数えるために辿る
+    @ObservationIgnored private var hydraLead: [String: String] = [:]
+    /// head を起こした時刻と、使った道具の回数（1体の上限）
+    @ObservationIgnored private var hydraStarted: [String: Date] = [:]
+    @ObservationIgnored private var hydraTools: [String: Int] = [:]
+
+    /// 一系統の根（head でない司令塔）
+    func hydraRoot(of session: String) -> String {
+        var s = session
+        for _ in 0..<16 { guard let up = hydraLead[s] else { break }; s = up }
+        return s
+    }
+
+    /// その系統で動いている head の数
+    private func activeHeads(under root: String) -> Int {
+        hydraLead.keys.filter { runs[$0] != nil && hydraRoot(of: $0) == root }.count
+    }
+
+    /// 1体の上限（道具の回数・時間）を見る。超えた head は止めて、頼んだ司令塔に知らせる（毎秒の見回りから）
+    private func checkHydraLimits(now: Date) {
+        for (head, started) in hydraStarted where runs[head] != nil {
+            if hydraTools[head, default: 0] >= Hydra.maxTools { stopHead(head, reason: "道具 \(Hydra.maxTools) 回") }
+            else if now.timeIntervalSince(started) > Double(Hydra.maxMinutes) * 60 { stopHead(head, reason: "\(Hydra.maxMinutes) 分") }
+        }
+    }
+
+    private func stopHead(_ head: String, reason: String) {
+        hydraStarted[head] = nil
+        let lead = hydraLead[head]
+        if dispatched[head] != nil {
+            reportDispatched(head, status: "limit", reply: "上限（\(reason)）に達したので AT22 が止めた。")
+        } else if let lead {
+            deliverHydra("[Hydra] head（\(String(head.prefix(8)))）を上限（\(reason)）で止めました。変更は worktree に残っています。", to: lead)
+        }
+        noteAttention(head, "Hydra の上限（\(reason)）で止めた")
+        runs[head]?.connection.close()
+        forget(head)
+    }
 
     /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
     /// Lv.3 / Lv.4 のプロジェクトなら人に訊かずに許可する
@@ -1153,14 +1198,25 @@ final class Cockpit {
         let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
         let memory = project.appendingPathComponent("memory")
         let level = Gate.level(memoryRoot: memory)
-        let heads = Hydra.heads(in: text).filter { !hydraSeen.contains(session + "#" + $0.name) }
+        var heads = Hydra.heads(in: text).filter { !hydraSeen.contains(session + "#" + $0.name) }
         guard !heads.isEmpty else { return }
-        // 上限: 1つの司令塔が任せる回数（ラウンド）
-        guard hydraRounds[session, default: 0] < Hydra.maxRounds else {
+        // 上限は一系統で数える（head が呼んだ Hydra も根の司令塔の分）。黙って捨てず、頼んだ側に伝える
+        let root = hydraRoot(of: session)
+        guard hydraRounds[root, default: 0] < Hydra.maxRounds else {
             noteAttention(session, "Hydra の上限（\(Hydra.maxRounds) ラウンド）に達したので、これ以上は任せない")
+            deliverHydra("[AT22] Hydra の上限（一系統で \(Hydra.maxRounds) ラウンド）に達したので、この ```hydra は起こしていません。自分で進めるか、人に相談してください。", to: session)
             return
         }
-        hydraRounds[session, default: 0] += 1
+        let room = Hydra.maxHeads - activeHeads(under: root)
+        guard room > 0 else {
+            deliverHydra("[AT22] Hydra の同時の上限（\(Hydra.maxHeads) 体）に達しているので、この ```hydra は起こしていません。報告を待ってから頼み直してください。", to: session)
+            return
+        }
+        if heads.count > room {
+            deliverHydra("[AT22] 同時の上限（\(Hydra.maxHeads) 体）を越える分は起こしていません: \(heads.dropFirst(room).map(\.name).joined(separator: ", "))", to: session)
+            heads = Array(heads.prefix(room))
+        }
+        hydraRounds[root, default: 0] += 1
         for head in heads where hydraSeen.insert(session + "#" + head.name).inserted {
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
             let path = memory.appendingPathComponent("\(Gate.directory)/\(stamp)-hydra-\(head.name).md").path

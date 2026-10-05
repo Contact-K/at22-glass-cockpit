@@ -17,12 +17,19 @@ enum Hydra {
         let prompt: String
     }
 
-    /// 1通で起こせる上限（暴走止め）
-    /// 1通で起こせる上限・1つの司令塔が任せるラウンドの上限（設定の 07 で変える）
+    /// 暴走止め（設定の 07 で変える）。数えるのは**一系統**——head がさらに Hydra を呼んでも、根の司令塔で数える。
+    /// 既定は Droppy Code と同じ 3ラウンド・同時8体・1体160回・35分
     static let maxHeadsKey = "hydraMaxHeads"
     static let maxRoundsKey = "hydraMaxRounds"
-    nonisolated static var maxHeads: Int { (UserDefaults.standard.object(forKey: maxHeadsKey) as? Int).map { max(1, $0) } ?? 4 }
-    nonisolated static var maxRounds: Int { (UserDefaults.standard.object(forKey: maxRoundsKey) as? Int).map { max(1, $0) } ?? 3 }
+    static let maxToolsKey = "hydraMaxTools"
+    static let maxMinutesKey = "hydraMaxMinutes"
+    nonisolated static var maxHeads: Int { setting(maxHeadsKey, 8) }
+    nonisolated static var maxRounds: Int { setting(maxRoundsKey, 3) }
+    nonisolated static var maxTools: Int { setting(maxToolsKey, 160) }
+    nonisolated static var maxMinutes: Int { setting(maxMinutesKey, 35) }
+    private nonisolated static func setting(_ key: String, _ fallback: Int) -> Int {
+        (UserDefaults.standard.object(forKey: key) as? Int).map { max(1, $0) } ?? fallback
+    }
 
     /// 司令塔に渡す約束（`--append-system-prompt` に足す）
     static var protocolText: String { """
@@ -78,7 +85,8 @@ enum Hydra {
     /// 司令塔へ返す報告の1通
     static func report(name: String, agent: String, status: String, workspace: String, branch: String,
                        reply: String) -> String {
-        let state = ["done": "終わりました", "failed": "起こせませんでした", "stopped": "人が止めました"][status] ?? status
+        let state = ["done": "終わりました", "failed": "起こせませんでした", "stopped": "人が止めました",
+                     "limit": "上限で止めました"][status] ?? status
         return """
         [Hydra] head「\(name)」（\(agent)）の報告です。\(state)。
         workspace: \(workspace)

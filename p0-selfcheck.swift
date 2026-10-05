@@ -3958,7 +3958,7 @@ struct P0SelfCheck {
         assert(heads.map(\.name) == ["fix-readme", "p0"], "\(heads.map(\.name))")
         assert(heads[0].agent == .codex && heads[0].model == "gpt-5.5" && heads[1].agent == .grok)
         assert(Hydra.heads(in: "```hydra\nnot json\n```").isEmpty)
-        let many = "```hydra\n[" + (1...6).map { "{\"agent\":\"claude\",\"name\":\"h\($0)\",\"prompt\":\"p\"}" }.joined(separator: ",") + "]\n```"
+        let many = "```hydra\n[" + (1...(Hydra.maxHeads + 2)).map { "{\"agent\":\"claude\",\"name\":\"h\($0)\",\"prompt\":\"p\"}" }.joined(separator: ",") + "]\n```"
         assert(Hydra.heads(in: many).count == Hydra.maxHeads)
         let text = Hydra.gateText(heads[0], by: "lead-1", at: Date(timeIntervalSince1970: 0))
         let request = Gate.parse(path: "/p/memory/gate/x.md", text: text)
