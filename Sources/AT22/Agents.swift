@@ -42,6 +42,10 @@ struct Approval: Identifiable, Equatable, Sendable {
     var at = Date()
     /// 入力を書き換えて許可できるか。ACP には書き換えの口が無い
     var canRevise = true
+    /// 気にかけてる（Lv.2）の猶予の期限。過ぎたら AT22 が許可する。nil は人の答えを待つ
+    var autoAt: Date? = nil
+    /// 断る時に添える文（要判断に積んだ時）。nil は人が却下した時の決まり文句
+    var denyNote: String? = nil
 }
 
 /// 接続の共通の形。実装は Claude（stream-json）・Codex（exec / resume）・ACP の3つ。
@@ -102,7 +106,8 @@ final class ClaudeConnection: AgentConnection {
     func answer(_ approval: Approval, allow: Bool, input edited: String?) -> Bool {
         // 書き換えた入力が JSON として読めなければ送らない（何が走るか分からないまま許可しない）
         guard let line = Launcher.permissionLine(requestID: approval.id, allow: allow,
-                                                 input: edited ?? approval.input) else { return false }
+                                                 input: edited ?? approval.input,
+                                                 message: approval.denyNote ?? "AT22 で人が却下した") else { return false }
         return (try? input.write(contentsOf: line)) != nil
     }
 

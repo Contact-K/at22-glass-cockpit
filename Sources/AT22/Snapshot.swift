@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - 見え方を1枚に焼く
 
-/// 画面を開かずに PNG へ出す。`AT22 --shot <path> [幅 高さ] [--mode talk|files|spar|review|git|settings] [--tower]`。
+/// 画面を開かずに PNG へ出す。`AT22 --shot <path> [幅 高さ] [--mode talk|files|review|git|settings] [--tower]`。
 ///
 /// **これは検査であって機能ではない。** 組んだ結果を見ないと分からない壊れ方——
 /// 区画の重なり、字の溢れ、色の取り違え——を、窓を開く前に1枚で確かめる。

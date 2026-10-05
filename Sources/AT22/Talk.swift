@@ -38,6 +38,10 @@ struct TalkScreen: View {
     var onRiskyLevel: (Gate.Level) -> Void = { _ in }
     /// 発言の URL の札を押した時（内蔵ブラウザ）
     var onBrowse: (URL) -> Void = { _ in }
+    /// 壁打ちの板（採った手順・決めたこと）。壁打ち中は返事の下に札を出し、右列に暫定プラン・決定事項を出す
+    var spar: SparModel? = nil
+    var fly: (CGRect?, CGRect?) -> Void = { _, _ in }
+    var rects: [String: CGRect] = [:]
 
     @State private var draft = ""
     @State private var failed = false
@@ -302,7 +306,8 @@ struct TalkScreen: View {
         case let .human(message):
             HStack {
                 Spacer(minLength: 0)
-                Text(message.text)
+                // 壁打ちで送った分は、添えた約束を外して打った言葉だけ
+                Text(SparReplyStrip.typed(message.text))
                     .font(.bodyJP(15)).lineSpacing(15 * 0.6 - 4)
                     .foregroundStyle(Palette.Light.bg)
                     .textSelection(.enabled)
@@ -312,10 +317,12 @@ struct TalkScreen: View {
             }
             .reportRect(message.id == lastHuman ? "melast" : "me:\(message.id)")
         case let .model(message, label, refs):
+            // 壁打ち中は返事の末尾の STEP / DECIDE / ASK を札に分け、本文はそれ以外
+            let sparred = planOn && !message.thinking && spar != nil && workspace != nil ? Sparring.parse(message.text) : nil
             VStack(alignment: .leading, spacing: 10) {
                 Text(label).font(.mono(10)).tracking(1).foregroundStyle(Palette.Light.fg2)
                 Text(message.text.isEmpty ? AttributedString("（本文は残っていない。考えた時刻だけ分かる）")
-                                          : MarkdownCache.text(message.id, message.text))
+                                          : MarkdownCache.text(message.id, sparred?.body ?? message.text))
                     .font(.bodyJP(15)).lineSpacing(15 * 0.8 - 4)
                     .foregroundStyle(message.thinking ? Palette.Light.fg3 : Palette.Light.fg)
                     .textSelection(.enabled)
@@ -340,6 +347,16 @@ struct TalkScreen: View {
                             .help(url.absoluteString)
                         }
                     }
+                }
+                if let sparred, let spar, let workspace {
+                    SparReplyStrip(model: spar, workspace: workspace, reply: sparred,
+                                   offerNext: message.id == lastReply && !cockpit.isWorking(cockpit.selectedSession),
+                                   onNext: { mode in
+                                       spar.boards[workspace, default: .init()].mode = mode
+                                       draft = ""
+                                       send()
+                                   },
+                                   fly: fly, rects: rects)
                 }
             }
             .foregroundStyle(Palette.Light.fg)
@@ -467,6 +484,18 @@ struct TalkScreen: View {
     }
 
     private func send() {
+        // 壁打ち中は、型の合図・決まっていること・返し方（STEP / DECIDE / ASK）を添えて送る
+        let typed = draft
+        if planOn, let spar, let workspace {
+            let board = spar.board(workspace)
+            draft = Sparring.prompt(typed.trimmingCharacters(in: .whitespacesAndNewlines), mode: board.mode,
+                                    decided: board.decisions.map(\.text))
+        }
+        defer {
+            // 送れなかった時は打った言葉に戻す。送れたら板にこの会話を覚える（右列の未決の問いを拾う）
+            if failed { draft = typed }
+            if !failed, planOn, let spar, let workspace, let s = cockpit.selectedSession { spar.boards[workspace, default: .init()].session = s }
+        }
         if cockpit.selectedSession == nil {
             // 新しい会話: いまの worktree で、入力欄の左で選んだエージェントとモデルで起こす。
             // 起こした会話は launch が選択中にする
@@ -560,7 +589,11 @@ private struct GateCard: View {
             Text("· " + stop.target + (stop.kind == .acp ? " · ACP" : "")).lineLimit(1)
             if pending > 1 { Text("· 他 \(pending - 1) 件") }
             Spacer(minLength: 8)
-            Ticker(fps: 1) { now in Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
+            Ticker(fps: 1) { now in
+                // 気にかけてる（Lv.2）の猶予中は、通るまでの残りを数える
+                if let auto = stop.autoAt { Text("AUTO \(Int(max(0, auto.timeIntervalSince(now)).rounded(.up)))s") }
+                else { Text("WAIT \(Int(max(0, now.timeIntervalSince(stop.since))))s") }
+            }
         }
         .font(.mono(10)).tracking(1.2)
         .foregroundStyle(Palette.Light.bg)
@@ -606,12 +639,12 @@ private struct GateCard: View {
                 .background(Palette.Light.bg2)
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
             case .diff, .acp:
+                let lines = stop.diffLines
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
                         Text(stop.diffPath).lineLimit(1).truncationMode(.middle)
                         if stop.isNewFile { Text("NEW").font(.mono(9)).padding(.horizontal, 5).overlay(Rectangle().stroke(lineWidth: 1)) }
                         Spacer(minLength: 0)
-                        let lines = stop.diffLines
                         Text("+\(lines.filter { $0.kind == "+" }.count) −\(lines.filter { $0.kind == "-" }.count)")
                             .foregroundStyle(Palette.Light.fg2)
                     }
@@ -620,7 +653,7 @@ private struct GateCard: View {
                     .background(Palette.Light.bg2)
                     .overlay(alignment: .bottom) { Rectangle().fill(Palette.Light.fg).frame(height: 1) }
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(stop.diffLines.prefix(40).enumerated()), id: \.offset) { _, line in
+                        ForEach(Array(lines.prefix(40).enumerated()), id: \.offset) { _, line in
                             DiffRow(kind: line.kind, old: line.old, new: line.new, text: line.text, dense: true)
                         }
                     }
@@ -955,10 +988,11 @@ enum MarkdownCache {
     private static var store: [Int: (count: Int, text: AttributedString)] = [:]
 
     static func text(_ id: Int, _ raw: String) -> AttributedString {
-        if let hit = store[id], hit.count == raw.count { return hit.text }
+        // utf8.count は数えずに出る（count は全文を歩く）
+        if let hit = store[id], hit.count == raw.utf8.count { return hit.text }
         if store.count > 2000 { store.removeAll() }
         let text = TalkScreen.formatted(raw)
-        store[id] = (raw.count, text)
+        store[id] = (raw.utf8.count, text)
         return text
     }
 }
@@ -969,10 +1003,10 @@ enum LinkCache {
     private static var store: [Int: (count: Int, links: [URL])] = [:]
 
     static func links(_ id: Int, _ text: String) -> [URL] {
-        if let hit = store[id], hit.count == text.count { return hit.links }
+        if let hit = store[id], hit.count == text.utf8.count { return hit.links }
         if store.count > 2000 { store.removeAll() }
         let links = BrowserSheet.links(in: text)
-        store[id] = (text.count, links)
+        store[id] = (text.utf8.count, links)
         return links
     }
 }

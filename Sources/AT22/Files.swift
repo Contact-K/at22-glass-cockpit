@@ -255,7 +255,8 @@ struct FilesScreen: View {
         .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 2))
     }
 
-    private var lineCount: Int { model.text.split(separator: "\n", omittingEmptySubsequences: false).count }
+    /// 改行を数えるだけ（split は行ごとの部分文字列を作っていた）
+    private var lineCount: Int { model.text.utf8.reduce(1) { $1 == 0x0A ? $0 + 1 : $0 } }
 
     /// 行番号の列と本文を1つのスクロールに載せる（本文の欄は高さを行数ぶん取って、自分ではスクロールしない）
     @ViewBuilder
@@ -265,6 +266,7 @@ struct FilesScreen: View {
                 .font(.bodyJP(14)).padding(14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
+            let lines = max(1, lineCount)
             ScrollViewReader { proxy in
                 LiveScroll {
                     ZStack(alignment: .topLeading) {
@@ -274,12 +276,12 @@ struct FilesScreen: View {
                                 .offset(y: 10 + CGFloat(model.line - 1) * Self.lineHeight)
                         }
                         // 送り先の目印（見えない）
-                        VStack(spacing: 0) {
-                            ForEach(1...max(1, lineCount), id: \.self) { n in Color.clear.frame(height: Self.lineHeight).id(n) }
+                        LazyVStack(spacing: 0) {
+                            ForEach(1...lines, id: \.self) { n in Color.clear.frame(height: Self.lineHeight).id(n) }
                         }
                         .padding(.top, 10)
                         HStack(alignment: .top, spacing: 0) {
-                            Text((1...max(1, lineCount)).map(String.init).joined(separator: "\n"))
+                            Text((1...lines).map(String.init).joined(separator: "\n"))
                             .font(.mono(13)).lineSpacing(Self.spacing).multilineTextAlignment(.trailing)
                             .foregroundStyle(Palette.Light.fg3)
                             .padding(.vertical, 10).padding(.trailing, 10)
@@ -298,7 +300,7 @@ struct FilesScreen: View {
                             .font(.mono(13))
                             .lineSpacing(Self.spacing)
                             .padding(.vertical, 10).padding(.horizontal, 8)
-                            .frame(height: CGFloat(lineCount) * Self.lineHeight + 40, alignment: .topLeading)
+                            .frame(height: CGFloat(lines) * Self.lineHeight + 40, alignment: .topLeading)
                         }
                     }
                 }

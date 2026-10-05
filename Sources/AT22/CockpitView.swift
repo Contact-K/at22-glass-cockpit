@@ -75,7 +75,7 @@ struct CockpitView: View {
     /// 送出の間は鶴が畳んで送る（upload）、終わると片足で立つ
     @State private var craneFx: String?
 
-    // 壁打ち
+    // 壁打ち（会話画面の「□ 壁打ち」）
     /// worktree ごとの壁打ち（採った・決めた印）と、暫定プランの ⑂ から新規の板に渡す最初の指示
     @State private var spar = SparModel()
     @State private var newPrompt = ""
@@ -132,7 +132,8 @@ struct CockpitView: View {
 
     private var core: some View {
         GeometryReader { geo in
-            Ticker(fps: 1) { now in
+            // 根の時計は motionPaused の外にあるので、窓が隠れたら自分で止める
+            Ticker(fps: 1, paused: !windowVisible) { now in
                 screen(size: geo.size, now: now)
             }
             .environment(\.frozenTime, shot)
@@ -246,7 +247,8 @@ struct CockpitView: View {
         let p = self.p
         let towerShown = isTower || !settled
         let colTower = shot != nil ? shotTower : self.colTower
-        let projects = towerShown || colTower ? TowerData.projects(cockpit) : []
+        // 1回の描画で1回だけ組む（GIT は右列と本文の両方で使う）
+        let projects = towerShown || colTower || tab == .git ? TowerData.projects(cockpit) : []
         let paused = !windowVisible || menu?.settled == true || shot != nil
 
         ZStack(alignment: .topLeading) {
@@ -255,7 +257,7 @@ struct CockpitView: View {
                 ZStack(alignment: .topLeading) {
                     Palette.Light.bg
                     if !isTower || !settled {
-                        tabContent(snap: snap, actions: actions, tasks: tasks, trail: trail, w: w, h: h, contentW: contentW)
+                        tabContent(snap: snap, actions: actions, tasks: tasks, trail: trail, projects: projects, w: w, h: h, contentW: contentW)
                     }
                 }
                 .frame(width: w, height: h, alignment: .topLeading)
@@ -270,7 +272,8 @@ struct CockpitView: View {
                             .offset(y: 56)
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
-                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) })
+                                    onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
+                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))
@@ -321,6 +324,12 @@ struct CockpitView: View {
                         } else {
                             FilesPanels(cockpit: cockpit, model: shotFiles ?? files, height: h)
                         }
+                    } else if tab == .talk, !isTower, cockpit.selectedSession != nil, cockpit.gateLevel == .plan {
+                        // 壁打ち中は右列を暫定プラン・決定事項に（05 PLAN に送る・HANDOFF に書く）
+                        SparPanels(cockpit: cockpit, model: spar, workspace: currentWorkspace, lead: cockpit.selectedSession,
+                                   height: h,
+                                   onLaunch: { step in newPrompt = step; overlay = .newWorkspace(from: currentWorkspace) },
+                                   fly: { fly(from: $0, to: $1) }, rects: book.rects)
                     } else if tab == .talk {
                         RightColumn(cockpit: cockpit, actions: actions.rows, doneCount: actions.doneCount,
                                     snapshot: snap, tasks: tasks, height: h,
@@ -446,7 +455,7 @@ struct CockpitView: View {
     /// 白い面の中身。タブごとに1枚
     @ViewBuilder
     private func tabContent(snap: CockpitSnapshot, actions: (rows: [ActionRow], doneCount: Int),
-                            tasks: [RoadmapTask], trail: [(path: String, kind: TouchKind)],
+                            tasks: [RoadmapTask], trail: [(path: String, kind: TouchKind)], projects: [TowerProject],
                             w: CGFloat, h: CGFloat, contentW: CGFloat) -> some View {
         switch tab {
         case .talk:
@@ -466,7 +475,8 @@ struct CockpitView: View {
                        workspace: isTower ? nil : currentWorkspace,
                        composing: $talkComposing,
                        onRiskyLevel: { riskyLevel = $0 },
-                       onBrowse: { overlay = .browser($0) })
+                       onBrowse: { overlay = .browser($0) },
+                       spar: spar, fly: { fly(from: $0, to: $1) }, rects: book.rects)
                 .offset(x: 220, y: 72)
         case .files:
             ZStack(alignment: .topTrailing) {
@@ -493,7 +503,7 @@ struct CockpitView: View {
                 .offset(x: 220, y: 84)
         case .git:
             GitScreen(cockpit: cockpit, model: shotReview ?? review, workspace: currentWorkspace,
-                      branch: currentWorkspace.flatMap { ws in TowerData.projects(cockpit).flatMap(\.tiles).first { $0.id == ws }?.branch },
+                      branch: currentWorkspace.flatMap { ws in projects.flatMap(\.tiles).first { $0.id == ws }?.branch },
                       width: contentW, height: h,
                       onReview: { go(.review) },
                       onBurst: { burst(at: book.rects[$0]) },
@@ -555,6 +565,7 @@ struct CockpitView: View {
     // MARK: 状態の読み出し
 
     private var stop: Stop? {
+        // 門の題にだけ chips が要る。承認や何も無い時に snapshot（touches を全部たたむ）を走らせない
         Stop.current(cockpit, chips: cockpit.snapshot(now: Date(), mode: .work).chips)
     }
 
@@ -622,10 +633,23 @@ struct CockpitView: View {
         if ctxAlarm {
             return CraneStatus(busy: "overload", pose: .idle, state: "MENU", sub: "文脈があふれそうです")
         }
-        return CraneStatus(busy: nil, pose: .idle, state: "MENU", sub: "C0 司令塔")
+        // 静かな時は、いまの一手（連携 → プロジェクト → ワークスペース → 会話 → REVIEW）を出す
+        return CraneStatus(busy: nil, pose: .idle, state: "MENU",
+                           sub: cockpit.currentFlowStep(workspace: currentWorkspace)?.hint ?? "C0 司令塔")
     }
 
     // MARK: 遷移
+
+    /// 流れの段へ（管制塔の空の状態の段の並びから）
+    private func goFlow(_ step: Cockpit.FlowStep) {
+        switch step {
+        case .link: openSettings()
+        case .project, .workspace: overlay = .newWorkspace(from: nil)
+        case .talk: storedTab = .talk; setTower(false)
+        case .review: go(.review)
+        case .git: go(.git)
+        }
+    }
 
     /// タブを移る。DotWipe が覆いきった所（380ms）で差し替え、1.86 秒で戻る。
     /// 壁打ちに未保存があると動かない（書きかけを捨てない）。管制塔からは滑って会話へ入るだけ
@@ -787,6 +811,8 @@ struct CockpitView: View {
         gate.shake += 1
         let option = stop.options[i]
         if option == 1 {
+            // 書き換えている間に猶予で通ってしまわないよう止める
+            if case let .approval(a) = stop.source { cockpit.holdGrace(a.id) }
             after(0.11) { gate.rewriting = true }
             return
         }
@@ -1180,20 +1206,26 @@ struct Stop {
     let seed: String
     /// 動いている worktree の名前（Bash の cwd に出す）
     var place = "."
+    /// 猶予の期限（気にかけてる）。過ぎると AT22 が許可する
+    var autoAt: Date? = nil
+    /// 道具の入力を1回だけ解いたもの。読むたびに解くと、カード1枚の描画で20回以上解いていた
+    var json: [String: Any] = [:]
 
     @MainActor
-    static func current(_ cockpit: Cockpit, chips: [AgentChip]) -> Stop? {
+    static func current(_ cockpit: Cockpit, chips: @autoclosure () -> [AgentChip]) -> Stop? {
         if let a = cockpit.approvals.filter({ $0.session == cockpit.selectedSession && !AskWindow.isWindowed($0) }).min(by: { $0.at < $1.at }) {
             return make(a, cockpit: cockpit)
         }
         guard let g = cockpit.gates.min(by: { $0.issued < $1.issued }) else { return nil }
-        return make(g, chips: chips)
+        return make(g, chips: chips())
     }
 
     /// 管制塔の右列に出す全部（どのセッションの承認も、どの門も）。待たせている順
     @MainActor
-    static func all(_ cockpit: Cockpit, chips: [AgentChip]) -> [TowerStop] {
-        let stops = cockpit.approvals.map { make($0, cockpit: cockpit) } + cockpit.gates.map { make($0, chips: chips) }
+    static func all(_ cockpit: Cockpit, chips: @autoclosure () -> [AgentChip]) -> [TowerStop] {
+        let gateChips = cockpit.gates.isEmpty ? [] : chips()
+        let stops = cockpit.approvals.map { make($0, cockpit: cockpit) } + cockpit.gates.map { make($0, chips: gateChips) }
+            + cockpit.deferred.map { make($0, cockpit: cockpit, deferred: true) }
         return stops.sorted { $0.since < $1.since }.map { stop in
             let session: String
             switch stop.source {
@@ -1225,11 +1257,6 @@ struct Stop {
         case .gate: return "C0"
         case .approval: return meta.components(separatedBy: " · ").first ?? "Agent"
         }
-    }
-
-    private var json: [String: Any] {
-        guard case let .approval(a) = source else { return [:] }
-        return (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:]
     }
 
     var prettyInput: String {
@@ -1267,7 +1294,6 @@ struct Stop {
         switch source {
         case .gate: return "→ " + target
         case let .approval(a):
-            let json = (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:]
             if let command = json["command"] as? String { return "$ " + command }
             if let path = (json["file_path"] ?? json["path"] ?? json["notebook_path"]) as? String { return path }
             return a.detail
@@ -1275,12 +1301,16 @@ struct Stop {
     }
 
     @MainActor
-    private static func make(_ a: Approval, cockpit: Cockpit) -> Stop {
-        Stop(source: .approval(a), id: a.id, bar: "C0 // APPROVAL", barJP: "承認", target: a.tool,
-             title: "Run \(a.tool)?", body: a.detail,
+    private static func make(_ a: Approval, cockpit: Cockpit, deferred: Bool = false) -> Stop {
+        // 要判断（留守番で断って積んだもの）は 許可して伝える／捨てる の2つ。相手はもう待っていない
+        Stop(source: .approval(a), id: a.id, bar: deferred ? "C0 // 要判断" : "C0 // APPROVAL", barJP: deferred ? "要判断" : "承認",
+             target: a.tool,
+             title: deferred ? "要判断 · \(a.tool)" : "Run \(a.tool)?", body: a.detail,
              meta: cockpit.backend(of: a.session).title + " · " + String(a.session.prefix(8)),
-             since: a.at, canRevise: a.canRevise, seed: a.input,
-             place: cockpit.workspacePath(of: a.session).map { ".worktrees/" + ($0 as NSString).lastPathComponent } ?? ".")
+             since: a.at, canRevise: deferred ? false : a.canRevise, seed: a.input,
+             place: cockpit.workspacePath(of: a.session).map { ".worktrees/" + ($0 as NSString).lastPathComponent } ?? ".",
+             autoAt: a.autoAt,
+             json: (try? JSONSerialization.jsonObject(with: Data(a.input.utf8))) as? [String: Any] ?? [:])
     }
 
     private static func make(_ g: Gate.Request, chips: [AgentChip]) -> Stop {

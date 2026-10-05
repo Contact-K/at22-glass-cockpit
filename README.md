@@ -29,7 +29,7 @@ AT22 は初期状態では **読み取るだけ** で、
 
 - **競走** … 新規の板でエージェントを2体以上選ぶと、同じ基点のコミットから1本ずつ worktree を作って同じ指示を送る。管制塔で1組に束ね、⋯ の **採る** で勝ちを残す。負けは未コミットの変更の数を見せてから変更ごと消す（枝は `-d` なので、コミットを積んだものは残る）
 - **采配** … 司令塔が門に `dispatch: grok` などを書くと、許可した時だけ AT22 がワークスペースを作ってそのエージェントを起こし、最初のターンの結果を `<id>.result` に書き戻す（書式は [docs/orchestrator-gate.md](docs/orchestrator-gate.md)）
-- **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.4 / Lv.5 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
+- **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.3 / Lv.4 は訊かずに起こす。Droppy Code の Hydra と同じ往復の形だが、マージは自動にせず人が REVIEW / GIT で決める
 - **レビューと出荷** … 07 REVIEW と 08 GIT。ハンクのステージ・コミット・push・PR は**押した時だけ**（PR は `gh` が自分の認証で作る）
 
 **入力欄の左はモデルとエフォート**（会話・壁打ち）。モデルの一覧は CLI から取る（claude は `list_models` の問い合わせで API のターンは起きない、grok は `grok models`）。「最新（別名）」と「固定の版」を選べ、エフォートはそのモデルが対応する段だけのスライダー。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`、grok は `--reasoning-effort`）。その右の「／」で入っているスキル（`~/.claude/skills`・`~/.agents/skills`・有効なプラグイン・リポジトリの `.claude/skills`）を `/名前`（codex は `$名前`）として差し込む。設定の 06 Skill の「共有」は `~/.agents/skills` と `~/.grok/skills` にリンクを張り、codex / grok からも見えるようにする（押した時だけ書く）。
@@ -45,13 +45,26 @@ AT22 は初期状態では **読み取るだけ** で、
 - Claude Code を起こす時のセッションIDは AT22 が採番する（`--session-id`）。transcript の在り処が確定するので、起こした先をそのまま画面で追える。Codex / Grok は相手が返したIDを台帳（UserDefaults）に残し、アプリを閉じても続きに繋げる
 - CLI の場所はログインシェルに訊いて突き止める。見つからなければそのエージェントの起動UI自体が出ない
 - AT22 から起こした Claude Code は、道具の承認を AT22 に訊く（`--permission-prompt-tool stdio`）。Lv.2 は道具ごとに全部、Lv.3 は編集以外を、会話の末尾のカードで許可・書換・却下する。書き換えて許可すると、**書き換えた入力の方が実行される**。サブエージェントの起動（Agent ツール）はどの段でも訊かれないので、そこは今まで通り門が止める
-- 人間の承認なしにファイルを書き換える段（Lv.4 / Lv.5）を選ぶ時は、一度だけ確認が入る。Grok は Lv.4 / Lv.5 の時だけ `--always-approve` で起こし、それ以外はあなた自身の既定の権限モードに従う（`grok agent` に段を細かく渡す口が無いため）
+- **道具の承認は AT22 が段で決める**（claude はどの段も `--permission-mode default`、grok は `--always-approve` を付けない、codex は `on-request`）。Lv.1 は全部訊く／Lv.2 は低リスク（読むだけのコマンド・worktree の中の編集）を10秒の猶予の後に通し、高リスクは訊く／Lv.3 は低リスクをすぐ通し、高リスクは訊く／Lv.4 は高リスクを「要判断」に積んで断り、相手には先へ進ませる。要判断は管制塔の右列に並び、許可すると相手に「やり直してよい」と伝える。判定は `Gate.risk`（分からないものは高）。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る
 
 git と gh は `Foundation.Process` で叩く。外部のパッケージは端末の SwiftTerm だけ。
 
 読む先は3つ。`~/.claude/projects/` 配下の transcript と、`~/.claude/sessions/` 配下のセッション状態（Claude Code 自身が書く「動いているか・承認待ちか」）と、**稼働中セッションのプロジェクトディレクトリのソース**（依存グラフを作るため。読む拡張子とスキップするディレクトリは `Sources/AT22/Structure.swift` に列挙してある）。どれも読むだけで、開いて中身を出すことはしない。
 
 端末で起こしたセッションが承認ダイアログで止まると、司令塔の箱が琥珀色の枠になり「承認待ち · 直前の作業」と出る。フックは使わない（Claude Code がセッション状態に書く値を読むだけ）ので、どのサブエージェントが待っているかまでは出ない。
+
+## 流れ
+
+使い方は6段。いまどこにいるかは、静かな時の鶴の札（「いまの一手」）と、ワークスペースがまだ無い管制塔の段の並びに出る（どちらも状態から決める。初回の印は持たない）。
+
+| 段 | やること | どこで |
+|---|---|---|
+| 01 Link 連携 | CLI（claude / grok / hermes / codex …）を入れ、03 Launch を「動かす」にする | 10 SETTINGS の 02 Link・03 Launch |
+| 02 Project プロジェクト | リポジトリをクローン／ローカルで新しく／既存のフォルダから | 上帯の ＋ → 01 Repository の「＋ 新しいプロジェクト」 |
+| 03 Workspace ワークスペース | worktree を作り、エージェント・最初の指示・承認の段を決める | 上帯の ＋（6段の板） |
+| 04 Talk 会話 | 司令塔と話す。承認と門は会話のカードで答える。並列は Hydra | 01 TALK |
+| 05 Review 見る | 差分を読み、指摘を1通で送り、ハンクごとにステージ | 07 REVIEW |
+| 06 Git 送る | 記帳 → 送出 → PR。マージは人 | 08 GIT |
 
 ## 見えるもの
 
@@ -77,7 +90,7 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 
 依存は `import` では引けない（Swift の単一モジュールにはファイル間の import が無い）ので、**どのファイルが宣言した名前を、どのファイルが使っているか**で引いている。
 
-**03 SPARRING 壁打ち** … 書き始める前に計画を練る場所。**読むだけのセッション**（claude の `--permission-mode plan`）をその worktree に起こし、話す（送る文には「案を出して」の型と、決めたことを前提として添える）。返事の末尾の `STEP:` / `DECIDE: … // 理由` / `ASK: …？ [a | b]` を「採れる案」と「問い」として拾う。手順を採ると右の暫定プランに積まれ、■ 合意したものだけ **05 PLAN に送る**（司令塔に `TaskCreate` で積んでもらう1通）。決めたことは次の壁打ちに前提として渡り、**HANDOFF に書く**で記憶DBのノートに足す。
+**壁打ち（01 TALK の「□ 壁打ち」）** … 書き始める前に計画を練る。入れるとその会話の worktree が plan の段（claude の `--permission-mode plan`・読むだけ）になり、送る文に型（案を出して／反論して／分解して／決めて）と、決めたことを前提として添える。返事の末尾の `STEP:` / `DECIDE: … // 理由` / `ASK: …？ [a | b]` は返事の下の札になり（「採る ▸」・問いの選択肢・問いが無ければ「次に」）、右列は暫定プランと決定事項に替わる。■ 合意した手順だけ **05 PLAN に送る**（司令塔に積んでもらう1通）、決めたことは **HANDOFF に書く**で記憶DBのノートに足す。
 
 **07 REVIEW 差分** … 基点からの差分を1ファイルずつ。行を押して指摘を溜め、**1通にまとめて**エージェントへ送る。ハンクごとに **STAGE / 外す**（`git apply --cached`）。右列は変わったファイル（見た・ステージ数・指摘数）とコミット。
 
@@ -85,7 +98,7 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 
 **09 TERMINAL 端末** … チャットが主・端末は脱出口。下帯の `09 // TERM` か ⌃` で下から引き出す。worktree ごとにログインシェルを起こし、切り替えても生かしたまま持つ（アプリが閉じるまで）。2本以上は左右に並ぶ。管制塔のタイルの「端末」は AT22 の接続を閉じてから、中の端末で `claude --resume` する。
 
-**10 SETTINGS 設定** … 新しいワークスペースの既定（承認の段・エージェント）、思考の表示、止まったエージェントを畳む・まっさらに。CLI の場所とログインは ⌘, の窓。**06 Skill** で門の手順（`Resources/Skills/at22-gate`：`SKILL.md` と `gate.sh`）を `~/.claude/skills/at22-gate/` に入れる。入れた後の司令塔は、サブエージェントや別のエージェントを起こす前に `gate.sh` を1回呼ぶだけで、段の判定・門の書き出し・答え待ちはスクリプトが受け持つ（Bash 道具の 10 分を超える待ちは `gate.sh --wait <id>` で続ける）。AT22 がここに書くのは押した時だけ。
+**10 SETTINGS 設定** … 01 Approval / 02 Link / 03 Launch / 04 Display / 05 Worktrees / 06 Skills / 07 Sessions（眠らせる・Hydra の上限）/ 08 Remote / 09 Schedule。⌘, はこのタブを開く。**06 Skills** で同梱のスキル（`Resources/Skills` の `at22-gate`＝門・`at22-handoff`＝記憶DB の節目と引き継ぎの書き方・`at22-hydra`＝並列で任せる書式）を `~/.claude/skills/` に入れる。入れた後の司令塔は、サブエージェントや別のエージェントを起こす前に `gate.sh` を1回呼ぶだけで、段の判定・門の書き出し・答え待ちはスクリプトが受け持つ（Bash 道具の 10 分を超える待ちは `gate.sh --wait <id>` で続ける）。AT22 がここに書くのは押した時だけ。
 
 **止まった指示（門）**
 
@@ -96,15 +109,17 @@ git と gh は `Foundation.Process` で叩く。外部のパッケージは端�
 AT22 :  門を見せる → 人間が答える → memory/gate/<id>.verdict を書く
 ```
 
-| Lv | 名前 | 止める指示 | 起こす時の `--permission-mode` |
+| 段 | 値 | 門（サブエージェント・采配） | 道具の承認（AT22 が決める） |
 |---|---|---|---|
-| 1 | 壁打ち | —（指示を出さない） | `plan` |
-| 2 | 隣で見てる | 全部 | `default`（道具ごとに承認を訊く） |
-| 3 | 気にかけてる | 高リスクだけ | `acceptEdits` |
-| 4 | 任せてる | 止めない | `bypassPermissions` |
-| 5 | 留守番 | 止めない（無人） | `bypassPermissions` ＋ `--bg` |
+| 壁打ち（トグル） | `plan` | 指示を出さない | 訊く（claude は `plan`） |
+| Lv.1 隣で見てる | `each` | 全部止める | 全部訊く |
+| Lv.2 気にかけてる | `normal` | 高リスクだけ止める | 低リスクは10秒の猶予の後に通す・高リスクは訊く |
+| Lv.3 任せてる | `auto` | 止めない（采配も自動で許可） | 低リスクはすぐ通す・高リスクは訊く |
+| Lv.4 留守番 | `unattended` | 止めない（采配も自動で許可） | 低リスクはすぐ通す・高リスクは「要判断」に積んで断る |
 
-値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.4 / Lv.5 を選ぶ時は一度だけ確認が入る。壁打ちのセッションは起こしてもこのファイルを書き換えない。
+claude はどの段も `--permission-mode default`（壁打ちだけ `plan`）で起こし、承認は全部 AT22 に来る。
+
+値は `memory/gate/LEVEL` に書かれ、**司令塔も同じファイルを読む**ので、アプリの設定ではなくファイルが正。Lv.3 / Lv.4 を選ぶ時は一度だけ確認が入る。壁打ちのトグルはこのファイルを `plan` にし、切ると元の段に戻す。
 
 **文脈（CTX）** … `message.usage` の実測（`input` ＋ `cache_read` ＋ `cache_creation`）で 20 升を埋める。85% を超えると赤くなる。切れ目は `Sources/AT22/Snowman.swift`。**これはハルシネーションそのものの検知ではない。**
 
@@ -148,6 +163,7 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
 ```
 
 Hydra の通し（本物の claude を haiku で2本起こす・料金がかかる）は `hydra-check.swift` を同じ Sources と組んで走らせる。
+接続と段の通し（手元の claude・grok・hermes で往復、claude で Lv.2 の rm は訊く・書き込みは猶予の後に通る・Lv.4 の rm は要判断に積む）は `agents-check.swift` を同じように組む。
 使い捨てのリポジトリで ```hydra → 門（Lv.3 で自動許可）→ worktree → head → 報告が司令塔に届く、までを確かめ、後片付けもする。
 
 Foundation だけで組んであるので Linux でも通る（`FileManager.replaceItemAt` が Linux で常に失敗するので、
@@ -161,7 +177,7 @@ Foundation だけで組んであるので Linux でも通る（`FileManager.repl
 swift run AT22 --shot /tmp/x.png 1440 900                             # 01 TALK
 swift run AT22 --shot /tmp/x.png --tower --workspaces                 # 00 管制塔（見本のワークスペース）
 swift run AT22 --shot /tmp/x.png --transcript <path.jsonl> --gate     # 実データ＋門を1つ立てた状態
-swift run AT22 --shot /tmp/x.png --mode review --review <worktree>    # 07 REVIEW（files / git / spar も）
+swift run AT22 --shot /tmp/x.png --mode review --review <worktree>    # 07 REVIEW（files / git / settings も）
 swift run AT22 --shot /tmp/x.png --mode talk --term                   # 端末の引き出し
 swift run AT22 --shot /tmp/x.png --menu root|jump  /  --sheet new|delete|pick
 swift run AT22 --shot /tmp/x.png --ripple back:9                   # 管制塔⇄会話の波紋の途中のコマ（fwd:n・side:n も）

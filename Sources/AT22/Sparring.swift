@@ -1,6 +1,6 @@
 import Foundation
 
-/// 03 SPARRING の約束事。壁打ちは**読むだけのセッション**（claude の plan モード）と話し、
+/// 壁打ち（会話画面の「□ 壁打ち」）の約束事。壁打ちは**読むだけのセッション**（claude の plan モード）と話し、
 /// 返事の末尾の決まった形の行を「採れる案」と「訊きたいこと」として拾う。SwiftUI に依存しない（p0 で検査）
 enum Sparring {
     enum Mode: String, CaseIterable, Sendable, Codable {

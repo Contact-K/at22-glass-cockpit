@@ -1,12 +1,12 @@
 #!/bin/bash
-# AT22 の門（5段階の承認）。サブエージェントや別のエージェントを起こす前に呼び、人の答えを待つ。
+# AT22 の門（4段の承認＋壁打ち）。サブエージェントや別のエージェントを起こす前に呼び、人の答えを待つ。
 #
 #   gate.sh <call> <to> <risk> [dispatch] [name] [base]  < 指示文
 #   gate.sh --wait <id>                                   （待ちの続き）
 #
 #   call      この指示の印（短い英数字。Agent の呼び出しごとに変える）
 #   to        起こす相手の名前（例: fixer / Explore）
-#   risk      high か low。Lv.3 は high だけ止める
+#   risk      high か low。Lv.2 は high だけ止める
 #   dispatch  claude / codex / grok / hermes を書くと、AT22 が worktree を作ってそのエージェントを起こす（采配）
 #   name      采配の worktree の名前（省略すると to）
 #   base      采配の分岐の基点（省略すると HEAD）
@@ -62,15 +62,15 @@ dispatch="${4:-}"; name="${5:-}"; base="${6:-}"
 level=$( { tr -d ' \n' < "$root/LEVEL"; } 2>/dev/null || true)
 level=${level:-normal}
 
-# 段ごとの止め方（AT22 の Gate.Level.stops と同じ）。采配は段にかかわらず必ず人に訊く
+# 段ごとの止め方（AT22 の Gate.Level.stops と同じ）。采配はここで判定せず門を立てる（Lv.3/4 は AT22 が自動で許可する）
 if [ -z "$dispatch" ]; then
     case "$level" in
-        plan)    echo "verdict: deny"; echo "# Lv.1 壁打ち: 指示を出さない段"; exit 0 ;;
+        plan)    echo "verdict: deny"; echo "# 壁打ち: 指示を出さない段"; exit 0 ;;
         each)    ;;
         normal)  if [ "$(printf '%s' "$risk" | tr '[:upper:]' '[:lower:]')" != "high" ]; then
-                     echo "verdict: allow"; echo "# Lv.3: risk が high ではないので止めない"; exit 0
+                     echo "verdict: allow"; echo "# Lv.2: risk が high ではないので止めない"; exit 0
                  fi ;;
-        *)       echo "verdict: allow"; echo "# Lv.4/5 ($level): 止めない"; exit 0 ;;
+        *)       echo "verdict: allow"; echo "# Lv.3/4 ($level): 止めない"; exit 0 ;;
     esac
 fi
 

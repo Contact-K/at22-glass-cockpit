@@ -194,6 +194,8 @@ final class Cockpit {
     /// 起動機能の有効化フラグ。View や Settings から @AppStorage で参照される。
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let launcherEnabledKey = "launcherEnabled"
+    static let launcherOffMessage = "連携が「切」なので起こさない。10 SETTINGS の 03 Launch で「動かす」にする"
+    private var launcherOn: Bool { UserDefaults.standard.bool(forKey: Self.launcherEnabledKey) }
     /// Claude Code のパス指定。View や Settings から @AppStorage で参照される。
     /// キーの文字列を1箇所で管理し、片方だけを直したときに黙ってずれるバグを防ぐ
     static let claudePathKey = "claudePath"
@@ -303,7 +305,6 @@ final class Cockpit {
     /// 人の注意を引く出来事。画面の外（通知）へ渡す口。Cockpit は AppKit を知らない
     var onAttention: ((_ session: String, _ title: String, _ body: String) -> Void)?
     var liveSessions: [LiveSession] = []
-    private(set) var activeSessions: Set<String> = []
     private(set) var recentSessions: [RecentSession] = []
     private let projectsRoot: URL
     private var loadedSessions: Set<String> = []
@@ -354,7 +355,15 @@ final class Cockpit {
     /// stdout から拾っている部分テキスト。確定は transcript の担当——ここは「いま書いている途中」だけ。
     /// ターン終了で消える。**セッションごとに持つ**——1本にまとめていた頃は、どれか1つが
     /// 書いている間、`isWorking` が全セッションを稼働中と答えていた
-    private(set) var streaming: [String: String] = [:]
+    /// **観測しない**——チャンクごとに根から全部描き直していた。画面は毎秒の時計で読み直すので足りる
+    @ObservationIgnored private(set) var streaming: [String: String] = [:]
+    /// いま書きかけが流れているセッション（観測する方。入る・抜ける時だけ描き直す）
+    private(set) var writing: Set<String> = []
+
+    private func clearStreaming(_ session: String) {
+        streaming[session] = nil
+        if writing.contains(session) { writing.remove(session) }
+    }
     /// セッションごとの、受領確認を待っている割り込みの request_id。
     /// ここを持つことで、投げっぱなし（応答の見落とし）と、誤報（止まり損ない）を防ぐ
     private var interruptRequests: [String: String] = [:]
@@ -369,6 +378,17 @@ final class Cockpit {
     /// 実測1セッションで text 256件 / thinking 297件。数セッションぶん抱えても軽いが、
     /// 上限は置く（1件が数千字になることがある）
     static let maxMessages = 4000
+    /// 発言の id。`messages.count` で振ると上限に届いた後は全部同じ id になり、会話の LazyVStack が固まった
+    private var nextMessageID = 0
+
+    /// 発言を足すのはここだけ（id を振る・上限で落とす）
+    private func appendMessage(session: String, agent: String, text: String, thinking: Bool, speaker: Speaker, at: Date) {
+        messages.append(Message(id: nextMessageID, session: session, agent: agent,
+                                text: text, thinking: thinking, speaker: speaker, at: at))
+        nextMessageID += 1
+        // ponytail: 余裕を持たせてまとめて落とす。1件ごとだと開き直しの流し込みで 件数×4000 ずらしていた
+        if messages.count > Self.maxMessages + 500 { messages.removeFirst(messages.count - Self.maxMessages) }
+    }
 
     /// 司令塔がサブエージェントを呼んだ記録。**会話の流れに1行として混ぜるためだけ**に持つ。
     /// 作業そのものは盤面のエージェント帯が語るので、ここは「呼んだ」ことしか語らない
@@ -496,14 +516,9 @@ final class Cockpit {
         backends[record.id] = record.backend
 
         // 案内メッセージを追加
-        messages.append(Message(
-            id: messages.count,
-            session: record.id,
-            agent: record.id,
-            text: "以前のやり取りはこの画面には出ません（今回の分から表示）",
-            thinking: false,
-            speaker: .model,
-            at: Date()))
+        appendMessage(session: record.id, agent: record.id,
+                      text: "以前のやり取りはこの画面には出ません（今回の分から表示）",
+                      thinking: false, speaker: .model, at: Date())
 
         selectedSession = record.id
         refreshLiveSessions()
@@ -546,6 +561,7 @@ final class Cockpit {
                 guard seenActions.insert("\(session)#\(agent)#\(id)").inserted else { break }
                 var record = agents[agent] ?? AgentRecord(session: session, lastAt: at)
                 record.counts[kind, default: 0] += 1
+                if hydraStarted[session] != nil { hydraTools[session, default: 0] += 1 }
                 record.latest = (kind, detail)
                 record.lastAt = max(record.lastAt, at)
                 record.actedAt = max(record.actedAt ?? at, at)
@@ -640,9 +656,7 @@ final class Cockpit {
                     echoes[session]?.remove(at: i)
                     break
                 }
-                messages.append(Message(id: messages.count, session: session, agent: agent,
-                                        text: text, thinking: thinking, speaker: speaker, at: at))
-                if messages.count > Self.maxMessages { messages.removeFirst(messages.count - Self.maxMessages) }
+                appendMessage(session: session, agent: agent, text: text, thinking: thinking, speaker: speaker, at: at)
                 // 考えた印。モデルが考えた時だけ thoughtAt を進める。人間の発言で思考中になってはいけない
                 // ツールを呼ばずに考えている間、`latest` は前の作業のまま止まる
                 var record = agents[agent] ?? AgentRecord(session: session, lastAt: at)
@@ -729,13 +743,15 @@ final class Cockpit {
         refreshLiveSessions()
         refreshRecentSessionsIfNeeded()
         refreshStructureIfNeeded()
-        refreshMemory()
+        refreshMemoryInBackground()
         refreshGates()
         refreshWorktreesIfNeeded()
         autoHideIdleAgents(now: Date())
         watchHandoffs()
         sleepIdleSessions()
         runSchedules(now: Date())
+        releaseGraceApprovals(now: Date())
+        checkHydraLimits(now: Date())
         // Hydra の報告の送り待ち。司令塔の「次のターンの終わり」だけを待っていると、報告が届いた時に
         // 司令塔がもうターンを終えていた場合、二度と送られなかった（2026-10-04 に本物の claude で通して見つけた）
         for lead in hydraOutbox.keys where !isWorking(lead) && canSend(to: lead) { flushHydra(lead) }
@@ -996,7 +1012,8 @@ final class Cockpit {
     func memoryDirectory(cwd: String) -> String {
         // リモートの相手は手元の記憶DB を書けない
         guard !Remote.isRemote(cwd) else { return "" }
-        let base = (try? Worktree.root(of: cwd)) ?? cwd
+        // 裏の走査が埋めた本体を先に見る（"" はリポジトリでない）。1秒ごとの見回りからメインで git を叩かない
+        let base = repoOf[cwd].map { $0.isEmpty ? cwd : $0 } ?? (try? Worktree.root(of: cwd)) ?? cwd
         return projectsRoot.appendingPathComponent(Self.projectSlug(base)).appendingPathComponent("memory").path
     }
 
@@ -1039,6 +1056,11 @@ final class Cockpit {
         }
         let found = Gate.pending(memoryRoot: dir)
         if found.map(\.id) != gates.map(\.id) { gates = found }
+        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）
+        for request in found where request.dispatch != nil && !request.by.isEmpty
+            && [.auto, .unattended].contains(level(of: request.by)) {
+            answer(request, .allow)
+        }
         let level = Gate.level(memoryRoot: dir)
         if level != gateLevel { gateLevel = level }
     }
@@ -1070,7 +1092,8 @@ final class Cockpit {
         let gate = request.id
         // 頼んだ司令塔の作業場所から（Hydra は門に by: で会話が書いてある）。分からなければ選択中の会話
         let cwd = cwd(of: request.by) ?? selectedSession.flatMap(cwd(of:)) ?? ""
-        let level = gateLevel
+        // 頼んだ司令塔の段で起こす（選択中の会話の段ではない）
+        let level = request.by.isEmpty || self.cwd(of: request.by) == nil ? gateLevel : self.level(of: request.by)
         Task {
             let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
             guard let repo else {
@@ -1081,6 +1104,11 @@ final class Cockpit {
                 guard let self else { return }
                 if let session, error == nil {
                     self.dispatched[session] = gate
+                    // Hydra の head は系統と上限の数えに入れる
+                    if request.call.hasPrefix("hydra-"), !request.by.isEmpty {
+                        self.hydraLead[session] = request.by
+                        self.hydraStarted[session] = Date()
+                    }
                 } else {
                     self.writeResult(gate, status: "failed", fields: [("workspace", path), ("error", error ?? "起こせなかった")])
                 }
@@ -1115,31 +1143,114 @@ final class Cockpit {
         }
     }
 
+    // MARK: 使い方の流れ（チュートリアルと「いまの一手」）
+
+    /// AT22 の流れ。連携 → プロジェクト → ワークスペース → 会話 → REVIEW → GIT
+    enum FlowStep: Int, CaseIterable, Sendable {
+        case link, project, workspace, talk, review, git
+        var no: String { String(format: "%02d", rawValue + 1) }
+        var en: String { ["Link", "Project", "Workspace", "Talk", "Review", "Git"][rawValue] }
+        var jp: String { ["連携", "プロジェクト", "ワークスペース", "会話", "見る", "送る"][rawValue] }
+        /// 「いまの一手」の1行（鶴の札・管制塔の空の状態）
+        var hint: String {
+            ["10 SETTINGS で CLI を入れて連携を「動かす」に", "＋ で新しいプロジェクトを立ち上げる",
+             "＋ でワークスペース（worktree）を作る", "会話を開いて最初の1通を送る",
+             "変更あり · 07 REVIEW で見てステージする", "08 GIT で記帳して送る"][rawValue]
+        }
+    }
+
+    /// 状態から、いまやる一手。全部済んでいて変更も無ければ nil（出さない）
+    nonisolated static func flowStep(cli: Bool, launcher: Bool, projects: Bool, worktrees: Bool,
+                                     sessions: Bool, changes: Bool) -> FlowStep? {
+        if !cli || !launcher { return .link }
+        if !projects { return .project }
+        if !worktrees { return .workspace }
+        if !sessions { return .talk }
+        return changes ? .review : nil
+    }
+
+    /// いまの状態で `flowStep` を引く（画面から）
+    func currentFlowStep(workspace: String?) -> FlowStep? {
+        Self.flowStep(cli: !found.isEmpty, launcher: launcherOn, projects: !projects.isEmpty,
+                      worktrees: worktrees.values.contains { $0.contains { !$0.isMain } },
+                      sessions: !liveSessions.isEmpty || !recentSessions.isEmpty,
+                      changes: workspace.flatMap { diffStats[$0] }.map { $0.files > 0 } ?? false)
+    }
+
     // MARK: Hydra
 
     /// 起こした head の重複を防ぐ（会話 → 名前）。transcript を読み直しても二度起こさない
     private var hydraSeen: Set<String> = []
     /// 司令塔が作業中で渡せなかった報告。手が空いたら送る
     private var hydraOutbox: [String: [String]] = [:]
-    /// 司令塔ごとの Hydra のラウンド数（上限は設定）
+    /// 根の司令塔ごとの Hydra のラウンド数（上限は設定）
     private var hydraRounds: [String: Int] = [:]
+    /// head → 頼んだ司令塔。一系統（孫まで）を根で数えるために辿る
+    @ObservationIgnored private var hydraLead: [String: String] = [:]
+    /// head を起こした時刻と、使った道具の回数（1体の上限）
+    @ObservationIgnored private var hydraStarted: [String: Date] = [:]
+    @ObservationIgnored private var hydraTools: [String: Int] = [:]
+
+    /// 一系統の根（head でない司令塔）
+    func hydraRoot(of session: String) -> String {
+        var s = session
+        for _ in 0..<16 { guard let up = hydraLead[s] else { break }; s = up }
+        return s
+    }
+
+    /// その系統で動いている head の数
+    private func activeHeads(under root: String) -> Int {
+        hydraLead.keys.filter { runs[$0] != nil && hydraRoot(of: $0) == root }.count
+    }
+
+    /// 1体の上限（道具の回数・時間）を見る。超えた head は止めて、頼んだ司令塔に知らせる（毎秒の見回りから）
+    private func checkHydraLimits(now: Date) {
+        for (head, started) in hydraStarted where runs[head] != nil {
+            if hydraTools[head, default: 0] >= Hydra.maxTools { stopHead(head, reason: "道具 \(Hydra.maxTools) 回") }
+            else if now.timeIntervalSince(started) > Double(Hydra.maxMinutes) * 60 { stopHead(head, reason: "\(Hydra.maxMinutes) 分") }
+        }
+    }
+
+    private func stopHead(_ head: String, reason: String) {
+        hydraStarted[head] = nil
+        let lead = hydraLead[head]
+        if dispatched[head] != nil {
+            reportDispatched(head, status: "limit", reply: "上限（\(reason)）に達したので AT22 が止めた。")
+        } else if let lead {
+            deliverHydra("[Hydra] head（\(String(head.prefix(8)))）を上限（\(reason)）で止めました。変更は worktree に残っています。", to: lead)
+        }
+        noteAttention(head, "Hydra の上限（\(reason)）で止めた")
+        runs[head]?.connection.close()
+        forget(head)
+    }
 
     /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
-    /// Lv.4 / Lv.5 のプロジェクトなら人に訊かずに許可する
+    /// Lv.3 / Lv.4 のプロジェクトなら人に訊かずに許可する
     private func adoptHydra(_ text: String, session: String, at: Date) {
         guard text.contains("```hydra"), !sparSessions.contains(session),
               Date().timeIntervalSince(at) < 120, let cwd = cwd(of: session) else { return }
         let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
         let memory = project.appendingPathComponent("memory")
         let level = Gate.level(memoryRoot: memory)
-        let heads = Hydra.heads(in: text).filter { !hydraSeen.contains(session + "#" + $0.name) }
+        var heads = Hydra.heads(in: text).filter { !hydraSeen.contains(session + "#" + $0.name) }
         guard !heads.isEmpty else { return }
-        // 上限: 1つの司令塔が任せる回数（ラウンド）
-        guard hydraRounds[session, default: 0] < Hydra.maxRounds else {
+        // 上限は一系統で数える（head が呼んだ Hydra も根の司令塔の分）。黙って捨てず、頼んだ側に伝える
+        let root = hydraRoot(of: session)
+        guard hydraRounds[root, default: 0] < Hydra.maxRounds else {
             noteAttention(session, "Hydra の上限（\(Hydra.maxRounds) ラウンド）に達したので、これ以上は任せない")
+            deliverHydra("[AT22] Hydra の上限（一系統で \(Hydra.maxRounds) ラウンド）に達したので、この ```hydra は起こしていません。自分で進めるか、人に相談してください。", to: session)
             return
         }
-        hydraRounds[session, default: 0] += 1
+        let room = Hydra.maxHeads - activeHeads(under: root)
+        guard room > 0 else {
+            deliverHydra("[AT22] Hydra の同時の上限（\(Hydra.maxHeads) 体）に達しているので、この ```hydra は起こしていません。報告を待ってから頼み直してください。", to: session)
+            return
+        }
+        if heads.count > room {
+            deliverHydra("[AT22] 同時の上限（\(Hydra.maxHeads) 体）を越える分は起こしていません: \(heads.dropFirst(room).map(\.name).joined(separator: ", "))", to: session)
+            heads = Array(heads.prefix(room))
+        }
+        hydraRounds[root, default: 0] += 1
         for head in heads where hydraSeen.insert(session + "#" + head.name).inserted {
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
             let path = memory.appendingPathComponent("\(Gate.directory)/\(stamp)-hydra-\(head.name).md").path
@@ -1275,6 +1386,8 @@ final class Cockpit {
     @discardableResult
     func launch(prompt: String, cwd: String, backend: Backend = .claude, model: String = "",
                 allowedTools: [String] = [], level: Gate.Level? = nil, effort: String = "") -> UUID? {
+        // 連携が「切」の間は何も起こさない（設定 03 Launch の約束）。起こす経路は全部ここを通る
+        guard launcherOn else { launchError = Self.launcherOffMessage; return nil }
         let level = level ?? gateLevel
         switch backend {
         case .claude:
@@ -1371,6 +1484,7 @@ final class Cockpit {
     @discardableResult
     func attach(to session: String) -> Bool {
         if runs[session] != nil { return true }
+        guard launcherOn else { launchError = Self.launcherOffMessage; return false }
         guard backend(of: session) == .claude else { return false }
         guard let claude else {
             launchError = "claude が見つからない。設定で場所を指定する"
@@ -1559,7 +1673,7 @@ final class Cockpit {
     /// 接続を手放す。書きかけ・割り込み待ち・答え待ちの承認も一緒に消す
     private func forget(_ session: String) {
         runs[session] = nil
-        streaming[session] = nil
+        clearStreaming(session)
         interruptRequests[session] = nil
         stopping.remove(session)
         openTurns.remove(session)
@@ -1603,6 +1717,7 @@ final class Cockpit {
         case let .partial(text):
             // 部分テキスト。ターン終了で消える
             streaming[session, default: ""] += text
+            if !text.isEmpty, !writing.contains(session) { writing.insert(session) }
 
         case let .message(text, thinking):
             // transcript を AT22 が読まない相手の確定した発言。transcript 由来と同じ入口に通すので、
@@ -1632,14 +1747,14 @@ final class Cockpit {
             apply(events)
 
         case let .approval(approval):
-            approvals.append(approval)
-            noteAttention(session, "承認を待っている — \(approval.detail)")
+            decideApproval(approval, session: session)
 
         case let .turnEnded(tokens):
-            reportDispatched(session, status: "done", reply: streaming[session])
+            // codex・ACP は止めても turnEnded（stopReason: cancelled）で終わる。止めたのを「終わった」と報告しない
+            reportDispatched(session, status: stopping.contains(session) ? "stopped" : "done", reply: streaming[session])
             defer { flushHydra(session) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
-            streaming[session] = nil
+            clearStreaming(session)
             stopping.remove(session)
             openTurns.remove(session)
             noteAttention(session, "ターンが終わった")
@@ -1650,7 +1765,7 @@ final class Cockpit {
         case let .turnFailed(reason):
             // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
             // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
-            streaming[session] = nil
+            clearStreaming(session)
             openTurns.remove(session)
             // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
             // ponytail: 何も走っていない時に止めると印が次のターンまで残り、その次の
@@ -1686,6 +1801,15 @@ final class Cockpit {
     /// 黙って消すと、相手は答えを待ったまま止まり続ける
     @discardableResult
     func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        // 要判断（留守番で断って積んだもの）。相手はもう待っていないので、許可なら「やり直してよい」と伝える
+        if let i = deferred.firstIndex(where: { $0.id == approval.id }) {
+            deferred.remove(at: i)
+            if allow {
+                preapproved.insert(Self.approvalKey(approval))
+                deliverHydra("[AT22] 要判断に積んだ「\(approval.detail)」は人が許可した。必要なら今やり直してよい。", to: approval.session)
+            }
+            return true
+        }
         guard runs[approval.session]?.connection.answer(approval, allow: allow, input: input) == true else {
             return false
         }
@@ -1693,8 +1817,58 @@ final class Cockpit {
         return true
     }
 
-    /// 人の番で止まっているものの数（門＋道具の承認）。タブとステータスバーの件数
-    var stoppedCount: Int { gates.count + approvals.count }
+    /// 留守番で断って積んだ高リスクの道具（要判断）。相手は先へ進んでいる。人が見て許可か捨てるを選ぶ
+    private(set) var deferred: [Approval] = []
+    /// 要判断から人が許可した呼び出し。同じ呼び出しが来たら1回だけ通す
+    @ObservationIgnored private var preapproved: Set<String> = []
+
+    nonisolated static func approvalKey(_ a: Approval) -> String { a.session + "\u{0}" + a.tool + "\u{0}" + a.input }
+
+    /// 道具の承認を段で決める（3つの相手が合流する1か所）。
+    /// 隣で見てる→訊く／気にかけてる→低は猶予の後に通す／任せてる→低はすぐ通す／留守番→低はすぐ・高は積んで断る
+    private func decideApproval(_ approval: Approval, session: String) {
+        var approval = approval
+        var decision = Gate.humanOnly.contains(approval.tool) ? .ask
+            : level(of: session).decide(Gate.risk(tool: approval.tool, input: approval.input, cwd: cwd(of: session) ?? ""))
+        if preapproved.remove(Self.approvalKey(approval)) != nil { decision = .allow }
+        switch decision {
+        case .allow:
+            if runs[session]?.connection.answer(approval, allow: true, input: nil) == true {
+                log(session, "自動で通した — \(approval.tool) \(approval.detail)")
+            } else {
+                approvals.append(approval)
+                noteAttention(session, "承認を待っている — \(approval.detail)")
+            }
+        case .queue:
+            approval.denyNote = Gate.queuedMessage
+            _ = runs[session]?.connection.answer(approval, allow: false, input: nil)
+            if !deferred.contains(where: { Self.approvalKey($0) == Self.approvalKey(approval) }) { deferred.append(approval) }
+            noteAttention(session, "要判断に積んだ — \(approval.detail)")
+        case let .graceAllow(seconds):
+            approval.autoAt = Date().addingTimeInterval(seconds)
+            approvals.append(approval)
+            log(session, "\(Int(seconds))秒後に通す — \(approval.tool) \(approval.detail)")
+        case .ask:
+            approvals.append(approval)
+            noteAttention(session, "承認を待っている — \(approval.detail)")
+        }
+    }
+
+    /// 猶予が切れた承認を通す（毎秒の見回りから）
+    private func releaseGraceApprovals(now: Date) {
+        for approval in approvals where approval.autoAt.map({ $0 <= now }) == true {
+            if answer(approval, allow: true) { log(approval.session, "猶予の後に通した — \(approval.tool) \(approval.detail)") }
+        }
+    }
+
+    /// 猶予を止めて人の答えを待つ（書き換えを始めた時）
+    func holdGrace(_ id: String) {
+        guard let i = approvals.firstIndex(where: { $0.id == id }), approvals[i].autoAt != nil else { return }
+        approvals[i].autoAt = nil
+    }
+
+    /// 人の番で止まっているものの数（門＋道具の承認＋要判断）。タブとステータスバーの件数
+    var stoppedCount: Int { gates.count + approvals.count + deferred.count }
 
     /// 検査・画像焼きから承認の依頼を直接流し込む口
     func loadApprovalsForProbe(_ requests: [Approval]) { approvals = requests }
@@ -1711,11 +1885,16 @@ final class Cockpit {
     private(set) var activity: [Activity] = []
 
     private func noteAttention(_ session: String, _ what: String) {
-        activity.insert(Activity(at: Date(), session: session, title: title(for: session) ?? String(session.prefix(8)), text: what), at: 0)
-        if activity.count > 200 { activity.removeLast(activity.count - 200) }
+        log(session, what)
         guard session != selectedSession else { return }
         unread.insert(session)
         onAttention?(session, title(for: session) ?? String(session.prefix(8)), what)
+    }
+
+    /// 活動フィードにだけ残す（未読にも通知にもしない。自動で通した道具など）
+    private func log(_ session: String, _ what: String) {
+        activity.insert(Activity(at: Date(), session: session, title: title(for: session) ?? String(session.prefix(8)), text: what), at: 0)
+        if activity.count > 200 { activity.removeLast(activity.count - 200) }
     }
 
     /// 人の番で止まっている・見ていない間に何か起きたセッションの数（Dock のバッジ）
@@ -1944,11 +2123,7 @@ final class Cockpit {
     /// 二重に並ばないよう覚えておく（`apply` の `.said` が1回だけ読み飛ばす）
     func appendHuman(_ text: String, session: String) {
         if backend(of: session) == .claude, !Remote.isRemote(cwd(of: session) ?? "") { echoes[session, default: []].append(text) }
-        messages.append(Message(id: messages.count, session: session, agent: session,
-                                text: text, thinking: false, speaker: .human, at: Date()))
-        if messages.count > Self.maxMessages {
-            messages.removeFirst(messages.count - Self.maxMessages)
-        }
+        appendMessage(session: session, agent: session, text: text, thinking: false, speaker: .human, at: Date())
     }
 
     private func launchCodex(prompt: String, cwd: String, model: String, level: Gate.Level) -> UUID? {
@@ -2063,7 +2238,7 @@ final class Cockpit {
     }
 
     /// ACP の相手ごとの起動引数。
-    /// grok agent には権限モードの指定が無い。Lv.4/5 だけ全部通す（--always-approve）。
+    /// grok agent には権限モードの指定が無い。どの段も訊かせて、AT22 が段で決める（--always-approve は使わない）。
     /// それ以外は本人の既定（~/.claude/settings.json の defaultMode）に従う——auto なら grok 自身が判定する。
     /// Hermes はモデルも承認も自身の設定（hermes model / hermes setup）に従う
     nonisolated static func acpArguments(_ backend: Backend, model: String, level: Gate.Level,
@@ -2073,7 +2248,6 @@ final class Cockpit {
             var arguments = ["agent"]
             if !model.isEmpty { arguments += ["-m", model] }
             if !effort.isEmpty { arguments += ["--reasoning-effort", effort] }
-            if level.needsConfirmation { arguments.append("--always-approve") }
             return arguments + ["stdio"]
         case .hermes, .goose, .opencode, .kimi, .openclaw:
             return ["acp"]
@@ -2201,7 +2375,7 @@ final class Cockpit {
             return liveSessions.contains { $0.busy }
         }
         // そのセッションの接続から部分テキストが流れてきている。「今書いている途中」の状態
-        if streaming[wanted]?.isEmpty == false { return true }
+        if writing.contains(wanted) { return true }
         // AT22 の接続がターンを回している間は稼働中（書きかけがまだ来ていない考え中も含む）
         if openTurns.contains(wanted) { return true }
         // 指定されたセッションが liveSessions に在るか、busy フラグで確認
@@ -2220,13 +2394,42 @@ final class Cockpit {
     /// transcript がまだ無いセッションだけ、cwd からスラッグを組み立てて補う。
     /// ponytail: 毎秒読む。実測5本・36行なので測るまでもなく軽い。数百本になったら間隔を空ける
     func refreshMemory() {
-        guard let root = projectRoot(of: selectedSession) else {
+        adoptMemory(root: projectRoot(of: selectedSession), loaded: nil)
+    }
+
+    @ObservationIgnored private var memoryLoading = false
+    @ObservationIgnored private var memoryLoadedAt = Date.distantPast
+    @ObservationIgnored private var memoryLoadedFor: String?
+
+    /// 毎秒の見回りから。projects の列挙と記憶の .md を全部読むのを裏へ出す（メインで毎秒読んでいた）。
+    /// ponytail: 同じ会話なら3秒に1回。会話を切り替えた時はすぐ読む
+    private func refreshMemoryInBackground() {
+        let session = selectedSession ?? liveSessions.first?.id
+        guard !memoryLoading, session != memoryLoadedFor || Date().timeIntervalSince(memoryLoadedAt) > 3 else { return }
+        memoryLoading = true
+        memoryLoadedAt = Date()
+        memoryLoadedFor = session
+        let cwd = liveSessions.first { $0.id == session }?.cwd
+        let projects = projectsRoot
+        Task.detached(priority: .utility) {
+            let root = Self.projectRoot(of: session, cwd: cwd, projectsRoot: projects)
+            let loaded = root.map { Memory.load(projectRoot: $0) } ?? []
+            await MainActor.run { [weak self] in
+                self?.memoryLoading = false
+                self?.adoptMemory(root: root, loaded: loaded)
+            }
+        }
+    }
+
+    /// `loaded` が nil なら、ここで読む（自己チェックの同期の経路）
+    private func adoptMemory(root: URL?, loaded: [Memory.Node]?) {
+        guard let root else {
             if !memory.isEmpty { memory = [] }
             memoryRoot = nil
             return
         }
         memoryRoot = root
-        let loaded = Memory.load(projectRoot: root)
+        let loaded = loaded ?? Memory.load(projectRoot: root)
         if loaded.map(\.id) != memory.map(\.id) || loaded.map(\.modified) != memory.map(\.modified) {
             memory = loaded
         }
@@ -2238,16 +2441,20 @@ final class Cockpit {
     /// まだ .jsonl を書いていない**ので、その時だけ cwd からディレクトリ名を組む。
     /// 選んでいなければ稼働中の先頭を使う
     private func projectRoot(of session: String?) -> URL? {
-        guard let wanted = session ?? liveSessions.first?.id else { return nil }
+        let wanted = session ?? liveSessions.first?.id
+        return Self.projectRoot(of: wanted, cwd: liveSessions.first { $0.id == wanted }?.cwd, projectsRoot: projectsRoot)
+    }
 
+    nonisolated private static func projectRoot(of wanted: String?, cwd: String?, projectsRoot: URL) -> URL? {
+        guard let wanted else { return nil }
         for entry in (try? FileManager.default.contentsOfDirectory(atPath: projectsRoot.path)) ?? [] {
             let dir = projectsRoot.appendingPathComponent(entry)
             if FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(wanted).jsonl").path) {
                 return dir
             }
         }
-        guard let cwd = liveSessions.first(where: { $0.id == wanted })?.cwd, !cwd.isEmpty else { return nil }
-        let dir = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        guard let cwd, !cwd.isEmpty else { return nil }
+        let dir = projectsRoot.appendingPathComponent(projectSlug(cwd))
         return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
     }
 
@@ -2292,9 +2499,13 @@ final class Cockpit {
         return roots.filter { FileManager.default.fileExists(atPath: $0) }
     }
 
+    @ObservationIgnored private var memoryRootsCache: (at: Date, roots: [String]) = (.distantPast, [])
+
     func refreshStructureIfNeeded() {
+        // ponytail: projects の列挙は10秒に1回で足りる（新しいプロジェクトの記憶DB は数秒遅れて拾う）
+        if Date().timeIntervalSince(memoryRootsCache.at) > 10 { memoryRootsCache = (Date(), Self.memoryRoots()) }
         let roots = Set(liveSessions.map(\.cwd).filter { !$0.isEmpty })
-            .union(Self.memoryRoots())
+            .union(memoryRootsCache.roots)
         let changed = roots != scanRoots
         let stale = wroteSinceScan && Date().timeIntervalSince(lastScan) > Self.rescanInterval
         guard !scanning, !roots.isEmpty, changed || stale else { return }
@@ -2501,7 +2712,8 @@ final class Cockpit {
             let (found, listed, counted) = (roots, lists, stats)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.repoOf.merge(found) { _, new in new }
+                // 空でも merge は観測を鳴らす（5秒ごとに根から描き直していた）
+                if !found.isEmpty { self.repoOf.merge(found) { _, new in new } }
                 if listed != self.worktrees { self.worktrees = listed }
                 if counted != self.diffStats { self.diffStats = counted }
                 self.scanningWorktrees = false
@@ -3667,7 +3879,6 @@ final class Cockpit {
             if session.waiting != nil, before?.waiting == nil { noteAttention(session.id, "承認を待っている") }
             else if before?.busy == true, !session.busy { noteAttention(session.id, "ターンが終わった") }
         }
-        activeSessions = Set(found.map(\.id))
         let sorted = Self.tabs(live: found, selected: selectedSession, previous: liveSessions,
                                loaded: Array(loadedSessionTabs.values))
         if sorted != liveSessions { liveSessions = sorted }

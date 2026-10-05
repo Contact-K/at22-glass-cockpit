@@ -27,10 +27,10 @@ enum Gate {
     /// 名前を変えると既に置かれたファイルが黙って既定に落ちる
     enum Level: String, CaseIterable, Sendable {
         case plan        // 壁打ち：司令塔だけ。ファイルに触らないので門も立たない
-        case each        // 隣で見てる：サブエージェント到達前に全部止める
-        case normal      // 気にかけてる：高リスクだけ止める
-        case auto        // 任せてる：全部通す
-        case unattended  // 留守番：全部通す（無人）
+        case each        // 隣で見てる：道具も門も全部訊く
+        case normal      // 気にかけてる：低リスクの道具は猶予の後に通す・高リスクは訊く
+        case auto        // 任せてる：低リスクの道具はすぐ通す・高リスクは訊く
+        case unattended  // 留守番：低リスクはすぐ通す・高リスクは「要判断」に積んで断り、先へ進ませる
 
         /// 段として選べるもの（壁打ち＝plan は別のトグル）
         static let ladder: [Level] = [.each, .normal, .auto, .unattended]
@@ -58,25 +58,118 @@ enum Gate {
 
         /// `claude --permission-mode` のどれで起こすか。
         ///
-        /// 訊く相手は AT22 の承認パネル（`--permission-prompt-tool stdio`）。
-        /// Lv.2 は道具ごとに全部訊く（`default`）、Lv.3 は編集だけ任せてそれ以外を訊く（`acceptEdits`）。
-        /// 以前は訊く相手が居なかったので Lv.2 も `acceptEdits` に寄せ、段の違いを門だけが持っていた。
+        /// 段の違いは claude ではなく **AT22 が持つ**（`decide`）。どの段も `default` で起こし、
+        /// 道具の承認を全部 AT22 の承認パネル（`--permission-prompt-tool stdio`）に通す。
+        /// `acceptEdits` は worktree の中の `rm` まで訊かずに通した（2026-10-05 agents-check で実測）ので使わない。
+        /// `bypassPermissions` と `--bg` も使わない——留守番でも AT22 が承認を見て「要判断」に積む。
         /// サブエージェントを起こす Agent ツールはどの段でも訊かれない（実測）ので、そこは今も門が持つ
-        var permissionMode: String {
-            switch self {
-            case .plan:                   "plan"
-            case .each:                   "default"
-            case .normal:                 "acceptEdits"
-            case .auto, .unattended:      "bypassPermissions"
+        var permissionMode: String { self == .plan ? "plan" : "default" }
+
+        /// 道具の承認をどう扱うか（`Gate.risk` で決めた危険度ごと）
+        func decide(_ risk: Risk) -> Decision {
+            switch (self, risk) {
+            case (.plan, _), (.each, _):           .ask
+            case (.normal, .low):                  .graceAllow(Gate.grace)
+            case (.auto, .low), (.unattended, .low): .allow
+            case (.normal, .high), (.auto, .high): .ask
+            case (.unattended, .high):             .queue
             }
         }
-
-        /// 人間が居ない前提で走らせるか（`--bg`）
-        var background: Bool { self == .unattended }
 
         /// 人間の承認なしにファイルを書き換える段。**入れた人の環境で効く**ので、
         /// 選ぶ時に一度だけ断りを入れる
         var needsConfirmation: Bool { self == .auto || self == .unattended }
+    }
+
+    // MARK: 道具の危険度（承認を段で決める）
+
+    enum Risk: String, Sendable { case low, high }
+    enum Decision: Equatable, Sendable { case ask, graceAllow(TimeInterval), allow, queue }
+
+    /// 気にかけてる（Lv.2）で低リスクの道具を通すまでの猶予。調整の口
+    static let grace: TimeInterval = 10
+    /// 人にしか答えられない問い。どの段でも自動で答えない
+    static let humanOnly: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+    /// 留守番で高リスクを断る時に添える文（claude にだけ届く。codex・ACP は素の却下）
+    static let queuedMessage = "人の判断待ち（要判断）に積んだ。この手順は飛ばして、ほかの手順を先に進めて。やり直してよい時は人から伝える"
+
+    /// 触ると高リスクにする場所（読むだけでも）
+    static let secretMarks = [".ssh/", ".aws/", ".gnupg/", ".env", "id_rsa", "id_ed25519", "credentials", "Keychains", ".netrc"]
+    private static let readTools: Set<String> = ["Read", "Glob", "Grep", "LS", "NotebookRead", "WebSearch", "WebFetch",
+                                                 "TodoWrite", "Task", "Agent", "BashOutput", "KillShell", "ToolSearch",
+                                                 "read", "search", "think", "fetch"]
+    private static let editTools: Set<String> = ["Edit", "Write", "MultiEdit", "NotebookEdit", "edit"]
+    private static let shellTools: Set<String> = ["Bash", "execute"]
+
+    /// 道具1回の危険度。**分からないものは高**。claude の道具名・codex（Bash / Edit）・ACP の kind を同じ表で見る
+    nonisolated static func risk(tool: String, input: String, cwd: String) -> Risk {
+        let json = (try? JSONSerialization.jsonObject(with: Data(input.utf8))) as? [String: Any] ?? [:]
+        if readTools.contains(tool) {
+            return secretMarks.contains(where: input.contains) ? .high : .low
+        }
+        if editTools.contains(tool) {
+            guard let path = (json["file_path"] ?? json["notebook_path"] ?? json["path"] ?? json["abs_path"]) as? String,
+                  !path.isEmpty, !cwd.isEmpty else { return .high }
+            let root = unaliased(URL(fileURLWithPath: cwd).standardizedFileURL.path)
+            let target = unaliased(URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: root + "/")).standardizedFileURL.path)
+            guard target.hasPrefix(root + "/") else { return .high }
+            let inside = String(target.dropFirst(root.count))
+            if ["/.git/", "/.claude/", "/.github/workflows/"].contains(where: inside.contains) { return .high }
+            return secretMarks.contains(where: inside.contains) ? .high : .low
+        }
+        if shellTools.contains(tool) {
+            let command = json["command"] as? String ?? (json["command"] as? [String])?.joined(separator: " ") ?? ""
+            return bashRisk(command)
+        }
+        return .high
+    }
+
+    /// macOS の /tmp・/var・/etc は /private の下の別名。claude は実体の方で書いてくるので揃える
+    nonisolated static func unaliased(_ path: String) -> String {
+        for alias in ["/tmp", "/var", "/etc"] where path.hasPrefix("/private" + alias + "/") || path == "/private" + alias {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
+    }
+
+    private static let readCommands: Set<String> = ["ls", "cat", "head", "tail", "wc", "pwd", "echo", "grep", "rg", "tree",
+                                                    "file", "stat", "du", "sort", "uniq", "cut", "diff", "which", "date", "cd"]
+    private static let gitReads: Set<String> = ["status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "grep"]
+
+    /// シェルの1行。区切った**全部の段**が読むだけの許可の並びに入っている時だけ低。
+    /// 引用符を見ずに区切るので、段が増えることはあっても高が低になることはない
+    nonisolated static func bashRisk(_ command: String) -> Risk {
+        let c = command.replacingOccurrences(of: "2>&1", with: " ").replacingOccurrences(of: "2>/dev/null", with: " ")
+        if c.contains(where: { "`$<>\n".contains($0) }) { return .high }
+        if c.replacingOccurrences(of: "&&", with: " ").contains("&") { return .high }
+        let segments = c.replacingOccurrences(of: "&&", with: ";").replacingOccurrences(of: "||", with: ";")
+            .split(whereSeparator: { $0 == ";" || $0 == "|" })
+            .map { $0.split(whereSeparator: \.isWhitespace).map { $0.filter { !"'\"\\".contains($0) } }.filter { !$0.isEmpty } }
+            .filter { !$0.isEmpty }
+        guard !segments.isEmpty else { return .high }
+        for words in segments {
+            if words.contains(where: { word in secretMarks.contains(where: word.contains) }) { return .high }
+            let head = words[0], rest = Array(words.dropFirst())
+            switch head {
+            case _ where readCommands.contains(head):
+                continue
+            case "find":
+                if rest.contains(where: { ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls"].contains($0) }) { return .high }
+            case "git":
+                guard let sub = rest.first, !rest.contains(where: { $0.hasPrefix("--output") }) else { return .high }
+                if gitReads.contains(sub) { continue }
+                if sub == "branch", rest.dropFirst().allSatisfy({ ["-a", "-r", "-v", "--list", "--show-current"].contains($0) }) { continue }
+                return .high
+            case "swift":
+                guard let sub = rest.first, sub == "build" || sub == "test" else { return .high }
+            case "xcodebuild":
+                guard rest.contains("build") || rest.contains("test"),
+                      !rest.contains(where: { ["archive", "install", "-exportArchive"].contains($0) }) else { return .high }
+            default:
+                return .high
+            }
+        }
+        return .low
     }
 
     /// 既定は通常承認。各個承認を既定にすると、構想ノートが警告している

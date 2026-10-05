@@ -150,11 +150,40 @@ struct TowerScreen: View {
     @Binding var hover: String?
     let onEnter: (WsTile) -> Void
     let onAct: (TileAction, WsTile) -> Void
+    /// 使い方の流れのいまの段（空の状態に段の並びを出す）。nil は全部済み
+    var flow: Cockpit.FlowStep? = nil
+    var onFlow: (Cockpit.FlowStep) -> Void = { _ in }
 
     @AppStorage("towerFold") private var fold = true
     @State private var open: Set<String> = []
 
     static let w: CGFloat = 262, h: CGFloat = 100, cw: CGFloat = 290, gap: CGFloat = 16
+
+    /// 使い方の流れ（チュートリアル）。08 GIT の段の見出しと同じ形（番号・英・和・済み／いまここ／前の段の後）。
+    /// いまの段を押すとその画面へ
+    private func flowSteps(_ now: Cockpit.FlowStep) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Cockpit.FlowStep.allCases, id: \.self) { step in
+                let state = step.rawValue < now.rawValue ? "done" : step == now ? "now" : "wait"
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(step.no).font(.mono(11)).tracking(1.1).foregroundStyle(Palette.pink)
+                    Text(step.en).font(.display(24))
+                    Text(step.jp).font(.brush(13))
+                    if state == "now" { Text(step.hint).font(.bodyJP(12)).foregroundStyle(Palette.Blue.fg2).lineLimit(1) }
+                    Spacer(minLength: 0)
+                    Text(state == "done" ? "✓ 済み" : state == "now" ? "いまここ ▸" : "前の段の後").font(.mono(9)).tracking(1.1)
+                        .foregroundStyle(Palette.Blue.fg2)
+                }
+                .padding(EdgeInsets(top: 10, leading: 14, bottom: 8, trailing: 14))
+                .overlay(alignment: .bottom) { Rectangle().fill(Palette.white.opacity(state == "now" ? 1 : 0.3)).frame(height: 1) }
+                .opacity(state == "wait" ? 0.55 : 1)
+                .contentShape(Rectangle())
+                .onTapGesture { if state == "now" { onFlow(step) } }
+            }
+        }
+        .frame(maxWidth: 640)
+        .overlay(Rectangle().strokeBorder(Palette.white, lineWidth: 2))
+    }
     static let raceH: CGFloat = 30, x0: CGFloat = 30
 
     var body: some View {
@@ -169,6 +198,7 @@ struct TowerScreen: View {
                     if projects.isEmpty {
                         Text("ワークスペースはまだない。上帯の ＋ でリポジトリから作るか、エージェントを動かすとここに並ぶ。")
                             .font(.bodyJP(14)).foregroundStyle(Palette.Blue.fg2)
+                        if let flow { flowSteps(flow) }
                     }
                 }
                 .padding(.bottom, 24)
