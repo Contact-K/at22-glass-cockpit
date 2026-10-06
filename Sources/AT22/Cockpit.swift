@@ -1161,6 +1161,16 @@ final class Cockpit {
         var no: String { String(format: "%02d", rawValue + 1) }
         var en: String { ["Link", "Project", "Workspace", "Talk", "Review", "Git"][rawValue] }
         var jp: String { ["連携", "プロジェクト", "ワークスペース", "会話", "見る", "送る"][rawValue] }
+        /// 使い方の板の説明（何をするか・どこを押すか）
+        var detail: String {
+            ["claude・grok・hermes・codex などの CLI を入れ、10 SETTINGS の 02 Link で使うものを選ぶ。03 Launch を「動かす」にすると AT22 からエージェントを起こせる。",
+             "上帯の ＋ → 01 Repository の「＋ 新しいプロジェクト」で、リモートをクローン／ローカルで新しく／既存のフォルダから立ち上げる。",
+             "上帯の ＋（6段の板）か、管制塔のタイルの右の ＋ で worktree を作る。エージェント・最初の指示・承認の段を決める。2体以上で競走。",
+             "01 TALK で司令塔と話す。承認と門は会話のカードで答える。入力欄の上で段（Lv.1〜4）と壁打ちを切り替える。並列に任せるなら Hydra。",
+             "07 REVIEW で差分を読む。行を押して指摘を溜め、1通で送る。ハンクごとにステージする。",
+             "08 GIT で記帳 → 送出 → PR。マージと push と PR は人が決める（Lv.3/4 の Hydra の取り込みだけは AT22 が司令塔の worktree へ）。"][rawValue]
+        }
+
         /// 「いまの一手」の1行（鶴の札・管制塔の空の状態）
         var hint: String {
             ["10 SETTINGS で CLI を入れて連携を「動かす」に", "＋ で新しいプロジェクトを立ち上げる",

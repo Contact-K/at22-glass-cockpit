@@ -341,7 +341,7 @@ struct Modals: View {
                 case let .file(path): FileModal(cockpit: cockpit, path: path, onClose: onClose)
                 case let .agent(id): AgentModal(cockpit: cockpit, chip: snapshot.chips.first { $0.id == id },
                                                 label: Cockpit.agentLabels(snapshot.chips)[id] ?? "", onClose: onClose)
-                case .newWorkspace, .delete, .pick, .quickOpen, .browser: EmptyView()
+                case .newWorkspace, .delete, .pick, .quickOpen, .browser, .guide: EmptyView()
                 }
             }
             .foregroundStyle(Palette.Light.fg)
@@ -692,5 +692,51 @@ struct OriginSwitch: View {
             Spacer(minLength: 0)
         }
         .help("AT22 で起こした会話か、端末など外で始めた会話かで絞る")
+    }
+}
+
+
+/// 使い方の板。流れの6段を「✓ 済み／いまここ／前の段の後」で並べ、何をするか・どこを押すかと「そこへ ▸」。
+/// 段の並びは 08 GIT の段の見出しと同じ形。状態は `Cockpit.flowStep` から（初回の印は持たない）
+struct GuideSheet: View {
+    /// いまの段。nil は全部済み
+    let now: Cockpit.FlowStep?
+    let onGo: (Cockpit.FlowStep) -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        SumiSheet(mark: "G", en: "GUIDE", jp: "使い方", width: 720, onClose: onClose) {
+            Text(now == nil ? "Everything is set." : "Six steps to a merge.").font(.display(34))
+            VStack(spacing: 0) {
+                ForEach(Cockpit.FlowStep.allCases, id: \.self) { step in row(step) }
+            }
+            .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
+            Text("⌘0 管制塔 ⇄ 会話 · M メニュー · ⌘J エージェントへ飛ぶ · ⌃` 端末 · ⌘P ファイル · この板はメニューの Guide と 10 SETTINGS の 00 から")
+                .font(.mono(10)).tracking(0.6).foregroundStyle(Palette.Light.fg2)
+        }
+        .onExitCommand(perform: onClose)
+    }
+
+    private func row(_ step: Cockpit.FlowStep) -> some View {
+        let state = now.map { step.rawValue < $0.rawValue ? "done" : step == $0 ? "now" : "wait" } ?? "done"
+        let on = state == "now"
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(step.no).font(.mono(11)).tracking(1.1).foregroundStyle(Palette.pink)
+                Text(step.en).font(.display(24))
+                Text(step.jp).font(.brush(13))
+                Spacer(minLength: 0)
+                Text(state == "done" ? "✓ 済み" : on ? "いまここ" : "前の段の後").font(.mono(9)).tracking(1.1)
+                    .foregroundStyle(Palette.Light.fg2)
+                Button(on ? "そこへ ▸" : "開く ▸") { onGo(step) }
+                    .buttonStyle(SumiButtonStyle(primary: on, size: 10))
+            }
+            Text(step.detail).font(.bodyJP(13)).foregroundStyle(Palette.Light.fg2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
+        .background(on ? Palette.hover : .clear)
+        .overlay(alignment: .bottom) { Rectangle().fill(on ? Palette.Light.fg : Palette.Light.line).frame(height: 1) }
+        .opacity(state == "wait" ? 0.6 : 1)
     }
 }

@@ -47,6 +47,7 @@ struct SettingsScreen: View {
     @State private var tsProblem: String?
     /// 会話を起こした後に会話画面へ（08 Remote の「会話を起こす」）
     var onTalk: () -> Void = {}
+    var onGuide: () -> Void = {}
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.3 / Lv.4 は一度だけ確かめる（もう一度押すと決まる）
@@ -69,6 +70,9 @@ struct SettingsScreen: View {
             // 行が増えて低い窓では下帯に潜るので、行の部分だけ送れるようにする
             LiveScroll {
             VStack(alignment: .leading, spacing: 0) {
+            row("00", "Guide", "使い方 · 流れの6段（連携 → プロジェクト → ワークスペース → 会話 → REVIEW → GIT）といまの一手") {
+                Button("使い方を開く ▸", action: onGuide).buttonStyle(SumiButtonStyle(primary: false, size: 11))
+            }
             row("01", "Approval", "承認の段 · 新しいワークスペースの既定と、いまの会話") {
                 HStack(spacing: 0) {
                     ForEach(Array(Gate.Level.ladder.enumerated()), id: \.offset) { i, l in

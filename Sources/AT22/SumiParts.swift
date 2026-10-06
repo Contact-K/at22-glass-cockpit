@@ -321,7 +321,8 @@ struct InkLoader: View {
 
     var body: some View {
         // ponytail: `done` も繰り返す（本人の指示。1回きりだと見落とした）。済みの行が数十を越えて重ければ、見えている分だけ回す
-        Ticker(fps: 24) { now in
+        // 済みの行やタイルに数が並ぶ done は半分のコマで回す
+        Ticker(fps: status == "done" ? 12 : 24) { now in
             // 焼く時は周期の真ん中（絵がいちばん立っている所）を写す
             let t = frozen != nil ? (Self.period[status] ?? 2.6) * 0.5 : now.timeIntervalSince(start)
             Canvas { ctx, _ in
