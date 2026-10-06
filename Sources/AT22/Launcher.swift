@@ -213,6 +213,9 @@ enum Launcher {
     /// 起こす時と繋ぐ時で共通の並び。片方だけ直して食い違うのを避けるため1箇所にまとめる
     private nonisolated static func common(_ config: Config, session: String) -> [String] {
         var out = ["--permission-mode", config.level.permissionMode]
+        // Bash は必ず訊かせる（`ask` は allow より強い）。claude は自分で作ったファイルの `cat … && rm …` などを
+        // default でも訊かずに通した（2026-10-05、Lv.1 の会話の transcript で確認）。低リスクかは AT22 が段で決める
+        if config.level != .plan { out += ["--settings", Gate.askSettings] }
         if !config.model.isEmpty {
             out.append("--model")
             out.append(config.model)

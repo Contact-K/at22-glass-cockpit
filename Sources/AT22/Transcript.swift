@@ -636,8 +636,9 @@ final class TranscriptWatcher: @unchecked Sendable {
                 let events = collect(initial: first)
                 if !events.isEmpty { await MainActor.run { self.onEvents?(events) } }
                 first = false
-                // ponytail: 0.4秒ポーリング。監視対象が数千ファイルを超えたら FSEvents に差し替え
-                try? await Task.sleep(for: .milliseconds(400))
+                // ponytail: 0.8秒ポーリング（書きかけは stdout から来るので、確定の発言が少し遅れるだけ）。
+                // 監視対象が数千ファイルを超えたら FSEvents に差し替え
+                try? await Task.sleep(for: .milliseconds(800))
             }
         }
     }

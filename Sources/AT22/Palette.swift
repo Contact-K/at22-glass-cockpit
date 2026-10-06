@@ -169,11 +169,19 @@ extension Font {
             CTFontDescriptorCreateWithAttributes(attributes as CFDictionary), size, nil))
     }
 
-    /// ラベル・数値。Departure Mono、和文は DotGothic16（無ければ等幅のシステム書体）
+    /// ラベル・数値。Departure Mono、和文は DotGothic16（無ければ等幅のシステム書体）。
+    /// 大きさごとに1回だけ作る（描くたびに Core Text の書体を組み直していた・何もしていない時の sample で上位）
     static func mono(_ size: CGFloat) -> Font {
-        SumiFonts.mono.map { cascaded($0, then: SumiFonts.bodyJP, size: size) }
-            ?? .system(size: size, design: .monospaced)
+        monoLock.withLock {
+            if let hit = monoCache[size] { return hit }
+            let font = SumiFonts.mono.map { cascaded($0, then: SumiFonts.bodyJP, size: size) }
+                ?? .system(size: size, design: .monospaced)
+            monoCache[size] = font
+            return font
+        }
     }
+    private static let monoLock = NSLock()
+    nonisolated(unsafe) private static var monoCache: [CGFloat: Font] = [:]
 
     /// 英見出し。Fraunces（無ければセリフのシステム書体）。
     /// **受け皿付き（`cascaded`）にしない**——CTFont から作った Font は `minimumScaleFactor` が

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Hydra の通し: 本物の claude（haiku）を司令塔にし、```hydra の囲み → 門（Lv.3 で自動許可）→ worktree → head を起こす →
-/// 最初の報告が司令塔へ返る、まで。AT22 と同じ部品（Cockpit・TranscriptWatcher）を画面なしで回す
+/// 最初の報告が司令塔へ返る → 頭の枝が司令塔の worktree に取り込まれる、まで。AT22 と同じ部品（Cockpit・TranscriptWatcher）を画面なしで回す
 @main
 struct HydraCheck {
     @MainActor static func main() async {
@@ -49,10 +49,13 @@ struct HydraCheck {
             }
             let heads = cockpit.liveSessions.filter { $0.id != lead }
             if !heads.isEmpty { step("head", "head のセッション: \(heads.map(\.id))") }
-            if let report = leadSaid.first(where: { $0.speaker == .human && $0.text.hasPrefix("[Hydra]") }) {
+            if let report = leadSaid.first(where: { $0.speaker == .human && $0.text.hasPrefix("[Hydra] head") }) {
                 step("report", "報告が司令塔に届いた:\n" + report.text.prefix(400))
-                ok = true
-                break
+            }
+            // Lv.3 なので、全員の報告が揃ったら AT22 が頭の枝を司令塔の worktree（ここでは本体）に取り込む
+            if let land = leadSaid.first(where: { $0.speaker == .human && $0.text.contains("全員の報告が揃った") }) {
+                step("land", "取り込みの結果が司令塔に届いた:\n" + land.text.prefix(400))
+                if fm.fileExists(atPath: repo + "/hello.txt") { step("landed", "本体に hello.txt が入った"); ok = true; break }
             }
             if let e = cockpit.launchError, !e.isEmpty { step("err:" + e, "launchError: " + e) }
             let gateDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/projects/\(Cockpit.projectSlug(repo))/memory/gate").path

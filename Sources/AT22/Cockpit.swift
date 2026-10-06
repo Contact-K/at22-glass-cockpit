@@ -1056,12 +1056,14 @@ final class Cockpit {
         }
         let found = Gate.pending(memoryRoot: dir)
         if found.map(\.id) != gates.map(\.id) { gates = found }
-        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）
-        for request in found where request.dispatch != nil && !request.by.isEmpty
-            && [.auto, .unattended].contains(level(of: request.by)) {
+        // 采配の門は、任せてる・留守番なら AT22 が許可する（Hydra と同じ。マージ・push・PR は人）。
+        // 段は門と同じ置き場の LEVEL で見る——gate.sh は頼んだ会話（by:）を書かないので、by: で引くと Lv.4 でも門が残った
+        let level = Gate.level(memoryRoot: dir)
+        for request in found where request.dispatch != nil && [.auto, .unattended].contains(level)
+            && !FileManager.default.fileExists(atPath: Gate.verdictPath(for: request)) {
+            // answer は中で読み直すので、同じ門に二度答えて二重に起こさないよう答えの有無を毎回見る
             answer(request, .allow)
         }
-        let level = Gate.level(memoryRoot: dir)
         if level != gateLevel { gateLevel = level }
     }
 
@@ -1090,20 +1092,26 @@ final class Cockpit {
 
     private func dispatch(_ request: Gate.Request, backend: Backend, instruction: String) {
         let gate = request.id
-        // 頼んだ司令塔の作業場所から（Hydra は門に by: で会話が書いてある）。分からなければ選択中の会話
-        let cwd = cwd(of: request.by) ?? selectedSession.flatMap(cwd(of:)) ?? ""
+        // 頼んだ司令塔。Hydra は門に by: がある。gate.sh は書かないので、門の置き場（worktree）でいま動いている会話とみなす
+        let lead = request.by.isEmpty ? commander(ofGate: gate) : request.by
+        // 頼んだ司令塔の作業場所から。分からなければ選択中の会話
+        let cwd = lead.flatMap(cwd(of:)) ?? selectedSession.flatMap(cwd(of:)) ?? ""
+        // 分岐元が HEAD（gate.sh の既定）なら司令塔の worktree の枝から。本体の HEAD から切ると、管制塔で本体の子に並んだ
+        let leadBranch = worktrees.values.flatMap { $0 }.first { $0.path == cwd }?.branch
+        let base = (request.base.isEmpty || request.base == "HEAD") ? (leadBranch ?? "HEAD") : request.base
         // 頼んだ司令塔の段で起こす（選択中の会話の段ではない）
-        let level = request.by.isEmpty || self.cwd(of: request.by) == nil ? gateLevel : self.level(of: request.by)
+        let level = lead.flatMap { self.cwd(of: $0) == nil ? nil : self.level(of: $0) } ?? gateLevel
         Task {
             let repo = await Task.detached { try? Worktree.root(of: cwd) }.value
             guard let repo else {
                 return writeResult(gate, status: "failed", fields: [("error", "司令塔の作業ディレクトリがリポジトリの外")])
             }
-            createWorkspace(repo: repo, name: request.name, base: request.base, backend: backend, model: request.model,
+            createWorkspace(repo: repo, name: request.name, base: base, backend: backend, model: request.model,
                             prompt: instruction, level: level) { [weak self] path, session, error in
                 guard let self else { return }
                 if let session, error == nil {
                     self.dispatched[session] = gate
+                    if let lead { self.setParent(session, lead) }
                     // Hydra の head は系統と上限の数えに入れる
                     if request.call.hasPrefix("hydra-"), !request.by.isEmpty {
                         self.hydraLead[session] = request.by
@@ -1123,6 +1131,7 @@ final class Cockpit {
                               text: Gate.resultText(status: status, fields: fields, summary: summary, at: Date()),
                               creating: true, project: URL(fileURLWithPath: project))
         if result != .saved { appendLaunchError("采配の結果を書けない: \(Gate.resultPath(for: gate))") }
+        noteHydraResult(gate, status: status, fields: fields)
     }
 
     /// 采配したワーカーの最初のターンが終わった。本文はそのターンの返事（書きかけが無い相手は最後の発言）
@@ -1139,7 +1148,8 @@ final class Cockpit {
         let front = Memory.frontMatter((try? String(contentsOfFile: gate, encoding: .utf8)) ?? "")
         if let call = front["call"], call.hasPrefix("hydra-"), let lead = front["by"], !lead.isEmpty {
             deliverHydra(Hydra.report(name: front["name"] ?? call, agent: backend(of: session).rawValue, status: status,
-                                      workspace: path, branch: branch, reply: text), to: lead)
+                                      workspace: path, branch: branch, reply: text,
+                                      landing: [.auto, .unattended].contains(level(of: lead))), to: lead)
         }
     }
 
@@ -1151,6 +1161,16 @@ final class Cockpit {
         var no: String { String(format: "%02d", rawValue + 1) }
         var en: String { ["Link", "Project", "Workspace", "Talk", "Review", "Git"][rawValue] }
         var jp: String { ["連携", "プロジェクト", "ワークスペース", "会話", "見る", "送る"][rawValue] }
+        /// 使い方の板の説明（何をするか・どこを押すか）
+        var detail: String {
+            ["claude・grok・hermes・codex などの CLI を入れ、10 SETTINGS の 02 Link で使うものを選ぶ。03 Launch を「動かす」にすると AT22 からエージェントを起こせる。",
+             "上帯の ＋ → 01 Repository の「＋ 新しいプロジェクト」で、リモートをクローン／ローカルで新しく／既存のフォルダから立ち上げる。",
+             "上帯の ＋（6段の板）か、管制塔のタイルの右の ＋ で worktree を作る。エージェント・最初の指示・承認の段を決める。2体以上で競走。",
+             "01 TALK で司令塔と話す。承認と門は会話のカードで答える。入力欄の上で段（Lv.1〜4）と壁打ちを切り替える。並列に任せるなら Hydra。",
+             "07 REVIEW で差分を読む。行を押して指摘を溜め、1通で送る。ハンクごとにステージする。",
+             "08 GIT で記帳 → 送出 → PR。マージと push と PR は人が決める（Lv.3/4 の Hydra の取り込みだけは AT22 が司令塔の worktree へ）。"][rawValue]
+        }
+
         /// 「いまの一手」の1行（鶴の札・管制塔の空の状態）
         var hint: String {
             ["10 SETTINGS で CLI を入れて連携を「動かす」に", "＋ で新しいプロジェクトを立ち上げる",
@@ -1178,6 +1198,40 @@ final class Cockpit {
     }
 
     // MARK: Hydra
+
+    /// Hydra の1回分の頭（司令塔 → 門のパス → 頭）。全員の結果が揃ったら Lv.3/4 は取り込む
+    struct HydraHead { var name: String; var status: String?; var workspace = ""; var branch: String }
+    @ObservationIgnored private var hydraBatch: [String: [String: HydraHead]] = [:]
+
+    /// 采配の結果を書いた時に呼ぶ。Hydra の頭なら記録し、その司令塔の頭が全員終わったら取り込む
+    private func noteHydraResult(_ gate: String, status: String, fields: [(String, String)]) {
+        guard let lead = hydraBatch.first(where: { $0.value[gate] != nil })?.key else { return }
+        let field = { (key: String) in fields.first { $0.0 == key }?.1 ?? "" }
+        hydraBatch[lead]?[gate]?.status = status
+        if !field("workspace").isEmpty { hydraBatch[lead]?[gate]?.workspace = field("workspace") }
+        if !field("branch").isEmpty { hydraBatch[lead]?[gate]?.branch = field("branch") }
+        guard let batch = hydraBatch[lead], batch.values.allSatisfy({ $0.status != nil }) else { return }
+        hydraBatch[lead] = nil
+        landHydra(lead: lead, heads: batch.values.filter { $0.status == "done" && !$0.workspace.isEmpty })
+    }
+
+    /// 任せてる・留守番の司令塔なら、頭の枝を司令塔の worktree に取り込み、結果を司令塔へ返す（Droppy の1つのマージ）
+    private func landHydra(lead: String, heads: [HydraHead]) {
+        guard !heads.isEmpty, [.auto, .unattended].contains(level(of: lead)), let into = cwd(of: lead),
+              !Remote.isRemote(into) else { return }
+        let list = heads.map { (name: $0.name, workspace: $0.workspace, branch: $0.branch) }
+        log(lead, "Hydra の頭 \(heads.count) 本を取り込んでいる")
+        Task {
+            let result = await Task.detached { Worktree.land(into: into, heads: list) }.value
+            deliverHydra(Hydra.landReport(merged: result.merged, conflicted: result.conflicted, failed: result.failed), to: lead)
+            refreshWorktreesIfNeeded(force: true)
+            if !result.conflicted.isEmpty || !result.failed.isEmpty {
+                noteAttention(lead, "Hydra の取り込みで止めた枝がある — " + (result.conflicted + result.failed.map(\.name)).joined(separator: ", "))
+            } else {
+                log(lead, "Hydra の頭を取り込んだ — " + result.merged.joined(separator: ", "))
+            }
+        }
+    }
 
     /// 起こした head の重複を防ぐ（会話 → 名前）。transcript を読み直しても二度起こさない
     private var hydraSeen: Set<String> = []
@@ -1259,6 +1313,7 @@ final class Cockpit {
                 appendLaunchError("Hydra の門を書けない: \(head.name)")
                 continue
             }
+            hydraBatch[session, default: [:]][path] = HydraHead(name: head.name, status: nil, branch: Worktree.branch(for: head.name))
             if level == .auto || level == .unattended, let request = Gate.parse(path: path, text: text) {
                 answer(request, .allow)
             }
@@ -1296,6 +1351,21 @@ final class Cockpit {
     /// 留守番にしても今の会話は元の段のまま毎回訊いていた
     /// 壁打ちを入れる前の段（worktree ごと）。切った時にそこへ戻す
     private var levelBeforePlan: [String: Gate.Level] = [:]
+
+    static let autoAfterPlanKey = "autoAfterPlan"
+
+    /// 壁打ちで計画が確定した（計画の窓で進めると答えた・05 PLAN に積まれた）。設定が入なら、その会話の段を任せてるにする
+    /// 段のファイルだけ書き換える（AT22 の承認の判定はすぐ効く）。計画の窓で進めた claude は自分で plan を抜けるので、
+    /// 書き始めた最中のプロセスは閉じない。手が空いていれば閉じて、次に送った時に新しい段で繋ぎ直す
+    func planConfirmed(_ session: String?) {
+        guard UserDefaults.standard.bool(forKey: Self.autoAfterPlanKey), let session, let cwd = cwd(of: session),
+              level(of: session) != .auto, setGateLevel(.auto, cwd: cwd) == .saved else { return }
+        if !isWorking(session), let run = runs[session], run.connection.acceptsInput {
+            run.connection.close()
+            forget(session)
+        }
+        log(session, "計画が確定したので Lv.3 任せてるにした")
+    }
 
     /// 壁打ち（plan＝読むだけ）を入れる・切る。段とは別のトグル。段は worktree ごとなので、その worktree の会話すべてに効く
     @discardableResult
@@ -1389,17 +1459,79 @@ final class Cockpit {
         // 連携が「切」の間は何も起こさない（設定 03 Launch の約束）。起こす経路は全部ここを通る
         guard launcherOn else { launchError = Self.launcherOffMessage; return nil }
         let level = level ?? gateLevel
+        let id: UUID?
         switch backend {
         case .claude:
-            let id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
-                                  level: level, effort: effort)
+            id = launchClaude(prompt: prompt, cwd: cwd, model: model, allowedTools: allowedTools,
+                              level: level, effort: effort)
             if let id, !effort.isEmpty { sessionEffort[id.uuidString.lowercased()] = effort }
-            return id
         case .codex:
-            return launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
+            id = launchCodex(prompt: prompt, cwd: cwd, model: model, level: level)
         case .grok, .hermes, .gemini, .qwen, .goose, .opencode, .copilot, .kimi, .openclaw:
-            return launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
+            id = launchACP(backend, prompt: prompt, cwd: cwd, model: model, level: level)
         }
+        if let id { markAT22(id.uuidString.lowercased()) }
+        return id
+    }
+
+    // MARK: 会話の親子（管制塔で子の会話を親の下に字下げする）
+
+    /// 子の会話 → 親の会話。＋ で会話から起こしたもの・采配で起こしたもの。UserDefaults に残す
+    private(set) var sessionParent: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: "sessionParents") as? [String: String]) ?? [:]
+
+    func setParent(_ child: String, _ parent: String) {
+        guard child != parent, sessionParent[child] != parent else { return }
+        sessionParent[child] = parent
+        UserDefaults.standard.set(sessionParent, forKey: "sessionParents")
+    }
+
+    /// 門（gate.sh が書いたもの）を立てた司令塔。門の置き場は司令塔の worktree の記憶DB なので、
+    /// その worktree の会話のうち、動いているもの → 最後に動いたもの
+    private func commander(ofGate gate: String) -> String? {
+        guard let dir = Gate.projectDirectory(of: gate).map({ ($0 as NSString).lastPathComponent }) else { return nil }
+        let here = Set(liveSessions.map(\.id) + runs.keys).filter { cwd(of: $0).map(Self.projectSlug) == dir }
+        return here.first(where: { isWorking($0) })
+            ?? here.max { (agents[$0]?.lastAt ?? .distantPast) < (agents[$1]?.lastAt ?? .distantPast) }
+    }
+
+    // MARK: 会話の出どころ（AT22 で起こした／外部）
+
+    /// AT22 が起こした会話（端末や別のアプリで始めたものは入らない）。UserDefaults に残す
+    private(set) var at22Sessions: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "at22Sessions") ?? [])
+
+    private func markAT22(_ session: String) {
+        guard !at22Sessions.contains(session) else { return }
+        at22Sessions.insert(session)
+        // ponytail: 並びを持たない集合なので、500 を越えたら丸ごと捨てずに残す（数百本で困ったら日付つきにする）
+        UserDefaults.standard.set(Array(at22Sessions), forKey: "at22Sessions")
+    }
+
+    /// AT22 で起こした会話か。codex・ACP の台帳にあるものも AT22 が起こしたもの
+    func isAT22(_ session: String) -> Bool {
+        at22Sessions.contains(session) || runRecords.contains { $0.id == session }
+    }
+
+    /// 会話の一覧の切り替え（全部｜AT22｜外部）
+    enum SessionOrigin: String, CaseIterable, Sendable {
+        case all, at22, external
+        static let key = "sessionOrigin"
+        var label: String { ["全部", "AT22", "外部"][Self.allCases.firstIndex(of: self)!] }
+        func shows(at22: Bool) -> Bool { self == .all || (self == .at22) == at22 }
+    }
+
+    /// 会話の中で動いているサブエージェント（Task で起こしたもの）。管制塔で会話の札の右に生やす
+    /// 終わったサブエージェントも、この秒数は「終わった」で残す。門のあとの Explore は数秒で終わり、
+    /// 動いている間だけ出すと管制塔にほぼ生えなかった（2026-10-06、実測4秒）
+    static let subagentLinger: TimeInterval = 90
+
+    func subagents(of session: String, now: Date = Date()) -> [(id: String, role: String, act: String)] {
+        agents.filter { $0.key != session && $0.value.session == session
+            && (Self.isWorking($0.value, now: now)
+                || now.timeIntervalSince($0.value.doneAt ?? $0.value.lastAt) < Self.subagentLinger) }
+            .sorted { $0.value.lastAt > $1.value.lastAt }
+            .map { (id: $0.key, role: $0.value.role ?? "agent",
+                    act: Self.isWorking($0.value, now: now) ? Self.inkStatus($0.value, touching: nil) : "done") }
     }
 
     /// 壁打ち用の読むだけのセッション（claude の plan モード）を worktree に起こす。
@@ -1801,6 +1933,7 @@ final class Cockpit {
     /// 黙って消すと、相手は答えを待ったまま止まり続ける
     @discardableResult
     func answer(_ approval: Approval, allow: Bool, input: String? = nil) -> Bool {
+        defer { if allow, approval.tool == "ExitPlanMode" { planConfirmed(approval.session) } }
         // 要判断（留守番で断って積んだもの）。相手はもう待っていないので、許可なら「やり直してよい」と伝える
         if let i = deferred.firstIndex(where: { $0.id == approval.id }) {
             deferred.remove(at: i)

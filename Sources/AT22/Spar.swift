@@ -139,7 +139,7 @@ struct SparReplyStrip: View {
                     if taken {
                         Text("採った ✓").font(.mono(10)).tracking(1).padding(.horizontal, 10)
                     } else {
-                        Button(p.kind == .step ? "暫定プランに採る ▸" : "決めたことに ▸") { take(key, p) }
+                        Button(p.kind == .step ? "暫定プランに採る ▸" : "決める ▸") { take(key, p) }
                             .buttonStyle(SumiButtonStyle(primary: true, size: 10))
                             .reportRect("prop:\(key)")
                     }
@@ -339,6 +339,16 @@ struct SparPanels: View {
                         Text(note ?? "□ 暫定 · ■ 合意 · ✓ 積んだ")
                     }
                     Spacer(minLength: 0)
+                    // 全部を合意に（全部合意なら全部外す）。積んだ手順（✓）は触らない
+                    let open = b.steps.indices.filter { !b.steps[$0].planned }
+                    let allOn = !open.isEmpty && open.allSatisfy { b.steps[$0].ok }
+                    Button(allOn ? "□ 全部外す" : "■ 全部") {
+                        for i in open { model.boards[ws]?.steps[i].ok = !allOn }
+                    }
+                    .buttonStyle(.plain).font(.mono(11))
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+                    .disabled(open.isEmpty || b.sending != nil)
                     Button("05 PLAN に送る ▸") { toPlan(agreed.map(\.text), base: planned) }
                         .buttonStyle(.plain)
                         .foregroundStyle(agreed.isEmpty ? Palette.Light.fg3 : Palette.white)
@@ -395,7 +405,11 @@ struct SparPanels: View {
                         }
                         .opacity(0.75)
                     }
-                    Button("↺") { undo(i) }.buttonStyle(.plain).font(.mono(10)).opacity(0.7).help("取り消して未決に戻す")
+                    // 暫定プランの ⑂ と同じ枠付きの札（小さく薄いと押せると分からなかった）
+                    Button("↺") { undo(i) }.buttonStyle(.plain).font(.mono(11))
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .overlay(Rectangle().strokeBorder(fresh ? Palette.white : Palette.blue, lineWidth: 1))
+                        .help("取り消して未決に戻す")
                 }
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .foregroundStyle(fresh ? Palette.white : Palette.blue)
@@ -461,6 +475,7 @@ struct SparPanels: View {
             }
             fly(rects["toPlan"], rects["planTicks"])
             flash("05 PLAN に \(added) 件積まれました")
+            cockpit.planConfirmed(lead)
         } else if !working && added <= 0 {
             model.boards[ws]?.sending = nil
             flash("司令塔は計画に積みませんでした（返事は 01 TALK に）")

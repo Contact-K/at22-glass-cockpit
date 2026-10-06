@@ -153,9 +153,44 @@ struct TowerScreen: View {
     /// 使い方の流れのいまの段（空の状態に段の並びを出す）。nil は全部済み
     var flow: Cockpit.FlowStep? = nil
     var onFlow: (Cockpit.FlowStep) -> Void = { _ in }
+    /// タイルの下に会話とサブエージェントを生やし、右の ＋ から会話か枝を生やす（無ければ出さない・撮影用）
+    var cockpit: Cockpit? = nil
+    /// 生やした会話の札を押した時（その会話を開く）
+    var onSession: (WsTile, Cockpit.AgentRow) -> Void = { _, _ in }
 
     @AppStorage("towerFold") private var fold = true
     @State private var open: Set<String> = []
+    /// ＋ を押したタイルと、そのリポジトリ、押した場所（板はその右に開く）
+    @State private var growing: (tile: WsTile, project: String, at: CGPoint, parent: Cockpit.AgentRow?)?
+
+    static let space = "tower"
+    /// タイルの下の札1段の高さ
+    static let sproutH: CGFloat = 26
+
+    /// タイルから生やす会話の木（動いているもの・AT22 の台帳にあるもの。読み込む前の過去の会話は出さない）。
+    /// 子の会話（＋ で会話から起こした・采配で起こした）は親の下に字下げし、各会話の下にサブエージェント。
+    /// 親が別の worktree にある会話はこのタイルでは根に並ぶ。ponytail: 会話は6本・サブエージェントは各3体・深さ5まで
+    private func sprouts(_ tile: WsTile) -> [Sprout] {
+        guard let cockpit else { return [] }
+        let rows = tile.rows.filter { $0.recent == nil }
+        let ids = Set(rows.map(\.id))
+        func up(_ id: String) -> String? { cockpit.sessionParent[id].flatMap { ids.contains($0) ? $0 : nil } }
+        var out: [Sprout] = []
+        func walk(_ parent: String?, _ depth: Int) {
+            for row in rows where up(row.id) == parent {
+                guard out.count < 6, depth <= 5 else { return }
+                out.append(Sprout(row: row, depth: depth, subs: Array(cockpit.subagents(of: row.id).prefix(3))))
+                walk(row.id, depth + 1)
+            }
+        }
+        walk(nil, 0)
+        return out
+    }
+
+    private func sproutHeight(_ tile: WsTile) -> CGFloat {
+        let lines = sprouts(tile).reduce(0) { $0 + 1 + $1.subs.count }
+        return lines == 0 ? 0 : CGFloat(lines) * Self.sproutH + 6
+    }
 
     static let w: CGFloat = 262, h: CGFloat = 100, cw: CGFloat = 290, gap: CGFloat = 16
 
@@ -192,6 +227,7 @@ struct TowerScreen: View {
             header(tiles)
                 .frame(width: max(400, width - 376 - 184), height: 84)
                 .offset(x: 184, y: 74)
+                .onTapGesture { growing = nil }
             LiveScroll {
                 VStack(alignment: .leading, spacing: 30) {
                     ForEach(projects) { project in lane(project) }
@@ -206,8 +242,17 @@ struct TowerScreen: View {
             }
             .frame(width: max(300, width - 564), height: max(200, height - 172 - 52))
             .offset(x: 172, y: 172)
+            // ＋ から開く板（V11 の BRANCH の板）。押した ＋ の右に、画面に収まるように
+            if let growing, let cockpit {
+                GrowPanel(cockpit: cockpit, tile: growing.tile, project: growing.project, parent: growing.parent,
+                          onClose: { self.growing = nil })
+                    .offset(x: min(growing.at.x + 18, width - GrowPanel.width - 24),
+                            y: max(64, min(growing.at.y - 20, height - 640)))
+                    .id(growing.tile.id + (growing.parent?.id ?? ""))
+            }
         }
         .foregroundStyle(Palette.white)
+        .coordinateSpace(.named(Self.space))
     }
 
     private func header(_ tiles: [WsTile]) -> some View {
@@ -240,7 +285,9 @@ struct TowerScreen: View {
         let folding = TowerData.folds(project, fold) && !open.contains(project.id)
         let lane = Cockpit.towerLane(project.tiles.map(\.item), fold: folding)
         let byID = Dictionary(uniqueKeysWithValues: project.tiles.map { ($0.id, $0) })
-        let heights = (0..<lane.rows).map { (lane.raceRows.contains($0) ? Self.raceH : 0) + Self.h + Self.gap }
+        // 行の高さ＝タイル＋その行でいちばん多く生えた札（会話・サブエージェント）
+        let extra = Dictionary(lane.placed.compactMap { p in byID[p.id].map { (p.row, sproutHeight($0)) } }, uniquingKeysWith: max)
+        let heights = (0..<lane.rows).map { (lane.raceRows.contains($0) ? Self.raceH : 0) + Self.h + (extra[$0] ?? 0) + Self.gap }
         let ys = heights.reduce(into: [CGFloat(0)]) { $0.append($0.last! + $1) }
         let maxDepth = lane.placed.map(\.depth).max() ?? 0
         let canvasW = Self.x0 + CGFloat(maxDepth) * Self.cw + Self.w + 16
@@ -256,7 +303,20 @@ struct TowerScreen: View {
                             TowerNode(tile: tile, focused: focus == tile.id, dim: dimmed(tile), onAct: onAct)
                                 .onTapGesture { if tile.failed == nil { onEnter(tile) } }
                                 .onHover { hover = $0 ? (tile.task.isEmpty ? "@" + tile.id : tile.task) : nil }
+                                .overlay(alignment: .trailing) {
+                                    if cockpit != nil, tile.failed == nil, !tile.creating {
+                                        PlusTab { growing = (tile, project.id, $0, nil) }.offset(x: 13)
+                                    }
+                                }
                                 .offset(x: xOf(placed.depth), y: top(placed.row, ys: ys, lane: lane))
+                            let grown = sprouts(tile)
+                            if !grown.isEmpty {
+                                SproutList(sprouts: grown, at22: { cockpit?.isAT22($0) ?? true },
+                                           onSession: { onSession(tile, $0) },
+                                           onPlus: { row, at in growing = (tile, project.id, at, row) })
+                                    .opacity(dimmed(tile) ? 0.28 : 1)
+                                    .offset(x: xOf(placed.depth) + 14, y: top(placed.row, ys: ys, lane: lane) + Self.h + 6)
+                            }
                         }
                     }
                 }
@@ -301,6 +361,13 @@ struct TowerScreen: View {
         .contentShape(Rectangle())
         .onTapGesture { onEnter(main) }
         .onHover { hover = $0 ? "@" + main.id : nil }
+        .overlay(alignment: .trailing) {
+            if cockpit != nil { PlusTab { growing = (main, projectID(of: main), $0, nil) }.offset(x: 13) }
+        }
+    }
+
+    private func projectID(of tile: WsTile) -> String {
+        projects.first { $0.tiles.contains { $0.id == tile.id } }?.id ?? tile.id
     }
 
     private func edges(_ lane: TowerLane, ys: [CGFloat], byID: [String: WsTile]) -> some View {
@@ -342,7 +409,9 @@ struct TowerScreen: View {
     private func raceFrame(_ race: TowerLane.Race, ys: [CGFloat], lane: TowerLane, byID: [String: WsTile]) -> some View {
         let members = race.members.compactMap { byID[$0] }
         let y0 = ys[race.firstRow]
-        let height = ys[race.lastRow] - y0 + (lane.raceRows.contains(race.lastRow) && race.lastRow != race.firstRow ? Self.raceH : 0) + Self.h + 8
+        // 最後の行の終わりまで（タイルの下に生えた札も枠に入れる）。1行だけの組はその行の頭の帯を二度足さない
+        let height = ys[race.lastRow + 1] - Self.gap - y0
+            - (lane.raceRows.contains(race.lastRow) && race.lastRow == race.firstRow ? Self.raceH : 0) + 8
         let hot = members.first.map(isHot) ?? false
         return ZStack(alignment: .topLeading) {
             Rectangle().strokeBorder(Palette.white, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
@@ -808,6 +877,282 @@ struct LiveScroll<Content: View>: View {
                 .clipped()
         } else {
             ScrollView { content() }.scrollIndicators(.never)
+        }
+    }
+}
+
+
+// MARK: - 生やす（＋・会話とサブエージェントの札・板）
+
+/// タイルから生えた会話1本と、その会話のサブエージェント
+struct Sprout {
+    let row: Cockpit.AgentRow
+    /// 会話の木の深さ（0 が根）
+    var depth = 0
+    let subs: [(id: String, role: String, act: String)]
+}
+
+/// タイルの右端の ＋（V11Plus: 24 角・白地に青の縁）。押した場所を管制塔の座標で返す
+private struct PlusTab: View {
+    /// 24 はタイル、会話の札には小さい 18
+    var size: CGFloat = 24
+    let onTap: (CGPoint) -> Void
+    var body: some View {
+        Text("＋").font(.mono(size * 2 / 3)).foregroundStyle(Palette.blue)
+            .frame(width: size, height: size)
+            .background(Palette.white)
+            .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture(coordinateSpace: .named(TowerScreen.space)) { onTap($0) }
+            .help("ここから生やす（会話か枝）")
+    }
+}
+
+/// タイルの下に生えた会話と、その会話のサブエージェント。左の縦線から └ で枝を出す（木と同じ白い線）
+private struct SproutList: View {
+    let sprouts: [Sprout]
+    let at22: (String) -> Bool
+    let onSession: (Cockpit.AgentRow) -> Void
+    /// 会話の札の ＋（その会話の子を起こす）
+    var onPlus: (Cockpit.AgentRow, CGPoint) -> Void = { _, _ in }
+
+    static let indent: CGFloat = 18
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(sprouts, id: \.row.id) { sprout in
+                stub(indent: CGFloat(sprout.depth) * Self.indent) {
+                    HStack(spacing: 4) {
+                        session(sprout.row)
+                        PlusTab(size: 18) { onPlus(sprout.row, $0) }.help("この会話の子を起こす")
+                    }
+                }
+                ForEach(sprout.subs, id: \.id) { sub in
+                    stub(indent: CGFloat(sprout.depth) * Self.indent + 22) {
+                        HStack(spacing: 6) {
+                            InkLoader(status: sub.act, pitch: 1.0, color: Palette.white)
+                            Text("◇ " + sub.role).font(.mono(11)).tracking(0.2).lineLimit(1)
+                            Text(ActWords.jp[sub.act] ?? "").font(.bodyJP(10)).opacity(0.75).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8).frame(height: 22)
+                        .overlay(Rectangle().strokeBorder(Palette.white, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                        .help("サブエージェント（会話の中で起こしたもの）")
+                    }
+                }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            // 縦の幹。タイルの下端から最後の札の真ん中まで
+            Rectangle().fill(Palette.white.opacity(0.6)).frame(width: 1).padding(.top, -6).padding(.bottom, 11)
+        }
+        .foregroundStyle(Palette.white)
+        .frame(width: TowerScreen.w - 14, alignment: .leading)
+    }
+
+    private func stub<C: View>(indent: CGFloat, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 0) {
+            Rectangle().fill(Palette.white.opacity(0.6)).frame(width: 10 + indent, height: 1)
+            content()
+        }
+    }
+
+    private func session(_ row: Cockpit.AgentRow) -> some View {
+        let working = row.status == .working || row.status == .waiting
+        let mine = at22(row.id)
+        return HStack(spacing: 6) {
+            Text(row.status == .waiting ? "■" : "□").font(.mono(10))
+            Text(row.title).font(.bodyJP(11)).fontWeight(row.unread ? .bold : .regular).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            Text(row.backend.title).font(.mono(9)).opacity(0.7)
+            if !mine {
+                Text("外部").font(.mono(9)).padding(.horizontal, 3)
+                    .overlay(Rectangle().strokeBorder(Palette.white.opacity(0.7), lineWidth: 1))
+            }
+        }
+        .padding(.horizontal, 8).frame(height: 22)
+        .overlay(Rectangle().strokeBorder(working ? Palette.white : Palette.Blue.fg3, lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { onSession(row) }
+        .help(mine ? "AT22 で起こした会話 · 押すと開く" : "端末など AT22 の外で始めた会話 · 押すと開く")
+    }
+}
+
+/// ＋ から開く板（V11 の BRANCH の板）。頭で「この worktree で会話｜枝を生やす」を選ぶ。
+/// 会話はその worktree で起こし、枝はそこから worktree を作って起こす（管制塔に留まる。生えたものが木に出る）
+private struct GrowPanel: View {
+    let cockpit: Cockpit
+    let tile: WsTile
+    /// リポジトリ本体のパス（枝を作る先）
+    let project: String
+    /// 会話の札の ＋ から開いた時、その会話（起こしたものはこの会話の子になる）
+    var parent: Cockpit.AgentRow? = nil
+    let onClose: () -> Void
+
+    static let width: CGFloat = 380
+
+    @State private var branch = false
+    @State private var name = ""
+    @State private var backend: Backend = .claude
+    @State private var model = ""
+    @State private var prompt = ""
+    @State private var level = Gate.Level(rawValue: UserDefaults.standard.string(forKey: SettingsScreen.levelKey) ?? "") ?? Gate.defaultLevel
+    @State private var problem: String?
+
+    var body: some View {
+        let usable = cockpit.usableBackends()
+        VStack(spacing: 0) {
+            // 頭: 青い矢羽の帯
+            HStack(spacing: 10) {
+                Text(branch ? "⑂ BRANCH" : "＋ TALK").font(.mono(11)).tracking(1.3)
+                Text("← " + (parent.map { "□ " + $0.title } ?? (tile.isMain ? "◆ " + (tile.branch ?? "HEAD") : tile.name)))
+                    .font(.mono(12)).lineLimit(1)
+                Spacer(minLength: 0)
+                Text("[×]").font(.mono(10)).contentShape(Rectangle()).onTapGesture(perform: onClose)
+            }
+            .foregroundStyle(Palette.white)
+            .padding(.leading, 14).padding(.trailing, 34).frame(height: 40)
+            .background(Palette.blue.clipShape(ArrowPlate()))
+            VStack(alignment: .leading, spacing: 14) {
+                segment(["この worktree で会話", "枝を生やす"], selected: branch ? 1 : 0) { branch = $0 == 1 }
+                if branch {
+                    field("NAME 名前") {
+                        TextField("", text: $name).textFieldStyle(.plain).font(.mono(22))
+                            .padding(.bottom, 6)
+                            .overlay(alignment: .bottom) { Rectangle().fill(Palette.blue).frame(height: 2) }
+                        Text("at22/" + Worktree.slug(name.isEmpty ? "name" : name) + "  ← " + (tile.branch ?? "HEAD"))
+                            .font(.mono(11)).foregroundStyle(Palette.Light.fg2)
+                    }
+                }
+                field("AGENT エージェント") {
+                    VStack(spacing: 6) {
+                        ForEach(usable, id: \.self) { b in agentRow(b) }
+                        if usable.isEmpty {
+                            Text("使えるエージェントが無い · 10 SETTINGS の 02 Link で入れる").font(.bodyJP(12))
+                        }
+                    }
+                }
+                field("PROMPT 最初の指示") {
+                    TextEditor(text: $prompt).font(.bodyJP(14)).scrollContentBackground(.hidden)
+                        .frame(height: 64).padding(6)
+                        .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+                }
+                segment(Gate.Level.ladder.map { $0.title.components(separatedBy: " ").first?.uppercased() ?? "" },
+                        selected: Gate.Level.ladder.firstIndex(of: level) ?? 1) { level = Gate.Level.ladder[$0] }
+                    .help(level.title)
+                if let problem { Text(problem).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger).lineLimit(3) }
+                Button(action: grow) {
+                    HStack(spacing: 10) {
+                        Text(branch ? "Grow" : "Talk").font(.display(22))
+                        Text(branch ? "生やす" : "話す").font(.brush(13))
+                        Text("⌘↵").font(.mono(10)).tracking(1)
+                    }
+                    .foregroundStyle(Palette.white)
+                    .frame(maxWidth: .infinity).frame(height: 44)
+                    .background(Palette.blue)
+                }
+                .buttonStyle(PressStyle())
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canGrow(usable))
+                .opacity(canGrow(usable) ? 1 : 0.4)
+            }
+            .padding(EdgeInsets(top: 14, leading: 16, bottom: 16, trailing: 16))
+            .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+        }
+        .foregroundStyle(Palette.blue)
+        .background(Palette.white)
+        .frame(width: Self.width)
+        .onExitCommand(perform: onClose)
+        .onAppear { if !usable.contains(backend), let first = usable.first { backend = first } }
+    }
+
+    private func agentRow(_ b: Backend) -> some View {
+        let on = b == backend
+        return HStack(spacing: 10) {
+            Text(on ? "■" : "□").font(.mono(11))
+            Text(b.title).font(.mono(13))
+            Spacer(minLength: 0)
+            if on { modelPicker }
+            if b.isACP { Text("書換なし").font(.mono(9)).opacity(0.7) }
+        }
+        .padding(.horizontal, 12).frame(height: 32)
+        .foregroundStyle(on ? Palette.white : Palette.blue)
+        .background(on ? Palette.blue : .clear)
+        .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { if backend != b { backend = b; model = "" } }
+    }
+
+    private func canGrow(_ usable: [Backend]) -> Bool {
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && usable.contains(backend)
+            && (!branch || !name.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+
+    private var modelPicker: some View {
+        let models = cockpit.models(backend)
+        return SumiPicker(sections: [.init(title: "モデル", items: [.init(id: "", text: "既定", on: model.isEmpty)]
+                                           + models.map { .init(id: $0.id, text: $0.id, on: $0.id == model) })],
+                          onPick: { _, id in model = id }) {
+            Text((model.isEmpty ? "既定" : model) + " ▾").font(.mono(11))
+        }
+    }
+
+    private func grow() {
+        guard canGrow(cockpit.usableBackends()) else { return }
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if branch {
+            // ponytail: 1体だけ。競走（2体以上）は上帯の ＋ の板で
+            let parentID = parent?.id
+            cockpit.createWorkspaces(repo: project, base: tile.branch ?? "HEAD",
+                                     racers: [Cockpit.Racer(name: Worktree.slug(name), backend: backend, model: model)],
+                                     prompt: text, level: level) { [cockpit] _, session, _ in
+                if let session, let parentID { cockpit.setParent(session, parentID) }
+            }
+            onClose()
+        } else {
+            // 管制塔に留まる（選んでいる会話は動かさない）。起こした会話はタイルの下に生える
+            let keep = cockpit.selectedSession
+            if let made = cockpit.launch(prompt: text, cwd: tile.id, backend: backend, model: model, level: level) {
+                if let parent { cockpit.setParent(made.uuidString.lowercased(), parent.id) }
+                cockpit.selectedSession = keep
+                onClose()
+            } else {
+                problem = cockpit.launchError ?? "起こせませんでした"
+            }
+        }
+    }
+
+    private func field<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.mono(9)).tracking(1.3).foregroundStyle(Palette.Light.fg2)
+            content()
+        }
+    }
+
+    /// 枠で区切った横並びの選択（V11 の LV の並び）
+    private func segment(_ items: [String], selected: Int, onPick: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                Text(item).font(.mono(11)).tracking(0.8)
+                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+                    .foregroundStyle(i == selected ? Palette.white : Palette.blue)
+                    .background(i == selected ? Palette.blue : .clear)
+                    .overlay(alignment: .leading) { if i > 0 { Rectangle().fill(Palette.blue).frame(width: 1) } }
+                    .contentShape(Rectangle())
+                    .onTapGesture { onPick(i) }
+            }
+        }
+        .overlay(Rectangle().strokeBorder(Palette.blue, lineWidth: 1))
+    }
+}
+
+/// 右が矢羽になった帯（V11 の板の頭）
+private struct ArrowPlate: Shape {
+    func path(in r: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX - 18, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX, y: r.midY)); p.addLine(to: CGPoint(x: r.maxX - 18, y: r.maxY))
+            p.addLine(to: CGPoint(x: r.minX, y: r.maxY)); p.closeSubpath()
         }
     }
 }

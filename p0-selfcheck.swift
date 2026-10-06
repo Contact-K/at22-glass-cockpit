@@ -92,6 +92,9 @@ struct P0SelfCheck {
         messageIDsStayUniquePastTheCap()
         toolRiskFollowsTheLadder()
         flowStepFollowsTheState()
+        sessionOriginFilters()
+        hydraLandsHeadsIntoTheLead()
+        finishedSubagentsLinger()
         inkFollowsTheRunningTool()
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
@@ -2105,6 +2108,9 @@ struct P0SelfCheck {
         assert(!Gate.Level.allCases.contains { $0.permissionMode == "manual" },
                "訊く相手が居ない段で manual を渡している")
 
+        // Bash は必ず AT22 に訊かせる（claude が自分で作ったファイルの rm を訊かずに通した）。壁打ちは読むだけなので付けない
+        assert(Gate.Level.ladder.allSatisfy { args($0).contains(Gate.askSettings) } && !args(.plan).contains("--settings"),
+               "Bash を訊かせる設定が段に付いていない")
         // --bg は使わない（留守番でも AT22 が承認を見て要判断に積む）
         for level in Gate.Level.allCases {
             assert(!args(level).contains("--bg"), "\(level.title) に --bg が付いた")
@@ -4039,6 +4045,51 @@ struct P0SelfCheck {
         assert(cockpit.messages.filter { $0.session == "s" }.count == 1, "送った発言が二重に並ぶ")
         cockpit.apply([echo])
         assert(cockpit.messages.filter { $0.session == "s" }.count == 2, "送っていない同じ文まで消えた")
+    }
+
+    /// 数秒で終わるサブエージェントも、終わってからしばらく「終わった」で管制塔に残る
+    @MainActor static func finishedSubagentsLinger() {
+        let c = Cockpit()
+        let t = Date()
+        c.apply([.agentAction(id: "1", agent: "sub", session: "s", kind: .edit, detail: "", at: t),
+                 .agentEnded(agent: "sub", at: t.addingTimeInterval(4))])
+        let soon = c.subagents(of: "s", now: t.addingTimeInterval(10))
+        assert(soon.map(\.id) == ["sub"] && soon.first?.act == "done", "終わったばかりのサブエージェントが消えた: \(soon)")
+        assert(c.subagents(of: "s", now: t.addingTimeInterval(4 + Cockpit.subagentLinger + 1)).isEmpty, "いつまでも残る")
+    }
+
+    /// Hydra の取り込み: 未コミットの頭は先に記帳して取り込み、司令塔とぶつかる頭は戻して残す
+    static func hydraLandsHeadsIntoTheLead() {
+        let fm = FileManager.default
+        let repo = NSTemporaryDirectory() + "at22-land-\(UUID().uuidString.prefix(6))"
+        try? fm.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: repo) }
+        func git(_ args: [String], _ dir: String = repo) { _ = try? Worktree.git(args, in: dir) }
+        git(["init", "-q", "-b", "main"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "t"])
+        try? "a\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        git(["add", "-A"]); git(["commit", "-qm", "init"])
+        guard let one = try? Worktree.add(repo: repo, name: "one", base: "main"),
+              let two = try? Worktree.add(repo: repo, name: "two", base: "main") else { assert(false, "worktree を作れない"); return }
+        for dir in [one.path, two.path] { git(["config", "user.email", "t@t"], dir); git(["config", "user.name", "t"], dir) }
+        // one は新しいファイル（未コミットのまま）、two は司令塔と同じ行を書き換える
+        try? "one\n".write(toFile: one.path + "/one.txt", atomically: true, encoding: .utf8)
+        try? "two\n".write(toFile: two.path + "/a.txt", atomically: true, encoding: .utf8)
+        try? "lead\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        git(["commit", "-qam", "lead"])
+        let r = Worktree.land(into: repo, heads: [("one", one.path, one.branch), ("two", two.path, two.branch)])
+        assert(r.merged == ["one"] && r.conflicted == ["two"] && r.failed.isEmpty, "\(r)")
+        assert(fm.fileExists(atPath: repo + "/one.txt"), "取り込んだ頭のファイルが無い")
+        assert((try? Worktree.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], in: repo)) == nil, "ぶつかったマージが半端に残った")
+        assert((try? String(contentsOfFile: repo + "/a.txt", encoding: .utf8)) == "lead\n", "ぶつかった頭の変更が混ざった")
+        assert(Hydra.landReport(merged: ["one"], conflicted: ["two"], failed: []).contains("two"))
+    }
+
+    /// 会話の出どころの切り替え: 全部は両方、AT22 は AT22 で起こしたものだけ、外部はそれ以外だけ
+    static func sessionOriginFilters() {
+        typealias O = Cockpit.SessionOrigin
+        assert(O.all.shows(at22: true) && O.all.shows(at22: false))
+        assert(O.at22.shows(at22: true) && !O.at22.shows(at22: false))
+        assert(!O.external.shows(at22: true) && O.external.shows(at22: false))
     }
 
     /// 使い方の流れ: 足りないものから順にいまの一手を返す。全部そろって変更も無ければ出さない

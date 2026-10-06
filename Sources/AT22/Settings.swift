@@ -37,6 +37,7 @@ struct SettingsScreen: View {
     /// SSH の接続先（08 Remote）。書き換えたら保存する
     @State private var hosts: [Remote.Host] = Remote.hosts
     @AppStorage(Cockpit.sleepAfterKey) private var sleepAfter = 15
+    @AppStorage(Cockpit.autoAfterPlanKey) private var autoAfterPlan = false
     @AppStorage(Hydra.maxHeadsKey) private var hydraHeads = 8
     @AppStorage(Hydra.maxRoundsKey) private var hydraRounds = 3
     @AppStorage(Hydra.maxToolsKey) private var hydraTools = 160
@@ -46,6 +47,7 @@ struct SettingsScreen: View {
     @State private var tsProblem: String?
     /// 会話を起こした後に会話画面へ（08 Remote の「会話を起こす」）
     var onTalk: () -> Void = {}
+    var onGuide: () -> Void = {}
     @State private var note: String?
     @State private var skill = SkillInstall.state()
     /// Lv.3 / Lv.4 は一度だけ確かめる（もう一度押すと決まる）
@@ -68,6 +70,9 @@ struct SettingsScreen: View {
             // 行が増えて低い窓では下帯に潜るので、行の部分だけ送れるようにする
             LiveScroll {
             VStack(alignment: .leading, spacing: 0) {
+            row("00", "Guide", "使い方 · 流れの6段（連携 → プロジェクト → ワークスペース → 会話 → REVIEW → GIT）といまの一手") {
+                Button("使い方を開く ▸", action: onGuide).buttonStyle(SumiButtonStyle(primary: false, size: 11))
+            }
             row("01", "Approval", "承認の段 · 新しいワークスペースの既定と、いまの会話") {
                 HStack(spacing: 0) {
                     ForEach(Array(Gate.Level.ladder.enumerated()), id: \.offset) { i, l in
@@ -94,6 +99,10 @@ struct SettingsScreen: View {
                 }
                 .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
                 if let levelNote { Text(levelNote).font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2) }
+                settingLine("計画の後", "壁打ちで計画を確定したら（計画の窓で「この計画で進める」・05 PLAN に積まれた）、その会話の段を Lv.3 任せてるにする") {
+                    Button(autoAfterPlan ? "■ 任せてるへ" : "□ 任せてるへ") { autoAfterPlan.toggle() }
+                        .buttonStyle(SumiButtonStyle(primary: autoAfterPlan, size: 11))
+                }
             }
             row("02", "Link", "連携 · プロバイダを選び、足し、ログインする") {
                 SumiPicker(sections: enabled.map { backend in

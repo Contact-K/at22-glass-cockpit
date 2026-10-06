@@ -204,7 +204,8 @@ struct PullDrawer<Content: View>: View {
     private static var frame: Double { 1.0 / 24 }
 
     var body: some View {
-        let shown = visible ?? open
+        // 中身は波紋が覆い終わってから出す。印が空のうちに open を見ると、初回だけ端末が先に出て波紋が後から覆った
+        let shown = frozen != nil ? open : (visible ?? false)
         ZStack {
             if shown { content() }
             Ticker(fps: 24, paused: started == nil) { now in
@@ -215,6 +216,8 @@ struct PullDrawer<Content: View>: View {
             .allowsHitTesting(false)
         }
         .allowsHitTesting(shown)
+        // 最初から開いている時（画面を組み直した時）は、波紋なしでそのまま出す
+        .onAppear { if visible == nil { visible = open } }
         .onChange(of: open) {
             guard frozen == nil else { return }
             opening = open

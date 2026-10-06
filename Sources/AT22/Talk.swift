@@ -62,7 +62,8 @@ struct TalkScreen: View {
     ]
 
     /// 画面に流す件数の上限。ponytail: 実測で1セッション数百件。数千に届いたら窓で切る
-    static let maxEntries = 200
+    /// ponytail: 行を全部その場で組む（VStack）ので、流すのは新しい方から150件まで
+    static let maxEntries = 150
 
     var body: some View {
         if cockpit.selectedSession == nil && !composing {
@@ -71,12 +72,19 @@ struct TalkScreen: View {
                 .frame(width: width, height: height, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                log.frame(width: width, height: max(120, height - 164 - (handoffShown ? 44 : 0)))
+                log.frame(width: width, height: max(120, height - 164 - 34 - (handoffShown ? 44 : 0)))
                 if handoffShown { handoffBar }
                 if failed, let reason = cockpit.launchError {
                     Text(reason).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
                         .lineLimit(2)
                 }
+                // 段と壁打ちは入力欄のすぐ上（会話の先頭に置くと、遡らないと切り替えられなかった）
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    levelSwitch
+                    planToggle
+                }
+                .frame(height: 24)
                 input
             }
             .frame(width: width, alignment: .topLeading)
@@ -100,12 +108,14 @@ struct TalkScreen: View {
                 tail
             }
             .padding(.trailing, 16)
-            .frame(width: width, height: max(120, height - 164), alignment: .bottomLeading)
+            .frame(width: width, height: max(120, height - 164 - 34), alignment: .bottomLeading)
             .clipped()
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    // LazyVStack は使わない。高さの違う行を遡る・下へ送る（scrollTo）たびに、組んでいない行の高さを
+                    // 見積もり直して並べ直しが終わらず固まった（2026-10-05、sample で LazySubviewPlacements が回り続けていた）
+                    VStack(alignment: .leading, spacing: 14) {
                         header
                         ForEach(items) { entry in row(entry, lastHuman: lastHuman, lastReply: lastReply).id(entry.id) }
                         tail
@@ -116,7 +126,10 @@ struct TalkScreen: View {
                     .padding(.bottom, 20)
                 }
                 .scrollIndicators(.never)
-                .defaultScrollAnchor(.bottom)
+                // defaultScrollAnchor(.bottom) は使わない。高さの違う行の LazyVStack で遡ると、行が組まれるたびに
+                // 下端へ合わせ直して並べ直しが終わらず固まった（2026-10-05 に sample で確認）。開いた時に下へ送る
+                .onAppear { scrollDown(proxy) }
+                .onChange(of: cockpit.selectedSession) { scrollDown(proxy) }
                 // 一番下が見えているか。遡っている間は、新しい発言や流れ込みで引き戻さない
                 .onScrollGeometryChange(for: Bool.self) { g in
                     g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
@@ -158,8 +171,6 @@ struct TalkScreen: View {
                 Text(cockpit.selectedSession.flatMap { cockpit.title(for: $0) } ?? (composing ? "新しい会話" : ""))
                     .font(.bodyJP(12)).foregroundStyle(Palette.Light.fg2).lineLimit(1)
                 Spacer(minLength: 8)
-                levelSwitch
-                planToggle
             }
             Text(composing && cockpit.selectedSession == nil ? "New talk." : headline)
                 .font(.display(52)).lineSpacing(0).fixedSize(horizontal: false, vertical: true)
@@ -315,7 +326,8 @@ struct TalkScreen: View {
                     .background { Chevron(point: 18).fill(Palette.Light.fg) }
                     .frame(maxWidth: 560, alignment: .trailing)
             }
-            .reportRect(message.id == lastHuman ? "melast" : "me:\(message.id)")
+            // 行ごとの矩形は誰も読まない（読むのは最後の返事の c0last だけ）。全行に付けるとスクロールで固まった
+            .reportRect(when: message.id == lastHuman, "melast")
         case let .model(message, label, refs):
             // 壁打ち中は返事の末尾の STEP / DECIDE / ASK を札に分け、本文はそれ以外
             let sparred = planOn && !message.thinking && spar != nil && workspace != nil ? Sparring.parse(message.text) : nil
@@ -364,7 +376,7 @@ struct TalkScreen: View {
             .frame(maxWidth: 680, alignment: .leading)
             .overlay(Rectangle().strokeBorder(Palette.Light.fg,
                                               style: StrokeStyle(lineWidth: 2, dash: message.thinking ? [4, 3] : [])))
-            .reportRect(message.id == lastReply ? "c0last" : "c0:\(message.id)")
+            .reportRect(when: message.id == lastReply, "c0last")
         case let .call(call):
             let finished = cockpit.callFinished(call.id)
             rule("CALL // \(call.type.isEmpty ? "AGENT" : call.type.uppercased()) → \(call.title)",
@@ -401,23 +413,31 @@ struct TalkScreen: View {
         guard let head = draft.first, head == "/" || head == "$", !draft.contains(where: \.isWhitespace) else { return [] }
         let backend = cockpit.selectedSession.map(cockpit.backend(of:)) ?? .claude
         let names = Skills.visible(cockpit.skills, to: backend).map { Skills.invocation($0, for: backend) }
-        return Array(Set(names)).filter { $0.lowercased().hasPrefix(draft.lowercased()) }.sorted().prefix(8).map { $0 }
+        return Array(Set(names)).filter { $0.lowercased().hasPrefix(draft.lowercased()) }.sorted()
     }
 
+    private static let slashRowH: CGFloat = 28
+    /// 候補の板の高さ。8行まで見せ、それより多ければ板の中でスクロールする
+    private var slashListHeight: CGFloat { CGFloat(min(slashMatches.count, 8)) * Self.slashRowH + 2 }
+
     private var slashList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(slashMatches, id: \.self) { name in
-                Button { draft = name + " " } label: {
-                    Text(name).font(.mono(12)).frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(slashMatches, id: \.self) { name in
+                    Button { draft = name + " " } label: {
+                        Text(name).font(.mono(12)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).frame(height: Self.slashRowH).contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
                 }
-                .buttonStyle(PressStyle())
             }
         }
+        .scrollIndicators(slashMatches.count > 8 ? .visible : .never)
+        .padding(1)
+        .frame(width: 320, height: slashListHeight)
         .foregroundStyle(Palette.Light.fg)
         .background(Palette.Light.bg)
         .overlay(Rectangle().strokeBorder(Palette.Light.fg, lineWidth: 1))
-        .frame(width: 320)
     }
 
     private var input: some View {
@@ -479,7 +499,8 @@ struct TalkScreen: View {
         .overlay(Rectangle().strokeBorder(ctxAlarm ? Palette.Light.danger : Palette.Light.fg, lineWidth: 2))
         // 「/」の候補は入力欄の真上に
         .overlay(alignment: .topLeading) {
-            if !slashMatches.isEmpty { slashList.alignmentGuide(.top) { $0[.bottom] + 4 }.padding(.leading, 14) }
+            // 入力欄の真上に、高さぶん上へずらして出す（並べ方の指定に任せると下へ伸びて見切れた）
+            if !slashMatches.isEmpty { slashList.offset(x: 14, y: -(slashListHeight + 4)) }
         }
     }
 
@@ -898,6 +919,9 @@ struct SessionPicker: View {
     var workspace: String? = nil
     var onFresh: () -> Void = {}
     let onNew: () -> Void
+    @AppStorage(Cockpit.SessionOrigin.key) private var origin = Cockpit.SessionOrigin.all
+
+    private func shows(_ id: String) -> Bool { origin.shows(at22: cockpit.isAT22(id)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -913,17 +937,20 @@ struct SessionPicker: View {
                 Button("＋ 新しいワークスペース", action: onNew).buttonStyle(SumiButtonStyle(primary: workspace == nil))
                     .help("worktree を作ってエージェントを起こす")
             }
+            OriginSwitch(origin: $origin)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !cockpit.liveSessions.isEmpty {
+                    let live = cockpit.liveSessions.filter { shows($0.id) }
+                    if !live.isEmpty {
                         group("実行中")
-                        ForEach(cockpit.liveSessions) { session in
+                        ForEach(live) { session in
                             line(title: cockpit.title(for: session.id) ?? session.name,
                                  sub: (session.cwd as NSString).lastPathComponent,
                                  live: session.busy) { cockpit.selectedSession = session.id }
                         }
                     }
-                    let byProject = Dictionary(grouping: cockpit.recentSessions) { $0.project }
+                    let recent = cockpit.recentSessions.filter { shows($0.id) }
+                    let byProject = Dictionary(grouping: recent) { $0.project }
                         .sorted { ($0.value.first?.modifiedAt ?? .distantPast) > ($1.value.first?.modifiedAt ?? .distantPast) }
                     ForEach(byProject, id: \.key) { project, sessions in
                         group(project)
@@ -937,7 +964,7 @@ struct SessionPicker: View {
                         }
                     }
                     let liveIDs = Set(cockpit.liveSessions.map(\.id))
-                    let codex = cockpit.runRecords.filter { !liveIDs.contains($0.id) }
+                    let codex = cockpit.runRecords.filter { !liveIDs.contains($0.id) && shows($0.id) }
                     if !codex.isEmpty {
                         group("CODEX · GROK")
                         ForEach(codex.sorted { $0.lastUsed > $1.lastUsed }) { record in
@@ -948,8 +975,8 @@ struct SessionPicker: View {
                             }
                         }
                     }
-                    if cockpit.liveSessions.isEmpty && cockpit.recentSessions.isEmpty && codex.isEmpty {
-                        Text("履歴はまだない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg3).padding(.top, 12)
+                    if live.isEmpty && recent.isEmpty && codex.isEmpty {
+                        Text(origin == .all ? "履歴はまだない" : "\(origin.label)の会話はない").font(.bodyJP(13)).foregroundStyle(Palette.Light.fg3).padding(.top, 12)
                     }
                 }
             }

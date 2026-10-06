@@ -107,6 +107,8 @@ struct CockpitView: View {
         case quickOpen
         /// 内蔵ブラウザ（会話の URL の札から）
         case browser(URL)
+        /// 使い方の板（メニュー・設定から。初回起動の時は自動で）
+        case guide
     }
 
     struct Location: Equatable {
@@ -211,6 +213,11 @@ struct CockpitView: View {
         }
         .task {
             guard shot == nil else { return }
+            // 初めて起動した時だけ、使い方の板を開く（以後はメニューと設定から）
+            if !UserDefaults.standard.bool(forKey: "guideShown") {
+                UserDefaults.standard.set(true, forKey: "guideShown")
+                overlay = .guide
+            }
             findCLIs(force: false)
             while !Task.isCancelled {
                 cockpit.housekeeping()
@@ -273,7 +280,14 @@ struct CockpitView: View {
                         TowerScreen(projects: projects, width: w, height: h,
                                     focus: towerFocusID(projects), hover: $towerHover,
                                     onEnter: { enter($0) }, onAct: { towerAct($0, $1) },
-                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) })
+                                    flow: cockpit.currentFlowStep(workspace: nil), onFlow: { goFlow($0) },
+                                    cockpit: cockpit,
+                                    onSession: { _, row in
+                                        // 生えた会話の札から: その会話を開いて会話画面へ
+                                        Task { await cockpit.open(row) }
+                                        storedTab = .talk
+                                        setTower(false)
+                                    })
                     } else {
                         Suminagashi(tank: Ink.tank, paused: paused)
                             .frame(width: 540, height: max(1, h - 100))
@@ -427,6 +441,10 @@ struct CockpitView: View {
         case let .browser(url):
             BrowserSheet(start: url, onClose: { self.overlay = nil })
                 .frame(width: w, height: h)
+        case .guide:
+            GuideSheet(now: cockpit.currentFlowStep(workspace: currentWorkspace),
+                       onGo: { step in self.overlay = nil; goFlow(step) }, onClose: { self.overlay = nil })
+                .frame(width: w, height: h)
         case let .newWorkspace(from):
             NewWorkspaceSheet(cockpit: cockpit, projects: all, from: from, prompt0: newPrompt, launcherReady: launcherReady,
                               onClose: { self.overlay = nil; newPrompt = "" },
@@ -514,7 +532,7 @@ struct CockpitView: View {
                       })
                 .offset(x: 220, y: 84)
         case .settings:
-            SettingsScreen(cockpit: cockpit, width: contentW, height: h, onTalk: { go(.talk) })
+            SettingsScreen(cockpit: cockpit, width: contentW, height: h, onTalk: { go(.talk) }, onGuide: { overlay = .guide })
             .offset(x: 220, y: 84)
         }
     }
@@ -979,6 +997,7 @@ struct CockpitView: View {
         case "new": return .newWorkspace(from: tiles.first { !$0.isMain }?.id)
         case "delete": return tiles.first { !$0.isMain && $0.failed == nil }.map { .delete($0.id) }
         case "pick": return tiles.compactMap(\.race).first.map { .pick($0) }
+        case "guide": return .guide
         default: return nil
         }
     }
@@ -1029,7 +1048,7 @@ struct CockpitView: View {
             return projects.map { p in
                 MenuRow(key: "p:" + p.id, num: String(format: "%02d", p.tiles.count), en: p.name, jp: "プロジェクト",
                         desc: "\(p.tiles.count) worktrees · → で入る")
-            }
+            } + [MenuRow(key: "g:guide", num: "?", en: "Guide", jp: "使い方", desc: "流れの6段と、いまの一手")]
         case .project:
             let tiles = projects.first { $0.id == state.project }?.tiles ?? []
             let ordered = tiles.filter(\.isMain) + tiles.filter { !$0.isMain }.sorted { $0.rank < $1.rank }
@@ -1137,6 +1156,9 @@ struct CockpitView: View {
         case "a:":
             hideMenu()
             jump(to: value, projects: projects)
+        case "g:":
+            hideMenu()
+            overlay = .guide
         default: break
         }
     }
@@ -1175,6 +1197,12 @@ extension View {
                 Color.clear.preference(key: SumiRectsKey.self, value: [key: geo.frame(in: .named(RectBook.space))])
             }
         }
+    }
+
+    /// 要る時だけ矩形を報告する。スクロールの中の全行に付けると、1点動くたびに全行が報告し直す
+    @ViewBuilder
+    func reportRect(when on: Bool, _ key: String) -> some View {
+        if on { reportRect(key) } else { self }
     }
 }
 
