@@ -639,7 +639,7 @@ struct CockpitView: View {
     /// 鶴の状態。処理中は畳んで InkLoader に、門が止まっている間は片足で待つ
     private func craneStatus(busy: Bool, trail: [(path: String, kind: TouchKind)]) -> CraneStatus {
         if craneFx == "push" { return CraneStatus(busy: "upload", pose: .idle, state: "PUSHING · 送出中", sub: "送っています") }
-        if craneFx == "ok" { return CraneStatus(busy: nil, pose: .one, state: "PUSHED · 送りました", sub: "送り終わりました") }
+        if craneFx == "ok" { return CraneStatus(busy: nil, pose: .one, state: "PUSHED · 送りました", sub: "送り終わりました", lookUp: true) }
         if busy {
             let step = cockpit.liveInk(cockpit.selectedSession)
             return CraneStatus(busy: step, pose: .idle, state: step.uppercased(), sub: TalkScreen.stepLabel[step] ?? "")
@@ -1399,6 +1399,8 @@ struct CraneStatus: Equatable {
     var pose: Mascot.Pose
     var state: String
     var sub: String
+    /// 見上げる（送り終えた時。v11 の look "u"）
+    var lookUp = false
 }
 
 // MARK: - タブ
@@ -1637,7 +1639,7 @@ private struct CraneButton: View {
                         .foregroundStyle(status.busy == "wait" ? Palette.pink : Palette.Light.fg2)
                 }
             }
-            Mascot(pitch: 9, lookRight: true, pose: status.pose, busy: status.busy, color: ink)
+            Mascot(pitch: 9, lookRight: true, lookUp: status.lookUp, pose: status.pose, busy: status.busy, color: ink)
                 .reportRect("crane")
             Text(label).font(.mono(10)).tracking(1)
                 .padding(.horizontal, 6).padding(.vertical, 3)

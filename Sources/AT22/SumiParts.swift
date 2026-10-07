@@ -586,54 +586,85 @@ struct Mascot: View {
     enum Pose { case idle, one }
     var pitch: CGFloat = 9
     var lookRight = true
+    /// 見上げる（送り終えた時。v11 の look "u"）。向きは lookRight のまま、目と嘴が上へずれる
+    var lookUp = false
     var pose: Pose? = nil
     /// 処理中の状態名。入っている間は畳んで InkLoader になる
     var busy: String? = nil
     var color: Color = Palette.Light.fg
     var accent: Color = Palette.pink
 
-    /// busy が切り替わった時刻。脚は 70ms ごとに 1/4 ずつ畳む／伸ばす
+    /// 脚を畳み始めた／伸ばし始める時刻。脚は 70ms ごとに 1/4 ずつ畳む／伸ばす（伸ばす時刻は先のことがある）
     @State private var changedAt = Date.distantPast
+    /// InkLoader が頭から回り始めた時刻と、最後の状態名。戻る時はその1周を描き切ってから脚を伸ばす
+    @State private var loaderFrom = Date.distantPast
+    @State private var lastBusy = "think"
+    /// 待機の振り付けの時計。脚を伸ばし始めた所から数え直す（元の Mascot も戻るたびに頭から）
     @State private var start = Date()
     @Environment(\.frozenTime) private var frozen
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        Ticker(fps: 12) { now in
+        // 24fps。12 では 0.12 秒のまばたきが抜け、ついばみの点（8Hz）が不揃いになった（元は描画のたびに描く）
+        Ticker(fps: 24) { now in
             let fold = legs(now)
-            if busy != nil && fold <= 0 {
-                InkLoader(status: busy ?? "think", pitch: pitch, color: color, accent: accent)
+            if fold <= 0 {
+                InkLoader(status: busy ?? lastBusy, pitch: pitch, color: color, accent: accent)
                     .offset(x: -pitch, y: -pitch)
                     .frame(width: 8 * pitch, height: 8 * pitch, alignment: .topLeading)
             } else {
                 Canvas { ctx, _ in
-                    let t = frozen != nil ? 0.5 : now.timeIntervalSince(start)
+                    let t = frozen != nil ? 0.5 : max(0, now.timeIntervalSince(start))
                     Self.drawCrane(&ctx, t: t, pitch: pitch, scale: displayScale, legs: fold, lookRight: lookRight,
-                                   pose: pose, ink: color, accent: accent)
+                                   lookUp: lookUp, pose: pose, ink: color, accent: accent)
                 }
                 .frame(width: 8 * pitch, height: 8 * pitch)
             }
         }
         .frame(width: 8 * pitch, height: 8 * pitch)
-        .onChange(of: busy == nil) { changedAt = Date() }
+        .onChange(of: busy) { old, new in turn(from: old, to: new, now: Date()) }
     }
 
-    /// 脚の伸び 0…1。ponytail: 元は InkLoader の1周を待ってから伸ばす。ここは切り替えた瞬間から伸ばす
+    /// 処理中に入る・状態が替わる・抜ける。抜ける時は InkLoader の今の1周の終わりまで待つ（最長 3.4 秒。元の `onLoop` と同じ）
+    private func turn(from old: String?, to new: String?, now: Date) {
+        if let new {
+            lastBusy = new
+            if old == nil {
+                changedAt = now
+                loaderFrom = now.addingTimeInterval(0.28)      // 4 段畳み終えた所から回る
+            } else if now >= loaderFrom {
+                loaderFrom = now                                // InkLoader は状態が替わると頭から
+            }
+            return
+        }
+        var extend = now
+        if now >= loaderFrom {
+            let period = (InkLoader.period[lastBusy] ?? 2.6) + (lastBusy == "done" ? InkLoader.doneHold : 0)
+            let loopEnd = loaderFrom.addingTimeInterval(ceil(now.timeIntervalSince(loaderFrom) / period) * period)
+            extend = min(loopEnd, now.addingTimeInterval(3.4))
+        }
+        changedAt = extend
+        start = extend
+    }
+
+    /// 脚の伸び 0…1。伸ばし始めが先の間は 0（InkLoader のまま）
     private func legs(_ now: Date) -> Double {
         let steps = floor(now.timeIntervalSince(changedAt) / 0.07) * 0.25
-        return busy != nil ? max(0, 1 - steps) : min(1, steps)
+        return busy != nil ? max(0, 1 - steps) : max(0, min(1, steps))
     }
 
     // swiftlint:disable:next function_body_length
     /// 升は**画面の実ピクセル**で丸める（元の Mascot も devicePixelRatio 倍の canvas に描いて縮める）。
     /// ポイントで丸めると pitch 9 の 1/4 升（2.25pt）が 2pt に潰れて、尾と脚の形が崩れる
     nonisolated static func drawCrane(_ ctx: inout GraphicsContext, t: Double, pitch: CGFloat, scale: CGFloat = 2,
-                                      legs a: Double, lookRight: Bool, pose: Pose?, ink: Color, accent: Color) {
+                                      legs a: Double, lookRight: Bool, lookUp: Bool = false, pose: Pose?,
+                                      ink: Color, accent: Color) {
         let k = max(1, min(3, scale))
         ctx.scaleBy(x: 1 / k, y: 1 / k)
         let p = max(2, (pitch * k).rounded()), s = 8 * p, h = p / 2, q = p / 4
-        let lx: CGFloat = lookRight ? 1 : -1, ly: CGFloat = 0
-        let dir = lx, A = CGFloat(a)
+        // 見上げる時は元の look "u"（lx 0・ly -1）。向き（dir）は前の左右のまま
+        let dir: CGFloat = lookRight ? 1 : -1, lx: CGFloat = lookUp ? 0 : dir, ly: CGFloat = lookUp ? -1 : 0
+        let A = CGFloat(a)
 
         func r(_ v: CGFloat) -> CGFloat { CGFloat(jsRound(Double(v))) }
         func fill(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ hh: CGFloat, _ c: Color? = nil) {
