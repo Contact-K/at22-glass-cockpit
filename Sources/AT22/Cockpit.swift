@@ -651,6 +651,7 @@ final class Cockpit {
                 if speaker == .model, !thinking, agent == session {
                     adoptPlan(text, session: session, at: at)
                     adoptHydra(text, session: session, at: at)
+                    adoptCouncil(text, session: session, at: at)
                 }
                 if speaker == .human, let i = echoes[session]?.firstIndex(of: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                     echoes[session]?.remove(at: i)
@@ -1083,6 +1084,9 @@ final class Cockpit {
         refreshGates()
         if let backend = request.dispatch, verdict != .deny {
             dispatch(request, backend: backend, instruction: verdict == .revise ? revised : request.instruction)
+        } else if request.call == "council" {
+            if verdict == .deny { deliverHydra("[AT22] 合議は人が見送りました。", to: request.by) }
+            else { startCouncil(lead: request.by, topic: verdict == .revise ? revised : request.instruction) }
         }
         return result
     }
@@ -1281,7 +1285,7 @@ final class Cockpit {
     /// 司令塔の返事の ```hydra を head ごとの采配の門にする。**直近2分の返事だけ**（履歴の読み直しで起こさない）。
     /// Lv.3 / Lv.4 のプロジェクトなら人に訊かずに許可する
     private func adoptHydra(_ text: String, session: String, at: Date) {
-        guard text.contains("```hydra"), !sparSessions.contains(session),
+        guard text.contains("```hydra"), !sparSessions.contains(session), councilLead[session] == nil,
               Date().timeIntervalSince(at) < 120, let cwd = cwd(of: session) else { return }
         let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
         let memory = project.appendingPathComponent("memory")
@@ -1330,6 +1334,105 @@ final class Cockpit {
     private func flushHydra(_ session: String) {
         guard let pending = hydraOutbox.removeValue(forKey: session), !pending.isEmpty else { return }
         if !send(pending.joined(separator: "\n\n---\n\n"), to: session) { hydraOutbox[session] = pending }
+    }
+
+    // MARK: 合議
+
+    /// 1回の合議（司令塔ごとに1つ）。席の会話 → 席、並び、いまの巡（1 意見・2 反論）と返事
+    struct CouncilRun {
+        let topic: String
+        var seats: [String: Council.Seat] = [:]
+        var order: [String] = []
+        var round = 1
+        var replies: [String: String] = [:]
+        var opinions: [(seat: Council.Seat, text: String)] = []
+    }
+    @ObservationIgnored private var councils: [String: CouncilRun] = [:]
+    /// 席 → 頼んだ司令塔。席は読むだけで、繋ぎ直しても plan で繋ぐ
+    @ObservationIgnored private var councilLead: [String: String] = [:]
+    @ObservationIgnored private var councilSeen: Set<String> = []
+
+    /// 司令塔の返事の ```council を門にする。**直近2分の返事だけ**（履歴の読み直しで開かない）。Lv.3 / Lv.4 は訊かずに許可する
+    private func adoptCouncil(_ text: String, session: String, at: Date) {
+        guard text.contains("```council"), !sparSessions.contains(session), councilLead[session] == nil,
+              Date().timeIntervalSince(at) < 120, let topic = Council.topic(in: text), let cwd = cwd(of: session),
+              councilSeen.insert(session + "#" + topic).inserted else { return }
+        guard councils[session] == nil else {
+            deliverHydra("[AT22] 合議はまだ進行中なので、この ```council は開いていません。返事が揃うのを待ってください。", to: session)
+            return
+        }
+        let project = projectsRoot.appendingPathComponent(Self.projectSlug(cwd))
+        let memory = project.appendingPathComponent("memory")
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+        let path = memory.appendingPathComponent("\(Gate.directory)/\(stamp)-council.md").path
+        let text = Council.gateText(topic: topic, by: session, at: Date())
+        guard saveNote(path: path, text: text, creating: true, project: project) == .saved else {
+            appendLaunchError("合議の門を書けない")
+            return
+        }
+        if [.auto, .unattended].contains(Gate.level(memoryRoot: memory)), let request = Gate.parse(path: path, text: text) {
+            answer(request, .allow)
+        }
+        refreshGates()
+    }
+
+    /// 門が通った。司令塔と同じ worktree に読むだけの席を起こす（選択中の会話は動かさない）
+    private func startCouncil(lead: String, topic: String) {
+        guard councils[lead] == nil, let cwd = cwd(of: lead) else { return }
+        guard launcherOn else { return deliverHydra("[AT22] 連携が「切」なので合議の席を起こせませんでした。", to: lead) }
+        let keep = selectedSession
+        var run = CouncilRun(topic: topic)
+        for seat in Council.seats(found: Set(found.keys)) {
+            let prompt = Council.opening(seat, topic: topic)
+            // claude は launch を通すと worktree の段を plan に書き換える（司令塔まで壁打ちになる）ので直に起こす
+            let id = seat.agent == .claude
+                ? launchClaude(prompt: prompt, cwd: cwd, model: "", allowedTools: [], level: .plan, writesLevel: false)
+                : launch(prompt: prompt, cwd: cwd, backend: seat.agent, level: .plan)
+            guard let session = id?.uuidString.lowercased() else { continue }
+            markAT22(session)
+            setParent(session, lead)
+            councilLead[session] = lead
+            run.seats[session] = seat
+            run.order.append(session)
+        }
+        selectedSession = keep
+        guard !run.order.isEmpty else {
+            return deliverHydra("[AT22] 合議の席（codex・grok・claude）を起こせなかったので、合議は開けませんでした。", to: lead)
+        }
+        councils[lead] = run
+        log(lead, "合議の席を \(run.order.count) つ起こした")
+    }
+
+    /// 席のターンが終わった。全席揃ったら、1巡目なら反論を頼み、2巡目なら司令塔へまとめを頼む
+    /// ponytail: 席のプロセスが黙って死ぬと合議は進まない（人が席を止めれば進む）。困ったら Hydra の上限の見回りに混ぜる
+    private func noteCouncilTurn(_ session: String, reply: String?) {
+        guard let lead = councilLead[session], var run = councils[lead], run.seats[session] != nil,
+              run.replies[session] == nil else { return }
+        run.replies[session] = reply
+            ?? messages.last { $0.session == session && $0.speaker == .model && !$0.thinking }?.text ?? ""
+        councils[lead] = run
+        guard run.order.allSatisfy({ run.replies[$0] != nil }) else { return }
+        let said = run.order.map { (seat: run.seats[$0]!, text: run.replies[$0]!) }
+        if run.round == 1 {
+            run.opinions = said
+            run.round = 2
+            run.replies = [:]
+            councils[lead] = run
+            for (i, seat) in run.order.enumerated() {
+                let others = said.enumerated().filter { $0.offset != i }.map(\.element)
+                deliverHydra(Council.rebuttal(said[i].seat, others: others), to: seat)
+            }
+            log(lead, "合議の意見が揃ったので、反論を頼んだ")
+            return
+        }
+        councils[lead] = nil
+        for seat in run.order {
+            councilLead[seat] = nil
+            runs[seat]?.connection.close()
+            forget(seat)
+        }
+        deliverHydra(Council.verdict(topic: run.topic, opinions: run.opinions, rebuttals: said), to: lead)
+        noteAttention(lead, "合議の意見と反論が揃った")
     }
 
     /// 承認の強さを変える。ファイルが正なので、選んだその場で書く
@@ -1630,7 +1733,7 @@ final class Cockpit {
         // 言葉は空で繋ぐだけ。最初の1件も呼び出し側の `send` が流す（送る口を1本に保つ）。
         // モデルは人が明示した時だけ渡す——渡さなければ claude は元のセッションの設定を引き継ぐ
         // 壁打ちのセッションは繋ぎ直しても読むだけ
-        let config = Launcher.Config(cwd: cwd, level: sparSessions.contains(session) ? .plan : gateLevel, prompt: "",
+        let config = Launcher.Config(cwd: cwd, level: sparSessions.contains(session) || councilLead[session] != nil ? .plan : gateLevel, prompt: "",
                                      model: sessionModel[session] ?? "", effort: sessionEffort[session] ?? "",
                                      memoryDir: memoryDirectory(cwd: cwd))
         let token = UUID()
@@ -1884,7 +1987,8 @@ final class Cockpit {
         case let .turnEnded(tokens):
             // codex・ACP は止めても turnEnded（stopReason: cancelled）で終わる。止めたのを「終わった」と報告しない
             reportDispatched(session, status: stopping.contains(session) ? "stopped" : "done", reply: streaming[session])
-            defer { flushHydra(session) }
+            let reply = streaming[session]
+            defer { flushHydra(session); noteCouncilTurn(session, reply: reply) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             clearStreaming(session)
             stopping.remove(session)
@@ -1897,6 +2001,7 @@ final class Cockpit {
         case let .turnFailed(reason):
             // 理由を launchError に載せる。握り潰すと司令塔が「成功した」と誤認する。
             // 書きかけは消す——失敗しても途中まで書けたと見えてはいけない
+            defer { noteCouncilTurn(session, reply: "（この席は終わらなかった: \(reason)）") }
             clearStreaming(session)
             openTurns.remove(session)
             // 人が止めたターンの終わり方は失敗ではない。それ以外の理由なら止めた後でも出す
@@ -1961,6 +2066,14 @@ final class Cockpit {
     /// 隣で見てる→訊く／気にかけてる→低は猶予の後に通す／任せてる→低はすぐ通す／留守番→低はすぐ・高は積んで断る
     private func decideApproval(_ approval: Approval, session: String) {
         var approval = approval
+        // 合議の席は読むだけ。段（司令塔の worktree のもの）に関わらず、読む道具だけ通して残りは断る
+        if councilLead[session] != nil {
+            let reads = !Gate.humanOnly.contains(approval.tool)
+                && Gate.risk(tool: approval.tool, input: approval.input, cwd: "") == .low
+            if !reads { approval.denyNote = Council.readOnlyNote }
+            _ = runs[session]?.connection.answer(approval, allow: reads, input: nil)
+            return
+        }
         var decision = Gate.humanOnly.contains(approval.tool) ? .ask
             : level(of: session).decide(Gate.risk(tool: approval.tool, input: approval.input, cwd: cwd(of: session) ?? ""))
         if preapproved.remove(Self.approvalKey(approval)) != nil { decision = .allow }
@@ -2444,7 +2557,7 @@ final class Cockpit {
     /// 最初の1通が空で起こした時は、次に送る1通に付ける（`promisePending`）
     private func promised(_ prompt: String, session: String, cwd: String, level: Gate.Level) -> String {
         guard !prompt.isEmpty else { promisePending.insert(session); return prompt }
-        var promises = [Sparring.planProtocol, Hydra.protocolText]
+        var promises = [Sparring.planProtocol, Hydra.protocolText, Council.protocolText]
         let dir = memoryDirectory(cwd: cwd)
         if !dir.isEmpty && level != .plan { promises.append(Memory.protocolText(dir: dir, session: session)) }
         return "[AT22 からの約束。返事に書き写さなくてよい]\n" + promises.joined(separator: "\n\n") + "\n\n---\n\n" + prompt

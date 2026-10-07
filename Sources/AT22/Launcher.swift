@@ -225,7 +225,7 @@ enum Launcher {
         }
         // 計画を PLAN: / NOW: / DONE: 行で書いてもらう約束（今のモデルには TaskCreate が無い）
         // 記憶DBに節目ごとに書いてもらう約束（04 MEMORY が一覧に出し、清書の素にする）
-        var promises = [Sparring.planProtocol, Hydra.protocolText]
+        var promises = [Sparring.planProtocol, Hydra.protocolText, Council.protocolText]
         // plan（壁打ち）は書けないので渡さない
         if !config.memoryDir.isEmpty && config.level != .plan { promises.append(Memory.protocolText(dir: config.memoryDir, session: session)) }
         out.append(contentsOf: ["--append-system-prompt", promises.joined(separator: "\n\n")])

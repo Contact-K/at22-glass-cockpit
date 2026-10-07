@@ -30,6 +30,7 @@ AT22 は初期状態では **読み取るだけ** で、
 - **競走** … 新規の板でエージェントを2体以上選ぶと、同じ基点のコミットから1本ずつ worktree を作って同じ指示を送る。管制塔で1組に束ね、⋯ の **採る** で勝ちを残す。負けは未コミットの変更の数を見せてから変更ごと消す（枝は `-d` なので、コミットを積んだものは残る）
 - **采配** … 司令塔が門に `dispatch: grok` などを書くと、許可した時だけ AT22 がワークスペースを作ってそのエージェントを起こし、最初のターンの結果を `<id>.result` に書き戻す（書式は [docs/orchestrator-gate.md](docs/orchestrator-gate.md)）
 - **Hydra** … 司令塔が別のエージェントに並列で任せる時は、返事の末尾に ```` ```hydra ```` の囲み（`[{"name","agent","model","task","prompt"}]`、最大4体）を書くだけ（約束は `--append-system-prompt` で渡す）。AT22 が head ごとに采配の門を立て、人が許可すると worktree を作って起こし、最初の報告を**司令塔への次のメッセージ**として返す（司令塔は待ちループを回さない）。Lv.3 / Lv.4 は訊かずに起こす。Droppy Code の Hydra と同じく、Lv.3 / Lv.4 では全員の報告が揃ったら AT22 が各 head の枝を司令塔の worktree に取り込む（未コミットは先に記帳・`--no-ff`・ぶつかった枝は戻して人に知らせる）。Lv.1 / Lv.2 ではマージは人が REVIEW / GIT で決める。push と PR はいつも人
+- **合議** … 司令塔が構造を大きく変えた時だけ、返事の末尾に ```` ```council ```` の囲み（中身は見てほしいこと）を書く。AT22 が門を立て（Lv.3 / Lv.4 は訊かない）、司令塔と同じ worktree に**読むだけ**の席を3つ（批判者・安全性・単純化。codex → grok → claude の順に、入っている CLI を別の会社から先に座らせる）起こす。意見 → ほかの席の意見を見せて1回だけ反論 → 両方を司令塔へ返し、司令塔が議長として合意点・対立点・優先対応リストにまとめる。席の道具は段に関わらず読むものだけ通す
 - **レビューと出荷** … 07 REVIEW と 08 GIT。ハンクのステージ・コミット・push・PR は**押した時だけ**（PR は `gh` が自分の認証で作る）
 
 **入力欄の左はモデルとエフォート**（会話・壁打ち）。モデルの一覧は CLI から取る（claude は `list_models` の問い合わせで API のターンは起きない、grok は `grok models`）。「最新（別名）」と「固定の版」を選べ、エフォートはそのモデルが対応する段だけのスライダー。選び直しは次に送った時から効く（claude は `--resume --model --effort`、codex は `-m` と `-c model_reasoning_effort`、grok は `--reasoning-effort`）。その右の「／」で入っているスキル（`~/.claude/skills`・`~/.agents/skills`・有効なプラグイン・リポジトリの `.claude/skills`）を `/名前`（codex は `$名前`）として差し込む。設定の 06 Skill の「共有」は `~/.agents/skills` と `~/.grok/skills` にリンクを張り、codex / grok からも見えるようにする（押した時だけ書く）。
@@ -159,10 +160,10 @@ swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swif
   Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Snowman.swift \
   Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift \
   Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift \
-  Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift Sources/AT22/Remote.swift Sources/AT22/CodexServer.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+  Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/Council.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift Sources/AT22/Remote.swift Sources/AT22/CodexServer.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 ```
 
-Hydra の通し（本物の claude を haiku で2本起こす・料金がかかる）は `hydra-check.swift` を同じ Sources と組んで走らせる。
+Hydra の通し（本物の claude を haiku で2本起こす・料金がかかる）は `hydra-check.swift` を同じ Sources と組んで走らせる。合議の通し（司令塔は haiku、席は各 CLI の既定のモデル・料金がかかる）は `council-check.swift`。
 接続と段の通し（手元の claude・grok・hermes で往復、claude で Lv.2 の rm は訊く・書き込みは猶予の後に通る・Lv.4 の rm は要判断に積む）は `agents-check.swift` を同じように組む。
 使い捨てのリポジトリで ```hydra → 門（Lv.3 で自動許可）→ worktree → head → 報告が司令塔に届く、までを確かめ、後片付けもする。
 
