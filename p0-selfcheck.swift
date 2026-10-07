@@ -1,6 +1,6 @@
 // AT22 p0 セルフチェック（ターゲット外・SwiftUI 非依存）
 //
-// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
+// swiftc -parse-as-library Sources/AT22/Transcript.swift Sources/AT22/Cockpit.swift Sources/AT22/Structure.swift Sources/AT22/Memory.swift Sources/AT22/Gate.swift Sources/AT22/Launcher.swift Sources/AT22/Backend.swift Sources/AT22/CodexLauncher.swift Sources/AT22/Agents.swift Sources/AT22/ACP.swift Sources/AT22/Worktree.swift Sources/AT22/Snowman.swift Sources/AT22/Category.swift Sources/AT22/Sparring.swift Sources/AT22/Hydra.swift Sources/AT22/Council.swift Sources/AT22/AgentCatalog.swift Sources/AT22/Skills.swift Sources/AT22/Remote.swift Sources/AT22/CodexServer.swift p0-selfcheck.swift -o /tmp/p0check && /tmp/p0check
 //
 // 実 transcript を1本渡すと、そのリプレイ結果も検査する:
 //   /tmp/p0check ~/.claude/projects/<slug>/<sessionUUID>.jsonl
@@ -99,6 +99,8 @@ struct P0SelfCheck {
         planArrivesWithoutTaskCreate()
         handoffIsCreatedWhenMissing()
         hydraReadsHeads()
+        councilSeatsAndTopic()
+        bashRiskSeesThroughRTK()
         catalogReadsModelLists()
         skillsAreDiscovered()
         turnTrailCollapsesRepeatsAndListsWritesFirst()
@@ -3974,6 +3976,38 @@ struct P0SelfCheck {
         assert(request?.instruction.contains("README の手順を直して") == true)
         let report = Hydra.report(name: "fix-readme", agent: "codex", status: "done", workspace: "/w", branch: "at22/fix-readme", reply: "直した")
         assert(report.hasPrefix("[Hydra] head「fix-readme」（codex）") && report.contains("branch: at22/fix-readme") && report.hasSuffix("直した"))
+    }
+
+    /// 合議: ```council の中身を拾い、席は別の会社のモデルを先に座らせ、門は Gate.parse が読めて dispatch を持たない
+    static func councilSeatsAndTopic() {
+        assert(Council.topic(in: "まとめた。\n```council\n  Worktree の持ち方を変えた  \n```") == "Worktree の持ち方を変えた")
+        assert(Council.topic(in: "```council\n\n```") == nil && Council.topic(in: "なし") == nil)
+        assert(Council.seats(found: [.claude, .codex, .grok]).map(\.agent) == [.codex, .grok, .claude])
+        assert(Council.seats(found: [.claude, .codex]).map(\.agent) == [.codex, .claude, .codex])
+        assert(Council.seats(found: [.claude]).map(\.role) == ["批判者", "安全性", "単純化"])
+        assert(Council.seats(found: [.hermes]).isEmpty)
+        let request = Gate.parse(path: "/p/memory/gate/x.md", text: Council.gateText(topic: "分け方を変えた", by: "lead-1", at: Date()))
+        assert(request?.call == "council" && request?.by == "lead-1" && request?.dispatch == nil
+               && request?.instruction.trimmingCharacters(in: .whitespacesAndNewlines) == "分け方を変えた", "\(String(describing: request))")
+        let seats = Council.seats(found: [.codex, .grok, .claude])
+        let rebut = Council.rebuttal(seats[0], others: [(seats[1], "秘密が漏れる"), (seats[2], "")])
+        assert(rebut.contains("## 安全性（Grok）\n秘密が漏れる") && rebut.contains("（返事なし）"))
+        let verdict = Council.verdict(topic: "t", opinions: [(seats[0], "A")], rebuttals: [(seats[0], "B")])
+        assert(verdict.contains("## 合意点") && verdict.contains("# 意見") && verdict.contains("# 反論"))
+        assert(Council.clip(String(repeating: "x", count: 7000)).hasSuffix("…（以下略）"))
+    }
+
+    /// RTK のフックが書き換えた `rtk git status` と `git -C <場所>` は、中のコマンドで判定する。中が書くものなら高のまま
+    static func bashRiskSeesThroughRTK() {
+        for low in ["rtk git status", "/opt/bin/rtk ls -la", "rtk proxy git log --oneline", "rtk read README.md",
+                    "rtk grep -n foo Sources", "rtk swift build --package-path /tmp/x",
+                    "git -C /tmp/repo branch --show-current", "rtk git -C /tmp/repo diff"] {
+            assert(Gate.bashRisk(low) == .low, low)
+        }
+        for high in ["rtk git push", "rtk rm -rf build", "rtk", "rtk gain", "rtk proxy rm x",
+                     "git -C /tmp/repo push", "git -C", "rtk cat ~/.ssh/id_rsa"] {
+            assert(Gate.bashRisk(high) == .high, high)
+        }
     }
 
     /// 壁打ちの「HANDOFF に書く」: ノートが無ければ sessions/HANDOFF.md を作り、あれば末尾に足す

@@ -150,8 +150,17 @@ enum Gate {
             .map { $0.split(whereSeparator: \.isWhitespace).map { $0.filter { !"'\"\\".contains($0) } }.filter { !$0.isEmpty } }
             .filter { !$0.isEmpty }
         guard !segments.isEmpty else { return .high }
-        for words in segments {
+        for var words in segments {
             if words.contains(where: { word in secretMarks.contains(where: word.contains) }) { return .high }
+            // RTK（出力を縮める CLI の包み）のフックは、承認を訊く前に `git status` を `rtk git status` に書き換える。
+            // 包みを外して中のコマンドで見る。包みのままだと全部「知らない道具」で高になり、留守番で何も進まなかった（2026-10-07）。
+            // rtk 独自の動詞（gain など）は外せないので、知らない道具として高のまま
+            if words[0].split(separator: "/").last == "rtk" {
+                words.removeFirst()
+                if words.first == "proxy" { words.removeFirst() }
+                if words.first == "read" { words[0] = "cat" }
+                guard !words.isEmpty else { return .high }
+            }
             let head = words[0], rest = Array(words.dropFirst())
             switch head {
             case _ where readCommands.contains(head):
@@ -159,6 +168,9 @@ enum Gate {
             case "find":
                 if rest.contains(where: { ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls"].contains($0) }) { return .high }
             case "git":
+                // `git -C <場所> status` の `-C <場所>` は飛ばしてサブコマンドを見る
+                var rest = rest
+                while rest.first == "-C", rest.count >= 2 { rest.removeFirst(2) }
                 guard let sub = rest.first, !rest.contains(where: { $0.hasPrefix("--output") }) else { return .high }
                 if gitReads.contains(sub) { continue }
                 if sub == "branch", rest.dropFirst().allSatisfy({ ["-a", "-r", "-v", "--list", "--show-current"].contains($0) }) { continue }
