@@ -756,6 +756,7 @@ final class Cockpit {
         // Hydra の報告の送り待ち。司令塔の「次のターンの終わり」だけを待っていると、報告が届いた時に
         // 司令塔がもうターンを終えていた場合、二度と送られなかった（2026-10-04 に本物の claude で通して見つけた）
         for lead in hydraOutbox.keys where !isWorking(lead) && canSend(to: lead) { flushHydra(lead) }
+        for session in queued.keys where !isWorking(session) && canSend(to: session) { flushQueue(session) }
     }
 
     // MARK: 定期実行
@@ -1336,6 +1337,29 @@ final class Cockpit {
         if !send(pending.joined(separator: "\n\n---\n\n"), to: session) { hydraOutbox[session] = pending }
     }
 
+    // MARK: 送る順番待ち
+
+    /// 作業中に打った言葉（会話 → 古い順）。ターンが終わるたびに1通ずつ送る。入力欄の上に並べ、× で外せる
+    private(set) var queued: [String: [String]] = [:]
+
+    func enqueue(_ text: String, to session: String) {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        queued[session, default: []].append(body)
+    }
+
+    func unqueue(_ session: String, at index: Int) {
+        guard queued[session]?.indices.contains(index) == true else { return }
+        queued[session]?.remove(at: index)
+        if queued[session]?.isEmpty == true { queued[session] = nil }
+    }
+
+    /// 先頭の1通を送る。送れなければ残す（次の見回りでもう一度）
+    private func flushQueue(_ session: String) {
+        guard let first = queued[session]?.first, send(first, to: session) else { return }
+        unqueue(session, at: 0)
+    }
+
     // MARK: 合議
 
     /// 1回の合議（司令塔ごとに1つ）。席の会話 → 席、並び、いまの巡（1 意見・2 反論）と返事
@@ -1347,7 +1371,8 @@ final class Cockpit {
         var replies: [String: String] = [:]
         var opinions: [(seat: Council.Seat, text: String)] = []
     }
-    @ObservationIgnored private var councils: [String: CouncilRun] = [:]
+    /// 見ている（会話画面の「合議中 · 意見 2/3」が追う）
+    private var councils: [String: CouncilRun] = [:]
     /// 席 → 頼んだ司令塔。席は読むだけで、繋ぎ直しても plan で繋ぐ
     @ObservationIgnored private var councilLead: [String: String] = [:]
     @ObservationIgnored private var councilSeen: Set<String> = []
@@ -1374,6 +1399,27 @@ final class Cockpit {
             answer(request, .allow)
         }
         refreshGates()
+    }
+
+    /// 人が会話画面の「合議」から頼む。門は通さない（頼んだのが人なので）。開けなかった理由は launchError に
+    @discardableResult
+    func requestCouncil(lead: String, topic: String) -> Bool {
+        let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty, cwd(of: lead) != nil else { launchError = "合議を開く会話の作業場所が分からない"; return false }
+        guard councils[lead] == nil else { launchError = "この会話の合議はまだ進んでいる"; return false }
+        guard launcherOn else { launchError = Self.launcherOffMessage; return false }
+        guard !Council.seats(found: Set(found.keys)).isEmpty else {
+            launchError = "合議の席に座らせる CLI（codex・grok・claude）が見つからない"
+            return false
+        }
+        startCouncil(lead: lead, topic: topic)
+        return councils[lead] != nil
+    }
+
+    /// 合議の進み（会話画面の札）。nil なら合議していない
+    func councilProgress(_ lead: String?) -> String? {
+        guard let lead, let run = councils[lead] else { return nil }
+        return (run.round == 1 ? "意見" : "反論") + " \(run.replies.count)/\(run.order.count)"
     }
 
     /// 門が通った。司令塔と同じ worktree に読むだけの席を起こす（選択中の会話は動かさない）
@@ -1988,7 +2034,7 @@ final class Cockpit {
             // codex・ACP は止めても turnEnded（stopReason: cancelled）で終わる。止めたのを「終わった」と報告しない
             reportDispatched(session, status: stopping.contains(session) ? "stopped" : "done", reply: streaming[session])
             let reply = streaming[session]
-            defer { flushHydra(session); noteCouncilTurn(session, reply: reply) }
+            defer { flushHydra(session); flushQueue(session); noteCouncilTurn(session, reply: reply) }
             // 確定メッセージは transcript（または `.message`）から来るので、書きかけは残さない
             clearStreaming(session)
             stopping.remove(session)

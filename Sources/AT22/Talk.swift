@@ -50,6 +50,8 @@ struct TalkScreen: View {
     @AppStorage(SettingsScreen.levelKey) private var defaultLevel = Gate.defaultLevel.rawValue
     /// 新しい会話を壁打ち（読むだけ）で起こすか
     @State private var planNext = false
+    /// 次に送る1通を合議にかけるか（送ったら切れる）
+    @State private var councilNext = false
     @Environment(\.frozenTime) private var frozen
 
     /// 処理の段の和名（v10 の `STL`）
@@ -71,8 +73,10 @@ struct TalkScreen: View {
                           onFresh: { composing = true; failed = false }, onNew: onNew)
                 .frame(width: width, height: height, alignment: .topLeading)
         } else {
+            let waiting = cockpit.selectedSession.flatMap { cockpit.queued[$0] } ?? []
             VStack(alignment: .leading, spacing: 10) {
-                log.frame(width: width, height: max(120, height - 164 - 34 - (handoffShown ? 44 : 0)))
+                log.frame(width: width, height: max(120, height - 164 - 34 - (handoffShown ? 44 : 0)
+                                                    - inputGrow - queueHeight(waiting)))
                 if handoffShown { handoffBar }
                 if failed, let reason = cockpit.launchError {
                     Text(reason).font(.bodyJP(12)).foregroundStyle(Palette.Light.danger)
@@ -83,12 +87,14 @@ struct TalkScreen: View {
                     Spacer(minLength: 0)
                     levelSwitch
                     planToggle
+                    councilToggle
                 }
                 .frame(height: 24)
+                if let s = cockpit.selectedSession, !waiting.isEmpty { queueList(s, waiting) }
                 input
             }
             .frame(width: width, alignment: .topLeading)
-            .onChange(of: cockpit.selectedSession) { failed = false; composing = false }
+            .onChange(of: cockpit.selectedSession) { failed = false; composing = false; councilNext = false }
         }
     }
 
@@ -130,10 +136,13 @@ struct TalkScreen: View {
                 // 下端へ合わせ直して並べ直しが終わらず固まった（2026-10-05 に sample で確認）。開いた時に下へ送る
                 .onAppear { scrollDown(proxy) }
                 .onChange(of: cockpit.selectedSession) { scrollDown(proxy) }
-                // 一番下が見えているか。遡っている間は、新しい発言や流れ込みで引き戻さない
-                .onScrollGeometryChange(for: Bool.self) { g in
-                    g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
-                } action: { _, bottom in atBottom = bottom }
+                // 最新を追うか。外すのは**人が上へ遡った時だけ**、一番下に戻ったらまた追う。
+                // 以前は毎回「一番下が見えているか」で決めていたので、長い返事が届いて中身が先に伸びた瞬間に外れ、追わなくなった
+                .onScrollGeometryChange(for: ScrollSpot.self) { g in
+                    ScrollSpot(y: g.contentOffset.y, bottom: g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60)
+                } action: { old, new in
+                    if new.bottom { atBottom = true } else if new.y < old.y - 1 { atBottom = false }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if !atBottom {
                         Button { atBottom = true; withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) } } label: {
@@ -149,9 +158,14 @@ struct TalkScreen: View {
                 .onChange(of: cockpit.streaming[cockpit.selectedSession ?? ""]?.count) { if atBottom { scrollDown(proxy) } }
                 .onChange(of: stop?.id) { scrollDown(proxy) }
                 .onChange(of: gate.rewriting) { scrollDown(proxy) }
-                .onChange(of: cockpit.isWorking(cockpit.selectedSession)) { scrollDown(proxy) }
+                .onChange(of: cockpit.isWorking(cockpit.selectedSession)) { if atBottom { scrollDown(proxy) } }
             }
         }
+    }
+
+    private struct ScrollSpot: Equatable {
+        let y: CGFloat
+        let bottom: Bool
     }
 
     private static let bottomID = "at22.bottom"
@@ -246,6 +260,24 @@ struct TalkScreen: View {
         }
         .buttonStyle(SumiButtonStyle(primary: planOn, size: 11))
         .help("壁打ち: claude を plan モード（読むだけ・書かない）で動かす。切ると元の段に戻る")
+    }
+
+    /// 合議のトグル。入れて送ると、その1通を頼みとして読むだけの3席（別の会社のモデル）が意見 → 反論を出し、
+    /// この会話に議長としてのまとめを頼む1通が届く。送ったら切れる。進んでいる間は「合議中 · 意見 2/3」
+    @ViewBuilder
+    private var councilToggle: some View {
+        if let progress = cockpit.councilProgress(cockpit.selectedSession) {
+            Text("合議中 · " + progress).font(.mono(11)).tracking(0.6)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .foregroundStyle(Palette.Light.bg).background(Palette.Light.fg)
+                .help("席の会話は管制塔で、この会話の子として並ぶ")
+        } else {
+            Button(councilNext ? "■ 合議" : "□ 合議") { councilNext.toggle() }
+                .buttonStyle(SumiButtonStyle(primary: councilNext, size: 11))
+                .disabled(cockpit.selectedSession == nil)
+                .help(cockpit.selectedSession == nil ? "会話を選んでから"
+                      : "合議: 次の1通を、読むだけの3席（批判者・安全性・単純化）に見せて意見と反論を集め、この会話にまとめを頼む。重いので大きな変更の時に")
+        }
     }
 
     @ViewBuilder
@@ -471,18 +503,28 @@ struct TalkScreen: View {
                 Text(draft.isEmpty ? "司令塔に聞く" : draft).font(.bodyJP(16)).foregroundStyle(Palette.Light.fg3)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                TextField(working ? (Self.stepLabel[now] ?? "") + "…" : "司令塔に聞く", text: $draft)
+                // 改行は Shift+Return（⌥Return でも入る）。作業中の Return は順番待ちに積む
+                TextField(councilNext ? "合議に見てほしいこと（変えたこと・迷っている所）"
+                          : working ? (Self.stepLabel[now] ?? "") + "…  Return で積む" : "司令塔に聞く",
+                          text: $draft, axis: .vertical)
+                    .lineLimit(1...6)
                     .textFieldStyle(.plain)
                     .font(.bodyJP(16))
                     .foregroundStyle(Palette.Light.fg)
+                    // ponytail: 改行は末尾に足す（途中に入れたい時は ⌥Return がカーソルの位置に入れる）
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard press.modifiers.contains(.shift) else { return .ignored }
+                        draft += "\n"
+                        return .handled
+                    }
                     .onSubmit {
                         // 候補が出ている間の Return は1つ目で補う
                         if let first = slashMatches.first { draft = first + " "; return }
-                        if !working && !empty { send() }
+                        if !empty { send() }
                     }
             }
-            Button { working ? interrupt() : send() } label: {
-                Text(working ? "止める ■" : "送る ↵").font(.mono(11)).tracking(0.9)
+            Button { working && empty && !councilNext ? interrupt() : send() } label: {
+                Text(councilNext ? "合議へ ↵" : working ? (empty ? "止める ■" : "積む ↵") : "送る ↵").font(.mono(11)).tracking(0.9)
                     .foregroundStyle(Palette.Light.bg)
                     .padding(.horizontal, 22)
                     .frame(maxHeight: .infinity)
@@ -491,10 +533,12 @@ struct TalkScreen: View {
             }
             .buttonStyle(PressStyle())
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!(cockpit.canSend(to: cockpit.selectedSession) || fresh) && !working || (!working && empty) || modalOpen)
-            .help(working ? "生成を止める（セッションは終わらない）" : "送る（Return / ⌘Return）")
+            .disabled(!(cockpit.canSend(to: cockpit.selectedSession) || fresh) && !working || (!working && empty)
+                      || (councilNext && empty) || modalOpen)
+            .help(working ? (empty ? "生成を止める（セッションは終わらない）" : "順番待ちに積む。ターンが終わったら送る")
+                  : "送る（Return / ⌘Return）。改行は Shift+Return")
         }
-        .frame(height: 48)
+        .frame(height: 48 + inputGrow)
         .background(Palette.Light.bg)
         .overlay(Rectangle().strokeBorder(ctxAlarm ? Palette.Light.danger : Palette.Light.fg, lineWidth: 2))
         // 「/」の候補は入力欄の真上に
@@ -504,13 +548,60 @@ struct TalkScreen: View {
         }
     }
 
+    /// 改行で伸びた入力欄の高さ（6行まで。それより先は欄の中で送る）
+    private var inputGrow: CGFloat { CGFloat(min(5, draft.filter { $0 == "\n" }.count)) * 22 }
+
+    private func queueHeight(_ items: [String]) -> CGFloat {
+        items.isEmpty ? 0 : CGFloat(min(items.count, 3) + (items.count > 3 ? 1 : 0)) * 24 + 10
+    }
+
+    /// 順番待ちの言葉。古い順に3通まで、× で外す
+    private func queueList(_ session: String, _ items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(items.prefix(3).enumerated()), id: \.offset) { i, text in
+                HStack(spacing: 8) {
+                    Text("待ち \(i + 1)").font(.mono(10)).tracking(0.8).foregroundStyle(Palette.pink)
+                    Text(text.replacingOccurrences(of: "\n", with: " ")).font(.bodyJP(12))
+                        .foregroundStyle(Palette.Light.fg2).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button("×") { cockpit.unqueue(session, at: i) }
+                        .buttonStyle(PressStyle()).font(.mono(11)).foregroundStyle(Palette.Light.fg2)
+                        .help("この1通を外す")
+                }
+                .frame(height: 20)
+            }
+            if items.count > 3 {
+                Text("ほか \(items.count - 3) 通").font(.mono(10)).foregroundStyle(Palette.Light.fg3).frame(height: 20)
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+
     private func send() {
+        // 合議: この1通を頼みにして席を起こす。司令塔にはまだ送らない（揃ったらまとめの1通が届く）
+        if councilNext, let s = cockpit.selectedSession {
+            if cockpit.requestCouncil(lead: s, topic: draft) {
+                draft = ""
+                councilNext = false
+                failed = false
+            } else {
+                failed = true
+            }
+            return
+        }
         // 壁打ち中は、型の合図・決まっていること・返し方（STEP / DECIDE / ASK）を添えて送る
         let typed = draft
         if planOn, let spar, let workspace {
             let board = spar.board(workspace)
             draft = Sparring.prompt(typed.trimmingCharacters(in: .whitespacesAndNewlines), mode: board.mode,
                                     decided: board.decisions.map(\.text))
+        }
+        // 作業中は順番待ちに積む。ターンが終わるたびに Cockpit が1通ずつ送る
+        if let s = cockpit.selectedSession, cockpit.isWorking(s) {
+            cockpit.enqueue(draft, to: s)
+            draft = ""
+            failed = false
+            return
         }
         defer {
             // 送れなかった時は打った言葉に戻す。送れたら板にこの会話を覚える（右列の未決の問いを拾う）

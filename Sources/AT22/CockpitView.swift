@@ -636,19 +636,21 @@ struct CockpitView: View {
             .map { ($0.path, $0.kind) }
     }
 
-    /// 鶴の状態。処理中は畳んで InkLoader に、門が止まっている間は片足で待つ
+    /// 鶴の状態。v11（`V11Shell` の Mascot）と同じく、InkLoader に畳むのは**会話画面で作業中**と送出中だけ。
+    /// 管制塔と承認待ちは待機の鶴のまま（承認待ちは言葉だけ桃色）。以前は止まっているものが1件でもあると
+    /// どの画面でも wait の InkLoader になり、要判断が残っている間は待機の鶴が出なかった
     private func craneStatus(busy: Bool, trail: [(path: String, kind: TouchKind)]) -> CraneStatus {
         if craneFx == "push" { return CraneStatus(busy: "upload", pose: .idle, state: "PUSHING · 送出中", sub: "送っています") }
         if craneFx == "ok" { return CraneStatus(busy: nil, pose: .one, state: "PUSHED · 送りました", sub: "送り終わりました", lookUp: true) }
-        if busy {
+        if busy && !isTower {
             let step = cockpit.liveInk(cockpit.selectedSession)
             return CraneStatus(busy: step, pose: .idle, state: step.uppercased(), sub: TalkScreen.stepLabel[step] ?? "")
         }
         if cockpit.stoppedCount > 0 {
-            return CraneStatus(busy: "wait", pose: .one, state: "ASKING · MENU",
+            return CraneStatus(busy: nil, pose: .idle, state: "ASKING · 承認待ち",
                                sub: cockpit.gates.isEmpty ? "承認を待っています" : "門の応答を待っています")
         }
-        if ctxAlarm {
+        if ctxAlarm && !isTower {
             return CraneStatus(busy: "overload", pose: .idle, state: "MENU", sub: "文脈があふれそうです")
         }
         // 静かな時は、いまの一手（連携 → プロジェクト → ワークスペース → 会話 → REVIEW）を出す
@@ -1636,10 +1638,13 @@ private struct CraneButton: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(status.sub).font(.bodyJP(13)).lineSpacing(3).lineLimit(2)
                     Text(status.state).font(.mono(10)).tracking(Palette.caps(10))
-                        .foregroundStyle(status.busy == "wait" ? Palette.pink : Palette.Light.fg2)
+                        .foregroundStyle(status.state.hasPrefix("ASKING") ? Palette.pink : Palette.Light.fg2)
                 }
             }
-            Mascot(pitch: 9, lookRight: true, lookUp: status.lookUp, pose: status.pose, busy: status.busy, color: ink)
+            // 姿勢を渡すとその姿勢で止まる。待機（.idle）は渡さず、片足・啄む・羽繕いを時刻で回させる（v11 も pose 無し）。
+            // 以前は .idle を渡していたので棒立ちで瞬きだけになっていた
+            Mascot(pitch: 9, lookRight: true, lookUp: status.lookUp, pose: status.pose == .one ? .one : nil,
+                   busy: status.busy, color: ink)
                 .reportRect("crane")
             Text(label).font(.mono(10)).tracking(1)
                 .padding(.horizontal, 6).padding(.vertical, 3)

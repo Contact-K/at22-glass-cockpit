@@ -677,13 +677,23 @@ struct Mascot: View {
             c.fill(Path(CGRect(x: r(x), y: r(y), width: max(1, r(w)), height: max(1, r(hh)))), with: .color(.black))
         }
 
-        var blink = t.truncatingRemainder(dividingBy: 3.7) < 0.12
+        // 普段は止まっていて、ときどきだけ動く（本人の指示 2026-10-07。元の Mascot は 7.5 秒の決まった周期で回していた）。
+        // 時刻を枠に切り、枠ごとの擬似乱数で「動くか・何をするか」を決める。同じ t なら同じ絵（--shot も毎コマも揺れない）
+        func roll(_ k: Double, _ salt: Double) -> Double {
+            let v = sin(k * 12.9898 + salt * 78.233) * 43758.5453
+            return v - floor(v)
+        }
+        // まばたき: 0.5 秒の枠のうち 8%（平均 6 秒に1回）
+        let bk = floor(t / 0.5)
+        var blink = roll(bk, 3.1) < 0.08 && t - bk * 0.5 < 0.12
         if a < 0.5 { blink = true }
-        let t7 = t.truncatingRemainder(dividingBy: 7.5)
+        // 仕草: 1.8 秒の枠のうち 22%（平均 8 秒に1回）、枠の頭 1.4 秒だけ。片脚・啄む・羽繕いのどれか
+        let slot = 1.8, sk = floor(t / slot), into = t - sk * slot
         enum Act { case idle, one, peck, preen }
+        let acts: [Act] = [.one, .peck, .preen]
         let act: Act = pose.map { $0 == .one ? .one : .idle }
-            ?? (t7 > 3 && t7 < 4.4 ? .peck : t7 > 5.2 && t7 < 6.6 ? .preen : t7 > 1.2 && t7 < 2.6 ? .one : .idle)
-        let pd = act == .peck && Int(floor((t7 - 3) * 4)) % 3 != 2
+            ?? (into < 1.4 && roll(sk, 1.7) < 0.22 ? acts[min(2, Int(roll(sk, 5.3) * 3))] : .idle)
+        let pd = act == .peck && Int(floor(into * 4)) % 3 != 2
         let hop = 0.75 * A - (pd ? 0.5 * A : act == .peck ? 0.25 * A : 0)
 
         let ox = 2 * p, oy = (2 - hop) * p
